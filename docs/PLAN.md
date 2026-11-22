@@ -13,8 +13,9 @@ Status: draft for the code architect. Revised 22 Nov 2026 from the owner's v1 pl
 |---|---|---|---|
 | Tax compliance | "Exportable records for an accountant or HMRC-compatible software" | Making Tax Digital for Income Tax (MTD ITSA) is a first-class requirement: HMRC categories, quarterly periods, quarter close, digital-link export | MTD ITSA has been live since 6 Apr 2026 for qualifying income over £50k; £30k from Apr 2027; £20k from Apr 2028 |
 | Data model | Originals kept separately | Three layers (immutable source, allocations, disposable projections); integer pence; splits must sum exactly; hash-chained audit log; period locks | Makes wrong figures structurally hard to produce |
-| Email | Gmail API | Default: a forwarding mailbox read over IMAP. Gmail API optional | Least privilege; Gmail's read scope is "restricted" and has an OAuth token-expiry trap |
+| Email | Gmail API | Gmail API, read-only, with narrow searches (bookings, receipts) and an access log. Forwarding mailbox as the privacy-first alternative | Hotel-stay checks need on-demand searches around job dates. Access stays read-only and narrow, and the OAuth token-expiry trap is avoided |
 | Calendar | Calendar API | Default: Google Calendar's secret iCal feed (read-only). API optional | No OAuth to maintain |
+| Hotel stays | Not covered | Each stay is assembled from Gmail bookings, calendar and bank payments, then classified night by night against job dates and venue distance. Never auto-confirmed | Hotels are the classic mixed business/personal expense |
 | Receipts | From email only | Phone camera capture is a primary input | Most receipts are paper or on-screen at the moment of spend |
 | Bank formats | CSV, XLSX, PDF from the start | CSV/OFX first with saved per-bank profiles; XLSX next; PDF last, gated by a balance check | PDF parsing is the least reliable part, and the host cannot run `pdftotext` |
 | PDF generation | Unspecified | dompdf (pure PHP) | `exec`/`shell_exec` are disabled on the host |
@@ -94,7 +95,8 @@ stable choice on shared hosting.
 | PDF output | dompdf | Pure PHP |
 | PDF input (phase 7) | smalot/pdfparser | Pure PHP |
 | Calendar | sabre/vobject | ICS, including recurring events |
-| Email | PHP imap extension (or webklex/php-imap) | Forwarding mailbox |
+| Email | Gmail API via google/apiclient; PHP imap extension for the forwarding-mailbox alternative | Read-only |
+| Geocoding | postcodes.io, or a local copy of the ONS Postcode Directory | UK postcodes to coordinates, for hotel/venue/home distances |
 | Passkeys | A maintained WebAuthn package (or Laravel's own, if available at build time) | |
 | Quality | Pest, Larastan at a strict level, Infection (mutation testing) on high-risk modules | |
 | CI/CD | GitHub Actions, then deploy over SSH | |
@@ -158,6 +160,11 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `documents` | Receipts, statements, invoice PDFs: SHA-256, MIME type, size, private path; linked to transactions, allocations or jobs |
 | `clients`, `jobs` | A job has a client, date range, location, status and agreed fee |
 | `calendar_events` | ICS UID, start/end, location, linked job |
+| `stays` | One per booking: provider, booking reference, hotel, address, postcode, check-in/out, guests, total and nightly amounts, currency, status (`booked`, `amended`, `cancelled`, `completed`), paid by (`me`, `client`, `rechargeable`), linked job |
+| `stay_nights` | One row per night: date, `amount_pence`, linked job, classification (`business`, `personal`, `review`), reasons, confirmed |
+| `stay_sources` | Links a stay to Gmail message IDs, calendar event UIDs and bank transactions; keeps every version of the booking |
+| `places` | Postcode-to-coordinates cache |
+| `settings` | Home postcode, travel thresholds (far from home, early start, late finish), hotel sender list |
 | `invoices`, `invoice_lines`, `payments`, `credit_notes` | `payments` links an invoice to bank transactions; partial payments allowed |
 | `vehicles`, `mileage_trips` | Vehicle claim method (simplified mileage or actual costs, fixed per vehicle); trips with date, from/to, miles, job and a snapshot of the rate used |
 | `periods` | Tax years and quarters; status `open`/`closed`/`submitted`; lock metadata |
@@ -174,6 +181,8 @@ Invariants, enforced in both code and database:
   sum exactly. Covered by a property-based test.
 - Unique key on `(account_id, fingerprint, occurrence)`, so re-importing the same or an overlapping
   statement never duplicates rows.
+- A stay's nights sum exactly to its total. Allocations on the linked bank transactions are generated from
+  the confirmed nights, so the stay and the ledger always agree.
 - No `ON DELETE CASCADE` on financial tables. Void or reverse instead of deleting.
 - Rows in a locked period cannot change. Guard this in the domain layer and cover it with a test; also use
   a database trigger if the host allows it.
@@ -275,19 +284,23 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
 - **Open Banking aggregators:** later, if a provider with acceptable cost and terms exists. Consents need
   periodic renewal.
 
-### 6.2 Receipts
+### 6.2 Email (Gmail) and receipts
 
 - **Phone camera capture (PWA):** a "+" button opens the camera. The photo is compressed, uploaded and
   linked to a transaction straight away, or matched later by date and amount.
-- **Forwarding mailbox:** a dedicated `receipts@` mailbox on Hostinger. A Gmail filter forwards receipts
-  and bookings to it, and the app polls it over IMAP every 5–15 minutes. It stores each email and its
-  attachments, extracts date, amount and supplier where it can, and suggests matches. The app only ever
-  sees what you forward.
-- **Gmail API (optional),** for searching the mailbox directly. `gmail.readonly` is a Google "restricted"
-  scope. For a personal app, keep the OAuth client to yourself and set the consent screen to
-  **In production**, accepting the "unverified app" warning once. In **Testing** status, refresh tokens
-  expire after 7 days, which would silently break sync. Query only specific labels or senders, and never
-  sync the whole mailbox.
+- **Gmail API, read-only (recommended).** Hotel-stay checks (§6.5) need to search Gmail on demand around
+  job dates, which justifies a direct connection. The same connection also finds receipts and invoices from
+  known senders.
+  - Request the `gmail.readonly` scope only. Google classes it as "restricted".
+  - For a personal app, keep the OAuth client to yourself and set the consent screen to **In production**,
+    accepting the "unverified app" warning once. In **Testing** status, refresh tokens expire after 7 days,
+    which would silently break sync.
+  - Run targeted searches only and never sync the whole mailbox. Store only matching messages, and list
+    every fetched message in a "what the app read" log.
+- **Forwarding mailbox (privacy-first alternative).** A Gmail filter using the same searches auto-forwards
+  matching emails to a dedicated `receipts@` mailbox on Hostinger, which the app polls over IMAP every
+  5–15 minutes. History is loaded once from a Google Takeout export of that filter's label. The server
+  never holds Gmail access, but the app can't search Gmail when a new job is added.
 
 ### 6.3 Calendar
 
@@ -295,6 +308,8 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
   synced every 30–60 minutes, and can be reset in Google if it leaks.
 - **Optional:** the Calendar API with `calendar.readonly`. It is a "sensitive" scope, which is less onerous
   than Gmail's "restricted" one.
+- If Gmail's "Events from Gmail" setting is on, hotel reservations may already show up as calendar events.
+  Treat them as one more source for stays (§6.5) and deduplicate them against the booking email.
 
 ### 6.4 Matching engine
 
@@ -309,7 +324,90 @@ Matching uses deterministic, explainable scoring, not a black box:
    create a rule.
 4. **Below the confidence threshold** there is no suggestion, only the Inbox item.
 
-### 6.5 Optional AI extraction (later, opt-in)
+Hotel stays don't use this general scoring. They follow the night-by-night logic in §6.5.
+
+### 6.5 Hotel stays: business or personal?
+
+Hotel stays are the classic mixed-use expense. The same hotel can be a work trip one week and a weekend
+away the next, and a single stay can be both. The app builds one record per stay from every source, lines
+it up against your jobs night by night, and proposes a split for you to confirm.
+
+**Sources, merged into one stay record**
+
+| Source | What it gives | How it's read |
+|---|---|---|
+| Gmail booking emails | Hotel, address and postcode, check-in and check-out, guests, booking reference, price, amendments and cancellations | Narrow read-only searches (below). Parsers are tried in order: the schema.org `LodgingReservation` markup that most booking sites and hotel chains embed (the same markup Gmail uses for its booking cards); per-sender parsers for the providers you actually use; optional AI extraction (§6.6); manual entry as a last resort |
+| Google Calendar | Job dates, times and venue. Also hotel reservations, if "Events from Gmail" is on | ICS feed or Calendar API. Gmail-created events have the type `fromGmail` in the API; check whether they also appear in the iCal feed |
+| Bank transactions | What was actually paid, when, and in pounds | Merchant patterns (hotel chains, booking sites); amount matched against the booking; date matched against the booking date (prepaid) or check-out ± 3 days (pay at hotel) |
+| Jobs | Date range, venue postcode, client | Jobs section |
+
+**Gmail searches** run on a schedule, and again whenever a job is added or its dates change (searching
+around those dates). Starting queries, editable in Settings:
+
+```
+from:(booking.com OR expedia OR hotels.com OR airbnb OR premierinn OR travelodge OR ihg.com OR marriott OR hilton OR accor)
+subject:(booking OR reservation OR confirmation OR receipt) (hotel OR "check-in" OR "check in" OR stay)
+```
+
+When you confirm a stay from a new sender, that sender is added to the list. Only matching messages are
+fetched, and every one appears in the "what the app read" log.
+
+**One stay per booking.** Stays are keyed by provider and booking reference. Later emails (amendment,
+reminder, receipt, cancellation) update the same stay and keep its history. A stay without a reference is
+matched on hotel and dates.
+
+**Night-by-night classification.** For each night the app checks:
+
+1. **Job overlap.**
+   - A night between two working days (of the same job or of nearby jobs) is job-linked.
+   - The night *before* the first day counts if the job starts early (default: before 10:00) or the venue
+     is far from home (default: over 50 miles).
+   - The night *after* the last day counts if the job finishes late (default: after 21:00) or the venue is
+     far from home.
+   - All thresholds are settings.
+2. **Distance.** Straight-line distance from hotel to venue (within 30 miles by default supports
+   business) and from hotel to home (within 15 miles is flagged as unusual to claim).
+3. **Other signals.** These are shown but never decide a night on their own: a weekend or bank-holiday
+   night with no job, more than one guest (the extra-person cost may be personal), payment by a personal card.
+
+Each night gets *business*, *personal* or *needs review*, with its reasons. The stay is then all business,
+all personal, or mixed with a proposed split.
+
+**Splitting the cost.**
+- Use nightly rates from the booking where given; otherwise split evenly per night.
+- Taxes and fees follow pro rata, and the remainder penny goes to the personal part.
+- If several payments belong to one stay (deposit and balance), the split applies pro rata across them.
+- Foreign-currency stays use the pound amount from the bank. The booking currency is only used for matching.
+
+**Rules**
+
+- Stays are **never auto-confirmed**, even when every night matches. They always get a one-tap review,
+  because HMRC looks closely at these.
+- Extra personal nights are personal. Whether travel to and from a mainly-business trip is fully allowable
+  is the accountant's call; the app keeps the facts (nights, job, purpose) to support it.
+- **Who paid.** You (the normal case). The client directly: no expense, but kept on the job record. Or you,
+  recharged to the client: an expense, plus a prompt to add it to that job's invoice.
+- **Timing.** The business/personal decision follows the *stay* dates; the tax year and quarter follow the
+  *payment* date (cash basis). A May stay paid in March counts in March's tax year.
+- **Cancellations.** A cancelled stay expects a refund. If none arrives within 30 days, or a cancellation
+  charge appears, it goes to the Inbox.
+- **Category.** Business nights go to HMRC category 4, "Car, van and travel expenses" (sub-category
+  Accommodation). Card spend on meals in the same town during a business stay is suggested as Subsistence
+  for that job, and still reviewed.
+
+**Gap checks (both directions)**
+
+- Hotel payment but no booking email: ask for details or a receipt.
+- Booking email but no payment: the pay-at-hotel charge is still pending, the client paid, or a statement
+  is missing.
+- Job far from home with no stay found: ask "Did you stay overnight?" (likely a missing receipt).
+- Stay with no job nearby: proposed as personal unless you say otherwise.
+
+**Location data.** UK postcodes are geocoded with postcodes.io, which is free open data; only the postcode
+is sent. For no external calls at all, use a local copy of the ONS Postcode Directory instead. Results are
+cached in `places`.
+
+### 6.6 Optional AI extraction (later, opt-in)
 
 An LLM API can extract fields from receipt photos and PDF statements reliably. It sends financial
 documents to a third party, so it is off by default, needs consent per document, and every result must
@@ -331,6 +429,16 @@ pass a validation gate (balance check or amount match).
    - Encrypt backups to a public key whose private key is *not* on the server.
 4. **Data loss** (host failure, mistakes, ransomware): off-site, append-only backups.
 5. **Lost phone:** passkey, short sessions, remote session revoke.
+6. **Gmail access token stolen.** `gmail.readonly` technically allows reading the whole mailbox, even
+   though the app only searches for bookings and receipts. That makes the refresh token the most sensitive
+   secret in the app. Mitigations:
+   - Encrypt the token and never log it.
+   - Request no other Gmail scope.
+   - Use a dedicated Google Cloud project.
+   - Offer a one-click disconnect that revokes the token at Google.
+
+   If the shared-account risk in item 3 isn't acceptable, use the forwarding-mailbox alternative (§6.2),
+   so the server never holds Gmail access.
 
 ### 7.2 Controls
 
@@ -389,6 +497,11 @@ pass a validation gate (balance check or amount match).
   | Locked period edited | Lock guard plus audit | Attempted edit is rejected and logged |
   | Invoice number gap or reuse | Unique sequence; no delete | Concurrency test |
   | Silent sync failure | Heartbeat; "last synced" shown on screen | Disable cron in staging and expect an alert |
+  | Personal hotel night claimed as business | Night-by-night classification; stays never auto-confirmed | 3-night stay around a 1-day job |
+  | One stay counted twice (confirmation, reminder and receipt emails) | One stay per provider and booking reference | Three emails for one booking |
+  | Cancelled booking counted as an expense | Cancellation status; refund matched and netted | Cancel-and-refund fixture |
+  | Prepaid stay in the wrong tax year | Tax year from payment date; purpose from stay dates | March payment for a May stay |
+  | Rechargeable hotel left off the invoice | Rechargeable flag prompts an invoice line | Job closed with an uninvoiced recharge |
 
 - **ALCOA+ audit trail** (attributable, legible, contemporaneous, original, accurate). Every change records
   who, when, what and why, in a hash chain so tampering can be detected. The chain is verified nightly.
@@ -432,9 +545,10 @@ pass a validation gate (balance check or amount match).
 ### 9.1 Navigation (bottom bar on mobile, sidebar on desktop)
 
 1. **Inbox** (the default screen): everything that needs a decision. That means unreviewed transactions,
-   missing receipts, possible duplicates, unmatched payments, overdue invoices and sync problems.
+   hotel stays to confirm, missing receipts, possible duplicates, unmatched payments, overdue invoices and
+   sync problems.
 2. **Money:** accounts, transactions, imports.
-3. **Jobs:** clients, jobs, job P&L, mileage.
+3. **Jobs:** clients, jobs, job P&L, mileage, and a year timeline of jobs and hotel stays.
 4. **Invoices:** create, send, track, credit notes.
 5. **Tax:** quarters, tax-year summary, estimate and set-aside, exports.
 
@@ -451,6 +565,9 @@ new invoice.
   - iPhone: swipe right to confirm, swipe left for personal.
 - **Capture.** Two taps from the home screen to the camera. The photo is saved on the device first and
   uploaded in the background. If offline, the upload is retried the next time the app opens.
+- **Confirm a hotel stay.** The card shows a timeline: job days as bars, and hotel nights as blocks
+  labelled business, personal or review. It also shows the distance to the venue and to home, and an icon
+  for each source (email, calendar, bank). Tap "Accept split", or tap a night to change it.
 - **Close the quarter.** A checklist screen:
   1. All transactions are reconciled.
   2. Balances match the statements.
@@ -479,10 +596,10 @@ new invoice.
 | 0. Decide and verify (days) | Answer §11; verify the remaining hosting items; create the site and database; CI/CD with an atomic deploy of a hello-world app; backups and heartbeat; hazard log v1 | CI deploys the hello page; a restore drill passes |
 | 1. Walking skeleton | Login (passkey + TOTP); audit log; accounts; CSV import for the main bank with balance check and dedupe; Inbox review; HMRC categories; business, personal and transfer types; quarterly summary with CSV export | The 6 Oct–5 Jan quarter can be done in the app (deadline 7 Feb 2027) |
 | 2. Ledger depth | Splits and business-use %; rules; duplicates UI; period close and lock; more bank profiles; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation |
-| 3. Jobs | Clients; jobs; ICS calendar sync; job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
+| 3. Jobs and stays | Clients; jobs; calendar sync; read-only Gmail connection; booking-email extraction; hotel stays classified night by night; gap checks; job-matching suggestions; mileage and vehicles; job P&L | Every hotel payment is linked to a stay and proposed as business, personal or split, with reasons |
 | 4. Invoicing | Numbering; templates; PDF; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
 | 5. Tax and reports | Tax-year summary; SA103 mapping; trading-allowance comparison; tax estimate and set-aside; P&L; accountant pack (Excel/CSV/PDF plus receipts zip) | The accountant can work from the export alone |
-| 6. Email receipts | Forwarding mailbox over IMAP; attachment extraction; matching; Gmail API as an option | Forwarded receipts attach themselves |
+| 6. Other email receipts | Receipts and invoices from known senders via the Gmail connection (or the forwarding mailbox); attachment extraction; matching | Emailed receipts attach themselves |
 | 7. Automation and extras | Recurring expenses; smarter rules; PDF statements; optional AI extraction; optional Open Banking; optional direct MTD API | No fixed exit criterion |
 
 ---
@@ -494,11 +611,17 @@ new invoice.
    in April 2027 or 2028.
 2. Are you **VAT-registered**, or likely to be?
 3. Which **banks and cards** do you use, and which export formats do they offer?
-4. Is your **Gmail** a personal account or Google Workspace? Workspace allows an "Internal" OAuth app.
+4. **Gmail access.** Is it a personal account or Google Workspace? (Workspace allows an "Internal" OAuth
+   app.) Are you happy for the app to hold read-only Gmail access, which is recommended for hotel checks,
+   or would you rather use the forwarding mailbox?
 5. Do you have an **accountant**, and which software do they use? This shapes the export format and the MTD route.
 6. Are you a **Scottish taxpayer**? Scotland has different income-tax bands.
 7. **Mileage:** do you use your own car, and do you claim simplified rates or actual costs?
 8. Are you comfortable keeping this app on the **same hosting account** as your other sites, or should it get its own?
+9. Your **home postcode**, and how far away a job usually is before you stay overnight. This sets the
+   "far from home" default. The postcode goes into the app's settings, not this document.
+10. Which **booking sites and hotel chains** do you mostly use? These get parsers first.
+11. Do **clients** ever book hotels for you, or reimburse you for them?
 
 ---
 
