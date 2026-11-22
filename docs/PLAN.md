@@ -181,10 +181,10 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `recharges` | Expense or trip items being claimed back from a client: client, job, status (`to_claim`, `claimed`, `reimbursed`, `not_reimbursed`), claim method (invoice or client expense form), linked reimbursement payment |
 | `invoices`, `invoice_lines`, `payments`, `credit_notes` | `payments` links an invoice to bank transactions; partial payments allowed |
 | `vehicles`, `mileage_trips` | Vehicle claim method (simplified mileage or actual costs, fixed per vehicle); trips with date, from/to, miles, job and a snapshot of the rate used |
-| `periods` | Tax years and quarters; status `open`/`closed`/`submitted`; lock metadata |
+| `periods` | Tax years and quarters. Tax-year status: `outstanding`, `in_progress`, `ready_to_file`, `filed` (date and HMRC reference), `amending`. Quarter status: `open`, `closed`, `submitted`. Lock metadata |
 | `rules` | Supplier/description pattern mapped to category, job and business-use %; created from your confirmations |
 | `audit_events` | Append-only: when, actor, action, entity, before/after JSON, reason, `prev_hash`, `hash` |
-| `tax_parameters` | Rates and thresholds per tax year, each with a source URL and effective dates |
+| `tax_parameters` | Rates, thresholds and rules per tax year (for example, whether cash basis is the default and whether Class 2 NIC applies), each with a source URL and effective dates |
 | `guidance` | Plain-English notes for each judgement call (mileage, travel, use of home, recharges…), each with a GOV.UK link and a "last checked" date |
 | `secrets` | Encrypted credentials: IMAP password, ICS URL, OAuth tokens |
 
@@ -215,13 +215,30 @@ on the same day both survive, while the same coffee appearing in two overlapping
 
 ## 5. UK accounting and tax rules
 
-### 5.1 Catching up: the 2024-25 and 2025-26 returns
+### 5.1 Catching up: any outstanding tax year
 
-The owner has been self-employed since the early 2000s, has a UTR and has filed before. Only the
-2024-25 and 2025-26 returns are outstanding, and there is no accountant. The app's first job is to clear
-that backlog efficiently; after that, it keeps the books up to date as you go.
+The owner has been self-employed since the early 2000s, has a UTR and has filed before, and there is no
+accountant. The app's first job is to clear the backlog efficiently; after that, it keeps the books up to
+date as you go.
 
-**Deadlines for online returns**
+**Any year, with that year's own rules**
+
+- **Catch-up works on any tax year,** past or current. Mark a year as outstanding and it gets its own
+  catch-up flow. Several years can be in progress at once. The app suggests working oldest first, because
+  the oldest year's penalties grow fastest.
+- **Each transaction belongs to exactly one tax year by its date,** so a CSV that spans 5 April is split
+  across the two years automatically.
+- **Each year uses its own rules,** taken from `tax_parameters`, not today's rules. For example, cash
+  basis became the default only from 2024-25 (earlier years used accruals unless you elected cash basis);
+  Class 2 National Insurance applied up to 2023-24; and 2023-24 was the basis-period transition year
+  (relevant only if your accounting year doesn't end between 31 March and 5 April). If a year's rates
+  aren't loaded, the app still produces its return figures but won't estimate the tax until they are.
+- **A filed year can be reopened to prepare an amendment.** HMRC allows amendments up to 12 months after
+  the 31 January deadline. The original figures are kept alongside the amended ones.
+- **Year status:** outstanding, then in progress, ready to file, filed (with date and HMRC reference), and
+  amending if reopened.
+
+**Your outstanding years now** (deadlines for online returns)
 
 | Tax year | Return and payment due | Position on 22 Nov 2026 |
 |---|---|---|
@@ -248,8 +265,8 @@ excuse. If HMRC has sent an estimated bill (a "determination") for 2024-25, fili
   found in your bank data and recorded against their tax year; you can also enter them by hand. Your HMRC
   online account shows the authoritative balance.
 - **Checks before you file:** every account has data for every month (no gaps), transfers and card-bill
-  payments are paired, nothing is undecided, and the figures are compared with your last filed return
-  (2023-24, entered once), with big changes flagged.
+  payments are paired, nothing is undecided, and the figures are compared with the previous year (from
+  the app, or that year's filed figures entered once), with big changes flagged.
 
 HMRC's own online calculation is the authority; the app's estimate is a cross-check. The app doesn't file returns.
 
@@ -811,6 +828,8 @@ the airport.
   | Tax bill larger than expected | Bill preview, including payments on account already made and due | Year with a bill over £1,000 and part-paid payments on account |
   | Payment to HMRC counted as a business expense | HMRC payment pattern maps to `tax_payment`, recorded against its tax year | Starling payment to HMRC Self Assessment |
   | Missing month of statements in a catch-up year | Coverage grid; balance continuity between statements | Year with one month missing |
+  | Older year worked out with today's rules | Year-specific rules in `tax_parameters`; no tax estimate without them | 2022-23 fixture |
+  | Transaction counted in two tax years | Tax year derived from the posting date only | CSV spanning 5–6 April |
   | Driven job with no mileage claimed | "How did you get there?" gap check | Far-away job with no travel items |
   | Automation overwrites a decision you made | `manual` flag; re-runs only add suggestions | Re-run rules and AI over hand-edited items: nothing changes |
   | AI names a job or category that doesn't exist | Schema validation against the candidate list; invalid output discarded | Malformed and out-of-list responses |
@@ -875,7 +894,7 @@ new invoice.
 
 ### 9.2 Key flows
 
-- **Catch-up mode (one tax year at a time, 2024-25 first).** A guided flow with a progress bar per year
+- **Catch-up mode (any outstanding tax year; oldest first is suggested).** A guided flow with a progress bar per year
   ("2024-25: 82% of value decided, 140 items left"):
   1. **Import.** Drop in every CSV for the year. A coverage grid shows each account month by month: green
      when the balance carries over, red where a statement is missing.
@@ -884,7 +903,7 @@ new invoice.
      A few dozen decisions usually settle most of the year's value.
   3. **The rest, one by one.** Each item shows that day's calendar entries (and, once connected, matching
      emails and the AI suggestion), with keyboard and swipe shortcuts.
-  4. **Checks.** Coverage complete, transfers paired, nothing undecided, comparison with the last filed year.
+  4. **Checks.** Coverage complete, transfers paired, nothing undecided, comparison with the previous year.
   5. **Return figures.** The box-by-box summary and bill preview; then lock the year.
 - **Monthly review (target under 10 minutes).** Import a statement. The Inbox shows each item as a card
   with the best suggestion pre-filled. Confirm it (tap or Enter), change it (category chips or number
@@ -938,7 +957,7 @@ new invoice.
 | Phase | Scope | Done when |
 |---|---|---|
 | 0. Decide and verify (days) | Confirm the setup defaults in §11; verify the remaining hosting items; create the site and database; CI/CD with an atomic deploy of a hello-world app; backups and heartbeat; hazard log v1 | CI deploys the hello page; a restore drill passes |
-| 1. Catch-up returns (figures ready by mid-January 2027) | Login (passkey + TOTP); audit log; accounts; CSV import for Starling, Amex and Capital One with dedupe, balance or statement checks and automatic card-bill transfer pairing; Inbox and Review all with filters and bulk edit, including "decide for all transactions from this merchant"; HMRC categories; business, personal and transfer types; calendar context on each item (read-only iCal feed showing what was on that day); catch-up mode with coverage grid and big-groups-first review; HMRC payments recorded per tax year; return summary, tax estimate, bill preview and pre-filing checks per tax year; spreadsheet export. Stretch goal if time allows (otherwise phase 5): AI suggestions for category and business/personal | The 2024-25 and 2025-26 figures can be typed into HMRC online straight from the app |
+| 1. Catch-up returns (figures ready by mid-January 2027) | Login (passkey + TOTP); audit log; accounts; CSV import for Starling, Amex and Capital One with dedupe, balance or statement checks and automatic card-bill transfer pairing; Inbox and Review all with filters and bulk edit, including "decide for all transactions from this merchant"; HMRC categories; business, personal and transfer types; calendar context on each item (read-only iCal feed showing what was on that day); catch-up mode with coverage grid and big-groups-first review; HMRC payments recorded per tax year; return summary, tax estimate, bill preview and pre-filing checks per tax year; spreadsheet export. Stretch goal if time allows (otherwise phase 5): AI suggestions for category and business/personal | Any outstanding year's figures can be typed into HMRC online straight from the app, starting with 2024-25 and 2025-26 |
 | 2. Ledger depth | Per-item history; splits and business-use %; rules (auto-confirm off by default); duplicates UI; period close and lock; quarterly MTD summary and export; column-mapping wizard for new accounts; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation, ready for MTD if it applies from April 2027 |
 | 3. Jobs | Clients; jobs; calendar sync; manual job allocation (from an item, the review table or the job page); job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
 | 4. Travel | Read-only Gmail connection; booking and travel email extraction for your providers; hotel stays night by night; journeys; client-booked flight itineraries; rechargeable items and claim packs; TfL charges matched by day (journey-history import optional); trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
@@ -963,7 +982,8 @@ all can be changed later in Settings.
 | Scottish taxpayer | No |
 | Vehicles and mileage method | Added in setup; simplified mileage unless you choose actual costs |
 | Home postcode | Entered in setup (stored in settings only) |
-| Last filed return (2023-24) figures | Entered in setup, for the year-on-year check |
+| Outstanding tax years | Chosen in setup (currently 2024-25 and 2025-26); more can be added at any time |
+| Last filed year's figures | Entered in setup for the year before the oldest outstanding one, for the year-on-year check |
 | AI suggestions | On (owner agreed) |
 | AI extraction | On demand: a "Read with AI" button on each document |
 | Hosting | Same hosting account as the other sites, with the §7 mitigations; can move later |
@@ -972,6 +992,7 @@ all can be changed later in Settings.
 
 - Self-employed since the early 2000s, with a UTR. Only the 2024-25 and 2025-26 returns are outstanding.
 - Goal: a slick app that clears the backlog efficiently, then keeps things up to date going forward.
+- Catch-up must work on any outstanding year, not only the current two.
 - VAT: not registered.
 - MTD: turnover is under £50,000, so not in scope for 2026-27. It could apply from April 2027 (if 2025-26
   turnover is over £30,000) or April 2028 (over £20,000); the app checks this from the filed figures.
