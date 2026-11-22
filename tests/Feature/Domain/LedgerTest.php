@@ -122,4 +122,17 @@ class LedgerTest extends TestCase
         $this->assertFalse($result['ok']);
         $this->assertSame($last->id, $result['broken_at']);
     }
+
+    public function test_car_hire_is_suggested_as_a_business_travel_expense_for_you_to_confirm(): void
+    {
+        $account = Account::where('name', 'Starling Business')->first();
+        $path = storage_path('framework/testing-hire.csv');
+        file_put_contents($path, "Date,Counter Party,Reference,Type,Amount (GBP),Balance (GBP),Spending Category,Notes\n20/04/2025,Enterprise Rent-A-Car,ENTERPRISE RENT-A-CAR,CARD PAYMENT,-142.50,2235.62,TRANSPORT,\n");
+        app(Importer::class)->commit($account, $path, 'hire.csv', ProfileDetector::detect(CsvReader::read($path)['headers']));
+        @unlink($path);
+
+        $hire = BankTransaction::where('description', 'like', '%ENTERPRISE%')->first();
+        $this->assertSame('travel_car_hire', $hire->allocations()->first()->category->code);
+        $this->assertSame('suggested', $hire->review_status);
+    }
 }

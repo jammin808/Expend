@@ -19,6 +19,8 @@ final class Suggester
 
     private const PENALTY_PATTERN = '/\bPCN\b|PENALTY CHARGE|PARKING FINE/i';
 
+    private const CAR_HIRE_PATTERN = '/\b(ENTERPRISE RENT|ENTERPRISE CAR|HERTZ|EUROPCAR|AVIS|SIXT|BUDGET RENT|THRIFTY|ZIPCAR|ENTERPRISE CLUB|GREEN MOTION|ARNOLD CLARK RENTAL|NATIONAL CAR|ALAMO|DOLLAR RENT|CAR HIRE|CAR RENTAL|RENTALCARS)\b/i';
+
     public function __construct(private AllocationWriter $writer) {}
 
     /** @param Collection<int, BankTransaction> $transactions */
@@ -26,6 +28,7 @@ final class Suggester
     {
         $rules = MerchantRule::query()->get()->keyBy('merchant_key');
         $penalty = Category::query()->where('code', 'travel_penalties')->value('id');
+        $carHire = Category::query()->where('code', 'travel_car_hire')->value('id');
         $made = 0;
 
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label')->all();
@@ -44,6 +47,8 @@ final class Suggester
                 $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'tax_payment'), 'matcher', false, 'Looks like a payment to HMRC (personal tax, not a business expense)');
             } elseif ($tx->amount_pence < 0 && $penalty && preg_match(self::PENALTY_PATTERN, $text)) {
                 $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'business_expense', $penalty), 'matcher', false, 'Looks like a fine or penalty charge, which is never allowable');
+            } elseif ($tx->amount_pence < 0 && $carHire && preg_match(self::CAR_HIRE_PATTERN, $text)) {
+                $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'business_expense', $carHire), 'matcher', false, 'Looks like car hire, usually a business expense. Check it was for work, and link the job');
             }
         }
 
