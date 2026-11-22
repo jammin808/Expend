@@ -191,7 +191,8 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `settings` | Home postcode, overnight-stay distance bands (default 12 and 40 miles), early-start and late-finish times, hotel and travel sender lists |
 | `recharges` | Expense or trip items being claimed back from a client: client, job, status (`to_claim`, `claimed`, `reimbursed`, `not_reimbursed`), claim method (invoice or client expense form), linked reimbursement payment |
 | `invoices`, `invoice_lines`, `payments`, `credit_notes` | `payments` links an invoice to bank transactions; partial payments allowed |
-| `vehicles`, `mileage_trips` | Vehicle claim method (simplified mileage or actual costs, fixed per vehicle); trips with date, from/to, miles, job and a snapshot of the rate used |
+| `vehicles`, `mileage_trips` | Vehicle claim method (simplified mileage or actual costs, fixed per vehicle); trips with date, from/to, miles, job and a snapshot of the rate used. A trip's claim is a travel expense for its job |
+| `exchange_rates` | Cached HMRC monthly rates: currency, month, units per £1, source; plus manual overrides |
 | `periods` | Tax years and quarters. Tax-year status: `outstanding`, `in_progress`, `ready_to_file`, `filed` (date and HMRC reference), `amending`. Quarter status: `open`, `closed`, `submitted`. Lock metadata |
 | `rules` | Supplier/description pattern mapped to category, job and business-use %; created from your confirmations |
 | `audit_events` | Append-only: when, actor, action, entity, before/after JSON, reason, `prev_hash`, `hash` |
@@ -201,7 +202,9 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 
 Invariants, enforced in both code and database:
 
-- `amount_pence` is a non-zero integer. Currency is GBP in v1; the column exists for later.
+- `amount_pence` is a non-zero integer in pounds sterling. Where the original was in another currency,
+  `original_amount_minor`, `original_currency`, `fx_rate`, `fx_rate_date` and `fx_source` are stored
+  alongside it.
 - A transaction is **reconciled** only when its confirmed allocations sum exactly to its amount.
 - Apportionment uses integer maths, and the remainder penny goes to the personal portion, so parts always
   sum exactly. Covered by a property-based test.
@@ -347,9 +350,25 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
 - **Cash basis** is the default since 2024-25; accruals is an option. Store invoice dates and payment dates
   separately so either view can be produced.
 - **Trading allowance** (£1,000) versus actual expenses: show which is better in the tax summary.
-- **Mileage:** simplified rates are 45p a mile for the first 10,000 business miles and 25p after that
-  (cars and vans), and 24p for motorcycles. Each vehicle uses simplified mileage *or* actual costs, never
-  both. Warn if fuel for a mileage-method vehicle is categorised as business.
+- **Mileage:** simplified flat rates for cars and goods vehicles are **55p a mile for the first 10,000
+  business miles from 2026-27 (45p before 6 April 2026)**, then 25p; motorcycles 24p. Rates come from
+  `tax_parameters` per tax year. The 10,000-mile threshold is applied across all flat-rate cars and vans in
+  the tax year (the cautious reading). Mileage for a job is a travel expense for that job (HMRC category 4),
+  exactly like train, taxi or TfL costs, and appears in the job's trip and travel totals. Each vehicle uses
+  simplified mileage *or* actual costs, never both, and must keep the flat rate once chosen. Warn if fuel
+  for a mileage-method vehicle is categorised as business.
+- **Purchases with no job:** a business expense doesn't need a job. "General business" is a first-class
+  choice for equipment, software, phone, insurance and similar overheads; the app never nags about them.
+  Equipment is flagged as a capital item (deductible under cash basis except cars), with guidance.
+- **Other currencies (USD, EUR and others):** every amount keeps its original currency and amount, plus the
+  pound amount used for tax, the rate, the rate's date and its source.
+  - When money moved through a sterling account, the bank's pound amount is the actual cost and is used.
+  - Otherwise (a receipt or invoice only in another currency, cash spent abroad), the app looks up HMRC's
+    monthly exchange rate for that date (published as CSV on the Trade Tariff service and cached
+    locally), unless the document itself gives a sterling conversion. You can override any rate, with a
+    reason.
+  - Foreign-currency invoices are recorded in their currency; under cash basis the income is the pounds
+    actually received.
 - **Use of home:** simplified flat rate by hours worked per month (£10 for 25–50 hours, £18 for 51–100,
   £26 for 101 or more), or apportioned actual costs.
 - **Mixed-use expenses:** business-use % per allocation or per rule (for example, phone at 60%).
