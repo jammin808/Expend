@@ -20,6 +20,7 @@ Status: draft for the code architect. Revised 22 Nov 2026 from the owner's v1 pl
 | Receipts | From email only | Phone camera capture is a primary input | Most receipts are paper or on-screen at the moment of spend |
 | Bank formats | CSV, XLSX, PDF from the start | CSV/OFX first with saved per-bank profiles; XLSX next; PDF last, gated by a balance check | PDF parsing is the least reliable part, and the host cannot run `pdftotext` |
 | PDF generation | Unspecified | dompdf (pure PHP) | `exec`/`shell_exec` are disabled on the host |
+| Client-booked travel and recharges | Not covered | Client-booked flights and hotels carry no cost but anchor matching. Costs you pay can be marked rechargeable and tracked to reimbursement, with a claim pack | Clients book some travel, and some costs are claimed back |
 | Control | "You approve uncertain classifications" | You have the final say on everything. Review every item, allocate to jobs by hand, get rule/matching/AI suggestions, and override any decision at any time; automation never overwrites your edits | The owner's requirement: a final manual override in every case |
 | Navigation | 8 sections | 5 sections: Inbox, Money, Jobs, Invoices, Tax (plus Settings) | Email and Calendar are sources of data, not places you go |
 | Phasing | Reporting in phase 6 | Walking skeleton (import, review, quarterly summary) in phase 1 | Tax deadlines drive the value; next MTD deadline is 7 Feb 2027 |
@@ -176,7 +177,8 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `journeys` | One per journey or charge: mode (`rideshare`, `taxi`, `rail`, `tfl`, `coach`, `parking`, `toll`, `road_charge`, `fuel`, `flight`, `car_hire`), provider, travel date and time, from/to places, booking reference, purchase date, `amount_pence`, status (`booked`, `travelled`, `cancelled`, `refunded`), paid by, linked job, classification, reasons, confirmed |
 | `journey_sources` | Links a journey to Gmail message IDs, bank transactions, TfL journey-history rows and calendar events |
 | `merchant_patterns` | Bank-description pattern mapped to provider and type (hotel, ride, rail, TfL, food delivery, parking, penalty charge…). Seeded, editable, refined from your statements |
-| `settings` | Home postcode, travel thresholds (far from home, early start, late finish), hotel and travel sender lists |
+| `settings` | Home postcode, overnight-stay distance bands (default 12 and 40 miles), early-start and late-finish times, hotel and travel sender lists |
+| `recharges` | Expense or trip items being claimed back from a client: client, job, status (`to_claim`, `claimed`, `reimbursed`, `not_reimbursed`), claim method (invoice or client expense form), linked reimbursement payment |
 | `invoices`, `invoice_lines`, `payments`, `credit_notes` | `payments` links an invoice to bank transactions; partial payments allowed |
 | `vehicles`, `mileage_trips` | Vehicle claim method (simplified mileage or actual costs, fixed per vehicle); trips with date, from/to, miles, job and a snapshot of the rate used |
 | `periods` | Tax years and quarters; status `open`/`closed`/`submitted`; lock metadata |
@@ -405,16 +407,23 @@ matched on hotel and dates.
 
 **Night-by-night classification.** For each night the app checks:
 
-1. **Job overlap.**
-   - A night between two working days (of the same job or of nearby jobs) is job-linked.
-   - The night *before* the first day counts if the job starts early (default: before 10:00) or the venue
-     is far from home (default: over 50 miles).
-   - The night *after* the last day counts if the job finishes late (default: after 21:00) or the venue is
-     far from home.
-   - All thresholds are settings.
-2. **Distance.** Straight-line distance from hotel to venue (within 30 miles by default supports
-   business) and from hotel to home (within 15 miles is flagged as unusual to claim).
-3. **Other signals.** These are shown but never decide a night on their own: a weekend or bank-holiday
+1. **Job overlap.** A night between two working days (of the same job or of nearby jobs) is job-linked.
+2. **Night before or after: distance from home plus the job's times.** Whether you stay over depends on
+   how far away the venue is and when you start or finish (traffic included), so the rule combines both:
+
+   | Venue distance from home | Night before the first day | Night after the last day |
+   |---|---|---|
+   | Under 12 miles | Needs review: a stay this close is unusual to claim | Needs review |
+   | 12–40 miles | Business if the job starts early (default: before 08:00); otherwise needs review | Business if it finishes late (default: after 22:00); otherwise needs review |
+   | Over 40 miles | Business | Business |
+
+   In the 12–40 mile band the app never proposes *personal* just because the times don't fit, because
+   traffic can justify a stay; it asks instead. When you confirm, a reason chip ("early start", "late
+   finish", "traffic", "client asked") is saved with the decision for the audit trail. Distances are
+   straight-line, the bands and times are settings, and start and finish times come from the job or its
+   calendar event.
+3. **Hotel location.** A hotel within 30 miles of the venue (default) supports business.
+4. **Other signals.** These are shown but never decide a night on their own: a weekend or bank-holiday
    night with no job, more than one guest (the extra-person cost may be personal), payment by a personal card.
 
 Each night gets *business*, *personal* or *needs review*, with its reasons. The stay is then all business,
@@ -440,7 +449,7 @@ and the stay goes to review.
     nothing to declare; they're kept on the job record only.
   - Anything you pay yourself during a client-booked stay (parking, an evening meal, an upgrade) is still
     your expense. It's linked to the stay and reviewed like anything else.
-  - A third option, "you paid, recharged to the client", exists but is off by default.
+  - If you pay and then claim the cost back from the client, it's a recharge (§6.9).
 - **Timing.** The business/personal decision follows the *stay* dates; the tax year and quarter follow the
   *payment* date (cash basis). A May stay paid in March counts in March's tax year.
 - **Cancellations.** A cancelled stay expects a refund. If none arrives within 30 days, or a cancellation
@@ -486,14 +495,25 @@ Stays and journeys use the same window.
 | Ride-hailing: Uber, Bolt, FREENOW | `UBER *TRIP`, `BOLT.EU` | Trip receipt with pick-up and drop-off address and time | `UBER *EATS` is food, not travel (see Meals below) |
 | Taxis and minicabs | Firm name, or a card-terminal name that's hard to recognise | Sometimes | Unknown merchants on a job day near the venue are suggested as taxi, for review |
 | Rail: Trainline and train operators | `TRAINLINE`, operator name | E-ticket or receipt: origin, destination, travel date and time, railcard | Tickets are often bought weeks ahead. Refunds and Delay Repay are matched back to the journey |
-| TfL: Tube, bus, Overground, Elizabeth line | `TFL TRAVEL CH`: one charge per day, or several days combined | None | Optional: import the journey history from your TfL account to see each journey behind a charge |
+| TfL: Tube, bus, Overground, Elizabeth line | `TFL TRAVEL CH`: one charge per day, or several days combined | None | Paid by contactless debit card, with no TfL account. Matched by day (see "TfL without an account" below) |
 | Coach | National Express, Megabus | Ticket email | |
 | Parking, tolls, congestion and ULEZ charges | NCP, JustPark, RingGo, PayByPhone, Dartford Crossing, TfL road charges | Sometimes | Usually claimable alongside simplified mileage (accountant confirms) |
 | Parking fines and penalty charges | Council or operator name, "PCN" | Sometimes | **Never allowable.** Always classed as disallowable, with the reason shown |
 | Fuel | Fuel-station names | None | Only for a vehicle on actual costs. With simplified mileage, fuel is personal and the app offers to log the mileage trip instead |
-| Flights, car hire | Airline or hire company | Booking email | Later; same matching |
+| Flights, car hire | Airline or hire company | Booking or itinerary email | Flights are usually booked by the client, so they carry no cost (§6.9). Flight times anchor taxi and train matching |
 
 The bank descriptions are examples. Seed `merchant_patterns` with them, then refine from your real statements.
+
+**TfL without an account.** You pay by contactless debit card, so statements show TfL charges but not the
+journeys behind them.
+- Each charge is assigned to its travel date: the card transaction date if your bank's export includes it,
+  otherwise the day before it was posted.
+- A charge on a job day, when the job or its travel is in London, is proposed as business. A charge on a
+  day with no job is proposed as personal.
+- Two cases go to review: a charge much larger than your usual daily TfL spend (it may cover several
+  days), and a job day where you may also have made personal journeys. You can split the amount.
+- Optional: registering the same debit card on the TfL website lets you download journey history. The app
+  can import it to show each journey behind a charge.
 
 **Gmail searches** add travel senders, for example:
 
@@ -514,7 +534,8 @@ during the build. Uber's ride and Eats receipts come from the same sender, so th
 3. **The same place again and again.** If you travel to one venue very often, HMRC may treat it as
    ordinary commuting rather than business travel. The app flags frequently visited venues for the
    accountant to decide.
-4. **Who paid.** As with hotels, travel a client books for you carries no expense.
+4. **Who paid.** As with hotels, travel a client books for you carries no expense. Costs you pay yourself
+   may be rechargeable to the client (§6.9).
 
 **Timing and refunds.** As with hotels, the business purpose follows the travel date and the tax year
 follows the payment date. A ticket bought in March for an April trip counts in March's tax year. Refunds,
@@ -590,6 +611,31 @@ or reject like any other.
   "show only": its suggestions appear but nothing is pre-filled.
 
 Extraction results also pass the validation gates in §6.1 and §6.5 (balance check, amount match).
+
+### 6.9 Client-booked travel and recharges
+
+**Client-booked travel.** Clients sometimes book transport for you, mostly flights (and some hotels, §6.5).
+- Itineraries arrive by email from the client or their travel agent. The app reads them (schema.org
+  `FlightReservation` markup first, then per-sender parsers) and adds them to the job's trip at no cost.
+- Flight times then anchor the trip. A taxi to the airport before departure, or a train after landing, is
+  matched to the job with the flight as its reason ("flight departs 07:10").
+- Because the client paid, the flight carries no expense and nothing to declare.
+
+**Recharging costs to a client.** You can sometimes claim back costs you paid yourself, such as a taxi to
+the airport.
+- Any expense, or a whole trip, can be marked **rechargeable to the client**. This is never assumed. The
+  app only suggests it when that client has reimbursed similar items before, or booked the job's flights.
+- Each recharge moves through *to claim*, then *claimed* (added to an invoice, or sent through the
+  client's own expense process), then either *reimbursed* (the incoming payment is matched) or *not
+  reimbursed* (it stays an ordinary business expense).
+- **Claim pack:** for a client or job, a list of dates, amounts and reasons, plus the receipt images as one
+  PDF, ready for the client's expense form.
+- Outstanding recharges are listed per client with their age, and go to the Inbox once older than a set
+  number of days (default: 30).
+- **Tax treatment.** By default the cost is a business expense and the reimbursement is business income,
+  so profit doesn't change. The reimbursement still counts towards turnover, which is what the MTD and VAT
+  thresholds measure. The accountant confirms whether any items should be treated differently (for
+  example, as disbursements).
 
 ---
 
@@ -690,6 +736,9 @@ Extraction results also pass the validation gates in §6.1 and §6.5 (balance ch
   | AI names a job or category that doesn't exist | Schema validation against the candidate list; invalid output discarded | Malformed and out-of-list responses |
   | AI unavailable or over budget | Suggestions are optional; the manual flow is unaffected | API errors; spending cap reached |
   | Auto-confirmed items never looked at | Auto-confirm off by default; quarter sign-off lists them | Quarter close with rule-confirmed items |
+  | Reimbursed recharge missing from income | Reimbursement matched to its recharge items and recorded as income | Recharge claimed, then paid |
+  | Recharge never claimed | Outstanding-recharges list and Inbox reminder | Recharge older than 30 days |
+  | Multi-day TfL charge put on one day | Unusually large charges go to review | Charge covering three days |
 
 - **ALCOA+ audit trail** (attributable, legible, contemporaneous, original, accurate). Every change records
   who, when, what and why, in a hash chain so tampering can be detected. The chain is verified nightly.
@@ -801,9 +850,9 @@ new invoice.
 | 1. Walking skeleton | Login (passkey + TOTP); audit log; accounts; CSV import for the main bank with balance check and dedupe; Inbox review; HMRC categories; business, personal and transfer types; quarterly summary with CSV export | The 6 Oct–5 Jan quarter can be done in the app (deadline 7 Feb 2027) |
 | 2. Ledger depth | Review all table with filters, bulk edit and per-item history; splits and business-use %; rules (auto-confirm off by default); duplicates UI; period close and lock; more bank profiles; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation |
 | 3. Jobs | Clients; jobs; calendar sync; manual job allocation (from an item, the review table or the job page); job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
-| 4. Travel | Read-only Gmail connection; booking and travel email extraction for your providers; hotel stays night by night; journeys; optional TfL journey-history import; trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
+| 4. Travel | Read-only Gmail connection; booking and travel email extraction for your providers; hotel stays night by night; journeys; client-booked flight itineraries; rechargeable items and claim packs; TfL charges matched by day (journey-history import optional); trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
 | 5. AI assistance (opt-in) | AI suggestions for items rules and matching can't settle; AI extraction for receipts, booking emails and PDFs; request log, spending cap, acceptance tracking and test set | AI suggestions appear with reasons, never auto-confirm, and their acceptance rate is visible |
-| 6. Invoicing | Numbering; templates; PDF; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
+| 6. Invoicing | Numbering; templates; PDF; recharges as invoice lines; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
 | 7. Tax and reports | Tax-year summary; SA103 mapping; trading-allowance comparison; tax estimate and set-aside; P&L; accountant pack (Excel/CSV/PDF plus receipts zip) | The accountant can work from the export alone |
 | 8. Other email receipts | Receipts and invoices from known senders via the Gmail connection (or the forwarding mailbox); attachment extraction; matching | Emailed receipts attach themselves |
 | 9. Automation and extras | Recurring expenses; smarter rules; PDF statements; optional Open Banking; optional direct MTD API | No fixed exit criterion |
@@ -824,11 +873,8 @@ new invoice.
 6. Are you a **Scottish taxpayer**? Scotland has different income-tax bands.
 7. **Mileage:** do you use your own car, and do you claim simplified rates or actual costs?
 8. Are you comfortable keeping this app on the **same hosting account** as your other sites, or should it get its own?
-9. Your **home postcode**, and how far away a job usually is before you stay overnight (default: 50
-   miles). This sets the "far from home" rule. The postcode goes into the app's settings, not this document.
-10. Do clients also book **trains or taxis** for you, for example through a travel agent or a business Uber account?
-11. Is your **TfL** travel on a contactless card registered to a TfL account? If so, its journey history can be imported.
-12. Are you happy for **AI suggestions** to send minimised item details (date, amount, bank description,
+9. Your **home postcode**. It goes into the app's settings, not this document.
+10. Are you happy for **AI suggestions** to send minimised item details (date, amount, bank description,
     candidate jobs) to the Claude API? Both AI switches stay off until you turn them on.
 
 **Answered (22 Nov 2026)**
@@ -837,6 +883,11 @@ new invoice.
 - Booking providers: Booking.com, Hotels.com, Premier Inn, Travelodge, IHG.
 - Some clients book hotels directly, and the owner doesn't pay them back, so those stays carry no expense.
 - Travel to cover: Uber, Trainline, taxis, TfL and similar, compared against job dates.
+- Overnight stays: considered for jobs about 12–40 miles away depending on start time and traffic; normal
+  beyond 40 miles.
+- Clients occasionally book transport, mostly flights. Other transport the owner pays for is sometimes
+  recharged to the client.
+- TfL: paid by contactless debit card with no TfL account, so statements show TfL charges only.
 - Control: the owner must be able to review everything, allocate expenses to jobs by hand, and get AI
   suggestions, with a final manual override in every case.
 
