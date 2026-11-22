@@ -87,6 +87,17 @@ no long-lived process to crash, leak memory or hit the shared process limit. Hos
 also stop any request after 120 s. For a low-traffic, correctness-first app, per-request PHP is the more
 stable choice on shared hosting.
 
+**Framework options considered**
+
+| Option | Verdict |
+|---|---|
+| **Laravel + Inertia/React** | **Chosen.** Native to PHP shared hosting; login, 2FA, queues, scheduler, encryption, migrations and testing built in; libraries exist for everything this plan needs (PDF, spreadsheets, money, iCal, Gmail, Claude). React gives the review screens an instant, app-like feel |
+| Laravel + Livewire | Simpler (one language), but every click is a round trip to a shared server. That adds up over hundreds of review decisions per session |
+| Laravel + Filament | The fastest way to build admin-style tables and forms, but looks like an admin panel and is weaker for custom mobile flows (swipe cards, trip timelines). Possible for Settings screens only, if time gets tight |
+| Symfony, Slim or plain PHP | No advantage for one user; more to build by hand, especially security features |
+| Node.js (Next.js and similar) | Runs on this plan, but as a long-lived process with shared limits, a 120 s request cap and one of the plan's Node slots already used by `rohleder.tech` |
+| Django or Rails | Strong frameworks, but not supported as web apps on this shared hosting; they would need a VPS |
+
 ---
 
 ## 3. Architecture
