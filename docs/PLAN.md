@@ -261,9 +261,14 @@ HMRC's own online calculation is the authority; the app's estimate is a cross-ch
 
 ### 5.2 Making Tax Digital for Income Tax
 
-- **Your position.** You haven't filed yet, so the date MTD starts for you follows from the turnover on
-  these first returns once they're filed. The app shows which MTD start date the figures point to, and
-  HMRC writes to confirm.
+- **Your position.** Turnover is under £50,000, so MTD doesn't apply for 2026-27. It may apply soon after:
+  - from **6 April 2027** if 2025-26 *turnover* (gross income before expenses, not profit) was over £30,000;
+  - from **6 April 2028** if 2026-27 turnover is over £20,000.
+
+  The 2025-26 figures from phase 1 settle the first question. The dashboard shows each tax year's
+  turnover against these thresholds and says which MTD start date applies; HMRC also writes to confirm.
+  If it's April 2027, the first quarterly update (6 Apr – 5 Jul 2027) is due 7 Aug 2027, so phase 2's
+  quarterly summary must be ready by then.
 - **Who is in scope.** From 6 Apr 2026 if *qualifying income* (gross self-employment plus property
   turnover, not profit) on the 2024-25 return was over £50,000. From 6 Apr 2027 at £30,000, based on
   2025-26. From 6 Apr 2028 at £20,000.
@@ -949,6 +954,8 @@ new invoice.
 
 - Tax returns: none filed yet for 2024-25 or 2025-26; producing them is the reason for the app.
 - VAT: not registered.
+- MTD: turnover is under £50,000, so not in scope for 2026-27. It could apply from April 2027 (if 2025-26
+  turnover is over £30,000) or April 2028 (over £20,000); the app checks this from the filed figures.
 - Accounts: Starling business account; Amex and Capital One credit cards. These may change.
 - Accountant: none.
 - Typical hotel stay: one night per job.
