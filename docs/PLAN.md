@@ -5,6 +5,12 @@ tax-year reporting, hosted on Hostinger Business shared hosting at `expenses.roh
 
 Status: draft for the code architect. Revised 22 Nov 2026 from the owner's v1 plan.
 
+**Build status (22 Nov 2026):** phase 1 (catch-up returns for any tax year) is built, together with parts of
+phases 2 and 3: review-all with bulk edit and history, splits and business-use %, rules, period locks,
+manual job allocation, jobs and fee matching, mileage at each year's rate, and other currencies at HMRC
+monthly rates. Not built yet: hotel stays and journeys (§6.5–6.7), Gmail, AI (§6.8), recharges (§6.9),
+invoicing, MTD quarterly export and passkeys. See the README for setup and deployment.
+
 ---
 
 ## 0. What changed from v1
