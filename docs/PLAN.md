@@ -23,7 +23,7 @@ Status: draft for the code architect. Revised 22 Nov 2026 from the owner's v1 pl
 | Client-booked travel and recharges | Not covered | Client-booked flights and hotels carry no cost but anchor matching. Costs you pay can be marked rechargeable and tracked to reimbursement, with a claim pack | Clients book some travel, and some costs are claimed back |
 | Control | "You approve uncertain classifications" | You have the final say on everything. Review every item, allocate to jobs by hand, get rule/matching/AI suggestions, and override any decision at any time; automation never overwrites your edits | The owner's requirement: a final manual override in every case |
 | Navigation | 8 sections | 5 sections: Inbox, Money, Jobs, Invoices, Tax (plus Settings) | Email and Calendar are sources of data, not places you go |
-| Phasing | Reporting in phase 6 | Walking skeleton (import, review, quarterly summary) in phase 1 | Tax deadlines drive the value; next MTD deadline is 7 Feb 2027 |
+| Phasing | Reporting in phase 6 | Catch-up first: past tax years' Self Assessment figures in phase 1, ready by mid-January 2027 | No returns filed yet; the 2025-26 return and payment are due 31 Jan 2027 |
 | Security | HTTPS, 2FA, encrypted credentials | Adds passkeys, a threat model for a shared hosting account, backups encrypted to an offline key, CSV-injection-safe exports, re-auth for sensitive actions | |
 | Reliability | Not specified | Hazard log, risk classes, invariants, golden-file tests, recompute-and-verify, atomic deploys with rollback, heartbeat monitoring | Borrowed from medical-device and games engineering (§8) |
 
@@ -185,6 +185,7 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `rules` | Supplier/description pattern mapped to category, job and business-use %; created from your confirmations |
 | `audit_events` | Append-only: when, actor, action, entity, before/after JSON, reason, `prev_hash`, `hash` |
 | `tax_parameters` | Rates and thresholds per tax year, each with a source URL and effective dates |
+| `guidance` | Plain-English notes for each judgement call (mileage, travel, use of home, recharges…), each with a GOV.UK link and a "last checked" date |
 | `secrets` | Encrypted credentials: IMAP password, ICS URL, OAuth tokens |
 
 Invariants, enforced in both code and database:
@@ -214,8 +215,55 @@ on the same day both survive, while the same coffee appearing in two overlapping
 
 ## 5. UK accounting and tax rules
 
-### 5.1 Making Tax Digital for Income Tax
+### 5.1 Catching up: first Self Assessment returns
 
+No Self Assessment returns have been filed yet for 2024-25 or 2025-26, and there is no accountant. The
+app's first job is to produce the figures for those returns.
+
+**Deadlines for online returns**
+
+| Tax year | Return and payment due | Position on 22 Nov 2026 |
+|---|---|---|
+| 2024-25 (6 Apr 2024 – 5 Apr 2025) | 31 Jan 2026 | Overdue, *if* you were self-employed in that year. Penalties so far: £100 straight away; £10 a day from 1 May 2026, up to £900; then the greater of 5% of the tax due or £300 from the end of July 2026. Another 5%-or-£300 penalty is added after 31 Jan 2027, so file this one first. Interest and late-payment penalties also run on unpaid tax |
+| 2025-26 (6 Apr 2025 – 5 Apr 2026) | 31 Jan 2027 | Due in about 10 weeks |
+
+Check the exact amounts with HMRC's penalty estimator. HMRC can cancel penalties if you had a reasonable excuse.
+
+**Before the app is ready**
+
+- **Registration.** You need a Unique Taxpayer Reference (UTR) to file. If you haven't registered for Self
+  Assessment as self-employed, do it now. HMRC's letters can take a few weeks to arrive, and the app can't
+  help with this step.
+- **Fallback.** If the app isn't producing figures by about 10 January 2027, export what has been
+  categorised to a spreadsheet and file from that. The app must never put the deadline at risk.
+
+**What the app produces for each tax year**
+
+- A **return summary**: the figures to type into HMRC's online Self Assessment, box by box (turnover,
+  other business income, allowable expenses, net profit). With turnover under £90,000, the short
+  self-employment pages accept a single expenses total, but the app still keeps the categories behind it.
+- A **tax estimate**: income tax and Class 4 National Insurance.
+- A **first-bill preview.** If the bill is over £1,000 and less than 80% of your tax was collected at
+  source, HMRC also asks for payments on account towards the next year: half of this year's bill each on
+  31 Jan and 31 Jul. So the first January bill can be about 150% of the year's tax. The app shows this
+  early so it isn't a surprise.
+
+HMRC's own online calculation is the authority; the app's estimate is a cross-check. The app doesn't file returns.
+
+**Without an accountant**
+
+- Every judgement call (mileage, use of home, travel and subsistence, frequent venues, recharges, capital
+  items) has a short plain-English note in the app and a link to the relevant GOV.UK page. These are
+  stored in a `guidance` table with a "last checked" date.
+- Wherever this plan says something needs checking, the app flags it for *you*, with that note and link.
+- Consider a one-off review by an accountant or tax adviser for these first returns, especially a late one.
+- The **records pack** export (all transactions, decisions and receipts) is kept ready for any HMRC enquiry.
+
+### 5.2 Making Tax Digital for Income Tax
+
+- **Your position.** You haven't filed yet, so the date MTD starts for you follows from the turnover on
+  these first returns once they're filed. The app shows which MTD start date the figures point to, and
+  HMRC writes to confirm.
 - **Who is in scope.** From 6 Apr 2026 if *qualifying income* (gross self-employment plus property
   turnover, not profit) on the 2024-25 return was over £50,000. From 6 Apr 2027 at £30,000, based on
   2025-26. From 6 Apr 2028 at £20,000.
@@ -227,14 +275,14 @@ on the same day both survive, while the same coffee appearing in two overlapping
   means. Exporting and importing a file counts; retyping figures does not.
 - **Submission route (owner decision):**
   - **A. Recommended for v1:** this app is the record-keeping system. It exports quarterly category totals
-    as CSV into HMRC-recognised bridging or MTD software (or the accountant's software), which submits them.
+    as CSV into HMRC-recognised bridging or MTD software that you operate, which submits them.
   - **B. Later, if worthwhile:** call HMRC's MTD API directly. That needs HMRC Developer Hub registration,
     OAuth with HMRC, mandatory fraud-prevention headers and HMRC production approval, which is a lot of
     work for a single user.
 - **Penalties.** HMRC will not apply penalty points for late quarterly updates in 2026-27. Penalties for
   the final declaration and for late payment still apply.
 
-### 5.2 Categories
+### 5.3 Categories
 
 Use HMRC's self-employment expense categories as the reporting backbone, because they match SA103F and the
 MTD quarterly update:
@@ -258,7 +306,7 @@ Each allocation can be split into allowable and disallowable parts. Friendly sub
 "Hotels" or "Rail") map onto these. Below the VAT threshold, MTD allows a single consolidated expenses
 figure, but categorise anyway: the detail is needed for SA103F and for your own insight.
 
-### 5.3 Other rules
+### 5.4 Other rules
 
 - **Cash basis** is the default since 2024-25; accruals is an option. Store invoice dates and payment dates
   separately so either view can be produced.
@@ -270,9 +318,14 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
   £26 for 101 or more), or apportioned actual costs.
 - **Mixed-use expenses:** business-use % per allocation or per rule (for example, phone at 60%).
 - **Capital items:** flag large purchases. Under cash basis most equipment is deductible but cars are not;
-  the accountant confirms.
-- **VAT:** off by default. If registered (threshold £90,000), track VAT per allocation and invoice, keep it
-  separate from income tax figures, and note that MTD for VAT has its own submission route.
+  the app flags these for you to check.
+- **Credit cards:** a purchase on a credit card counts as paid on the card transaction date (one of the
+  dates HMRC accepts under the cash basis), not when the card bill is paid. Paying the card bill from the
+  bank is a transfer between your own accounts, never an expense. Card interest and fees are allowable
+  only for business borrowing, in proportion on a card used for both.
+- **VAT:** you aren't VAT-registered. The dashboard tracks taxable turnover over the last 12 months
+  (recharges included) against the registration threshold (£90,000) and warns at 80%. If you register
+  later, VAT tracking switches on and MTD for VAT applies, with its own submission route.
 - **Invoices:** sequential numbers that are never reused or deleted. Issued invoices are immutable (PDF
   stored with its hash); corrections go through credit notes. Partial payments and ageing are tracked.
 - **Tax estimate:** income tax plus Class 4 NIC, payments on account (31 Jan and 31 Jul), and a "set aside
@@ -288,6 +341,18 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
 ## 6. Integrations
 
 ### 6.1 Bank statements
+
+**Your accounts** (these may change, so adding or swapping an account must need no code change):
+
+| Account | Import | Checks and quirks |
+|---|---|---|
+| Starling business account | CSV export, which usually includes a running balance | Balance check on every row. Starling's own spending categories are kept as a matching hint. Starling also offers a developer API with personal access tokens (read-only scopes such as `transaction:read`); confirm it covers business accounts before relying on it, and consider it for automatic daily import later |
+| Amex credit card | CSV export | No running balance: check against each statement's closing balance, entered once a month. Amex shows charges as positive and payments as negative, so the profile flips the sign |
+| Capital One credit card | CSV export (check which formats are offered) | Same statement-balance check; sign convention set in its profile |
+
+Card-bill payments from Starling to Amex or Capital One are paired automatically with the "payment
+received" line on the card, as a transfer. A new bank or card is added with a column-mapping wizard: map
+the columns once, check a preview, save the profile.
 
 - **Per-bank import profiles** record the column mapping, date format, sign convention and encoding. A
   profile is saved after the first import from a bank and auto-detected on later files.
@@ -443,7 +508,8 @@ and the stay goes to review.
 - Stays are **never auto-confirmed**, even when every night matches. They always get a one-tap review,
   because HMRC looks closely at these.
 - Extra personal nights are personal. Whether travel to and from a mainly-business trip is fully allowable
-  is the accountant's call; the app keeps the facts (nights, job, purpose) to support it.
+  depends on the trip; the app flags it for you to check, with the HMRC guidance, and keeps the facts
+  (nights, job, purpose) to support your decision.
 - **Who paid.** You, or the client.
   - Some clients book hotels for you directly and you don't pay them back. Those stays carry no expense and
     nothing to declare; they're kept on the job record only.
@@ -497,7 +563,7 @@ Stays and journeys use the same window.
 | Rail: Trainline and train operators | `TRAINLINE`, operator name | E-ticket or receipt: origin, destination, travel date and time, railcard | Tickets are often bought weeks ahead. Refunds and Delay Repay are matched back to the journey |
 | TfL: Tube, bus, Overground, Elizabeth line | `TFL TRAVEL CH`: one charge per day, or several days combined | None | Paid by contactless debit card, with no TfL account. Matched by day (see "TfL without an account" below) |
 | Coach | National Express, Megabus | Ticket email | |
-| Parking, tolls, congestion and ULEZ charges | NCP, JustPark, RingGo, PayByPhone, Dartford Crossing, TfL road charges | Sometimes | Usually claimable alongside simplified mileage (accountant confirms) |
+| Parking, tolls, congestion and ULEZ charges | NCP, JustPark, RingGo, PayByPhone, Dartford Crossing, TfL road charges | Sometimes | Usually claimable alongside simplified mileage (the app links the HMRC guidance) |
 | Parking fines and penalty charges | Council or operator name, "PCN" | Sometimes | **Never allowable.** Always classed as disallowable, with the reason shown |
 | Fuel | Fuel-station names | None | Only for a vehicle on actual costs. With simplified mileage, fuel is personal and the app offers to log the mileage trip instead |
 | Flights, car hire | Airline or hire company | Booking or itinerary email | Flights are usually booked by the client, so they carry no cost (§6.9). Flight times anchor taxi and train matching |
@@ -532,8 +598,8 @@ during the build. Uber's ride and Eats receipts come from the same sender, so th
    hotel and the venue on job days support business. A route with no link to the job (for example, across
    town to a restaurant on a non-job evening) goes to review.
 3. **The same place again and again.** If you travel to one venue very often, HMRC may treat it as
-   ordinary commuting rather than business travel. The app flags frequently visited venues for the
-   accountant to decide.
+   ordinary commuting rather than business travel. The app flags frequently visited venues for you to
+   decide, with the HMRC guidance.
 4. **Who paid.** As with hotels, travel a client books for you carries no expense. Costs you pay yourself
    may be rechargeable to the client (§6.9).
 
@@ -634,8 +700,8 @@ the airport.
   number of days (default: 30).
 - **Tax treatment.** By default the cost is a business expense and the reimbursement is business income,
   so profit doesn't change. The reimbursement still counts towards turnover, which is what the MTD and VAT
-  thresholds measure. The accountant confirms whether any items should be treated differently (for
-  example, as disbursements).
+  thresholds measure. Some items can be treated differently (for example, as disbursements); the app
+  links the HMRC guidance so you can check.
 
 ---
 
@@ -730,7 +796,11 @@ the airport.
   | Fuel claimed for a simplified-mileage vehicle | Vehicle claim method; fuel proposed as personal, mileage trip offered | Fuel on a job day for a mileage vehicle |
   | Parking fine claimed | Penalty-charge patterns are always disallowable | PCN fixture |
   | Advance train ticket in the wrong tax year | Tax year from payment date; purpose from travel date | March purchase for April travel |
-  | Regular trips to one venue claimed as business travel | Frequent-venue flag for the accountant | 30 trips to one venue in a year |
+  | Regular trips to one venue claimed as business travel | Frequent-venue flag, with HMRC guidance | 30 trips to one venue in a year |
+  | Card-bill payment counted as an expense on top of the card purchases | Automatic transfer pairing between bank and card | Starling payment to Amex plus Amex purchases |
+  | Card purchase put in the year the bill was paid | Card transaction date used | Purchase on 3 Apr, bill paid 20 Apr |
+  | Amex amounts imported with the wrong sign | Sign convention in the import profile; statement-balance check | Amex CSV fixture |
+  | First tax bill larger than expected | First-bill preview, including payments on account | First-year scenario with a bill over £1,000 |
   | Driven job with no mileage claimed | "How did you get there?" gap check | Far-away job with no travel items |
   | Automation overwrites a decision you made | `manual` flag; re-runs only add suggestions | Re-run rules and AI over hand-edited items: nothing changes |
   | AI names a job or category that doesn't exist | Schema validation against the candidate list; invalid output discarded | Malformed and out-of-list responses |
@@ -827,7 +897,7 @@ new invoice.
   5. You've looked over the sign-off list: everything confirmed by an auto-confirm rule or in bulk, plus
      totals by job and category. Anything on it can still be changed.
 
-  Then lock the period and export the MTD summary and the accountant pack.
+  Then lock the period and export the MTD summary and the records pack.
 - **Invoice.** Start from a job, with client and fee pre-filled. Generate the PDF, mark it sent, and the
   incoming payment is matched automatically.
 
@@ -846,14 +916,14 @@ new invoice.
 
 | Phase | Scope | Done when |
 |---|---|---|
-| 0. Decide and verify (days) | Answer §11; verify the remaining hosting items; create the site and database; CI/CD with an atomic deploy of a hello-world app; backups and heartbeat; hazard log v1 | CI deploys the hello page; a restore drill passes |
-| 1. Walking skeleton | Login (passkey + TOTP); audit log; accounts; CSV import for the main bank with balance check and dedupe; Inbox review; HMRC categories; business, personal and transfer types; quarterly summary with CSV export | The 6 Oct–5 Jan quarter can be done in the app (deadline 7 Feb 2027) |
-| 2. Ledger depth | Review all table with filters, bulk edit and per-item history; splits and business-use %; rules (auto-confirm off by default); duplicates UI; period close and lock; more bank profiles; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation |
+| 0. Decide and verify (days) | Owner: register for Self Assessment or find your UTR, now; answer §11; verify the remaining hosting items; create the site and database; CI/CD with an atomic deploy of a hello-world app; backups and heartbeat; hazard log v1 | CI deploys the hello page; a restore drill passes |
+| 1. Catch-up returns (figures ready by mid-January 2027) | Login (passkey + TOTP); audit log; accounts; CSV import for Starling, Amex and Capital One with dedupe, balance or statement checks and automatic card-bill transfer pairing; Inbox and Review all with filters and bulk edit, including "decide for all transactions from this merchant"; HMRC categories; business, personal and transfer types; calendar context on each item (read-only iCal feed showing what was on that day); return summary, tax estimate and first-bill preview per tax year; spreadsheet export | The 2025-26 figures (and 2024-25's, if needed) can be typed into HMRC online straight from the app |
+| 2. Ledger depth | Per-item history; splits and business-use %; rules (auto-confirm off by default); duplicates UI; period close and lock; quarterly MTD summary and export; column-mapping wizard for new accounts; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation, ready for MTD if it applies from April 2027 |
 | 3. Jobs | Clients; jobs; calendar sync; manual job allocation (from an item, the review table or the job page); job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
 | 4. Travel | Read-only Gmail connection; booking and travel email extraction for your providers; hotel stays night by night; journeys; client-booked flight itineraries; rechargeable items and claim packs; TfL charges matched by day (journey-history import optional); trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
 | 5. AI assistance (opt-in) | AI suggestions for items rules and matching can't settle; AI extraction for receipts, booking emails and PDFs; request log, spending cap, acceptance tracking and test set | AI suggestions appear with reasons, never auto-confirm, and their acceptance rate is visible |
 | 6. Invoicing | Numbering; templates; PDF; recharges as invoice lines; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
-| 7. Tax and reports | Tax-year summary; SA103 mapping; trading-allowance comparison; tax estimate and set-aside; P&L; accountant pack (Excel/CSV/PDF plus receipts zip) | The accountant can work from the export alone |
+| 7. Tax and reports | Full SA103 mapping; trading-allowance comparison; use of home; set-aside for tax; VAT-threshold monitor; P&L; records pack (Excel/CSV/PDF plus receipts zip) | Every figure on a return can be traced back to its transactions and receipts |
 | 8. Other email receipts | Receipts and invoices from known senders via the Gmail connection (or the forwarding mailbox); attachment extraction; matching | Emailed receipts attach themselves |
 | 9. Automation and extras | Recurring expenses; smarter rules; PDF statements; optional Open Banking; optional direct MTD API | No fixed exit criterion |
 
@@ -861,25 +931,26 @@ new invoice.
 
 ## 11. Open questions for the owner
 
-1. **Qualifying income** (gross turnover) for 2024-25, and roughly for 2025-26? This decides whether MTD is
-   already live for you, in which case the Q1 and Q2 2026-27 updates are outstanding, or whether it starts
-   in April 2027 or 2028.
-2. Are you **VAT-registered**, or likely to be?
-3. Which **banks and cards** do you use, and which export formats do they offer?
-4. **Gmail access.** Is it a personal account or Google Workspace? (Workspace allows an "Internal" OAuth
+1. **When did you start self-employment**, and are you registered for Self Assessment (do you have a
+   UTR)? This decides whether 2024-25 is overdue (§5.1).
+2. Are the **Amex and Capital One cards** business cards, or personal cards used partly for business?
+3. **Gmail access.** Is it a personal account or Google Workspace? (Workspace allows an "Internal" OAuth
    app.) Are you happy for the app to hold read-only Gmail access, which is recommended for hotel checks,
    or would you rather use the forwarding mailbox?
-5. Do you have an **accountant**, and which software do they use? This shapes the export format and the MTD route.
-6. Are you a **Scottish taxpayer**? Scotland has different income-tax bands.
-7. **Mileage:** do you use your own car, and do you claim simplified rates or actual costs?
-8. Are you comfortable keeping this app on the **same hosting account** as your other sites, or should it get its own?
-9. Your **home postcode**. It goes into the app's settings, not this document.
-10. **AI extraction** sends the whole document being read (a receipt photo, a booking email or a PDF
+4. Are you a **Scottish taxpayer**? Scotland has different income-tax bands.
+5. **Mileage:** do you use your own car, and do you claim simplified rates or actual costs?
+6. Are you comfortable keeping this app on the **same hosting account** as your other sites, or should it get its own?
+7. Your **home postcode**. It goes into the app's settings, not this document.
+8. **AI extraction** sends the whole document being read (a receipt photo, a booking email or a PDF
     statement) to the Claude API, not just minimised details. Should that switch be on too, or kept for
     manual use on individual documents?
 
 **Answered (22 Nov 2026)**
 
+- Tax returns: none filed yet for 2024-25 or 2025-26; producing them is the reason for the app.
+- VAT: not registered.
+- Accounts: Starling business account; Amex and Capital One credit cards. These may change.
+- Accountant: none.
 - Typical hotel stay: one night per job.
 - Booking providers: Booking.com, Hotels.com, Premier Inn, Travelodge, IHG.
 - Some clients book hotels directly, and the owner doesn't pay them back, so those stays carry no expense.
