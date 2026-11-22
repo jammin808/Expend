@@ -10,6 +10,7 @@ use App\Models\Account;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\ImportBatch;
+use App\Models\TaxYear;
 use App\Support\UkTaxYear;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -35,6 +36,7 @@ final class Importer
         ['rows' => $rows, 'errors' => $errors] = RowNormalizer::normalize($profile, $csv['rows']);
         $plan = $this->plan($account, $rows);
         $dates = array_map(fn (NormalizedRow $r) => $r->effectiveDate()->format('Y-m-d'), $rows);
+        $errors = array_merge($errors, $plan['locked'] ? ["{$plan['locked']} rows fall in a locked tax year (".implode(', ', $plan['locked_years']).'). Unlock it first, or import a file without those dates.'] : []);
         sort($dates);
 
         return [
@@ -42,6 +44,7 @@ final class Importer
             'errors' => $errors,
             'new' => count($plan['new']),
             'duplicates' => $plan['duplicates'],
+            'locked' => $plan['locked'],
             'balance' => BalanceCheck::run($rows),
             'first' => $dates[0] ?? null,
             'last' => $dates ? end($dates) : null,
@@ -117,8 +120,9 @@ final class Importer
             return $batch;
         });
 
-        $this->pairer->pairAll();
+        // Your rules first, then transfer pairing for whatever is still undecided.
         $this->suggester->suggestFor(BankTransaction::query()->where('import_batch_id', $batch->id)->get());
+        $this->pairer->pairAll();
 
         return $batch;
     }
@@ -126,6 +130,12 @@ final class Importer
     /** Undo an import: removes its transactions and their allocations, with an audit record. */
     public function revert(ImportBatch $batch, string $reason): void
     {
+        $lockedYears = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
+        $touched = $batch->transactions()->whereIn('tax_year', $lockedYears)->distinct()->pluck('tax_year');
+        if ($touched->isNotEmpty()) {
+            throw new RuntimeException('This import includes transactions in a locked tax year ('.$touched->implode(', ').'). Unlock it first.');
+        }
+
         DB::transaction(function () use ($batch, $reason) {
             $ids = $batch->transactions()->pluck('id');
             $confirmed = Allocation::query()->whereIn('bank_transaction_id', $ids)->whereNotNull('confirmed_at')->count();
@@ -143,7 +153,7 @@ final class Importer
      * £3.20 coffees on the same day both survive, but the same coffee in two overlapping statements is skipped.
      *
      * @param  list<NormalizedRow>  $rows
-     * @return array{new: list<NormalizedRow>, occurrences: list<int>, duplicates:int}
+     * @return array{new: list<NormalizedRow>, occurrences: list<int>, duplicates:int, locked:int, locked_years:list<string>}
      */
     private function plan(Account $account, array $rows): array
     {
@@ -151,6 +161,9 @@ final class Importer
         $new = [];
         $occurrences = [];
         $duplicates = 0;
+        $locked = 0;
+        $lockedYears = TaxYear::query()->whereNotNull('locked_at')->pluck('label')->all();
+        $hitYears = [];
 
         foreach ($rows as $row) {
             $fp = $row->fingerprint($account->id);
@@ -159,12 +172,15 @@ final class Importer
                 ->where('account_id', $account->id)->where('fingerprint', $fp)->where('occurrence', $counts[$fp])->exists();
             if ($exists) {
                 $duplicates++;
+            } elseif (in_array($year = UkTaxYear::fromDate($row->effectiveDate())->label(), $lockedYears, true)) {
+                $locked++;
+                $hitYears[$year] = true;
             } else {
                 $new[] = $row;
                 $occurrences[] = $counts[$fp];
             }
         }
 
-        return ['new' => $new, 'occurrences' => $occurrences, 'duplicates' => $duplicates];
+        return ['new' => $new, 'occurrences' => $occurrences, 'duplicates' => $duplicates, 'locked' => $locked, 'locked_years' => array_keys($hitYears)];
     }
 }

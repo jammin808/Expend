@@ -37,7 +37,7 @@ class MileageController extends Controller
     public function storeVehicle(Request $request): RedirectResponse
     {
         $data = $request->validate([
-            'name' => 'required|string|max:60', 'type' => 'required|in:car_van,motorcycle,bicycle',
+            'name' => 'required|string|max:60', 'type' => 'required|in:car_van,motorcycle',
             'method' => 'required|in:simplified,actual', 'registration' => 'nullable|string|max:12',
         ]);
         $vehicle = Vehicle::query()->create($data);

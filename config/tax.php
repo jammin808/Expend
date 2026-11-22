@@ -35,7 +35,8 @@ $base = [
     'class2' => null,
     'mileage' => [
         'car_van_first' => 45, 'car_van_after' => 25, 'threshold_miles' => 10_000,
-        'motorcycle' => 24, 'bicycle' => 20,
+        'motorcycle' => 24,
+        // Bicycles aren't covered by simplified expenses for the self-employed (20p is the employee rate).
     ],
     'use_of_home' => [
         ['min_hours' => 25, 'max_hours' => 50, 'monthly' => 1_000],

@@ -54,8 +54,10 @@ final class MileageCalculator
                 $note = $atAfter->isPositive()
                     ? sprintf('%s mi at %dp, %s mi at %dp', $atFirst, $rates['car_van_first'], $atAfter, $rates['car_van_after'])
                     : sprintf('%dp a mile', $rates['car_van_first']);
+            } elseif ($vehicle->type !== 'motorcycle') {
+                return self::row($trip, 0, 'Bicycles aren’t covered by simplified mileage; claim actual costs instead');
             } else {
-                $rate = $vehicle->type === 'motorcycle' ? $rates['motorcycle'] : $rates['bicycle'];
+                $rate = $rates['motorcycle'];
                 $claim = $tripMiles->multipliedBy($rate);
                 $note = sprintf('%dp a mile', $rate);
             }

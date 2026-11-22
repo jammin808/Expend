@@ -168,6 +168,9 @@ final class AllocationWriter
             if (! is_int($line['amount_pence'] ?? null) || $line['amount_pence'] === 0) {
                 throw new InvalidArgumentException('Line '.($i + 1).' needs a non-zero amount.');
             }
+            if (($line['amount_pence'] < 0) !== ($amount < 0)) {
+                throw new InvalidArgumentException('Line '.($i + 1).' must be '.($amount < 0 ? 'money out' : 'money in').', like the transaction itself.');
+            }
             if (in_array($line['kind'], Allocation::NEEDS_CATEGORY, true)) {
                 $category = isset($line['category_id']) ? Category::query()->find($line['category_id']) : null;
                 if (! $category) {

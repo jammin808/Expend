@@ -24,7 +24,8 @@ final class BillPreview
         $liability = $estimate['income_tax']['total_pence'] + $estimate['class4_pence'];
         $alreadyPaid = $record?->payments_on_account_paid_pence ?? 0;
         $balancing = $liability + $estimate['class2_pence'] - $alreadyPaid;
-        $poa = $liability > ($p['payments_on_account_threshold'] ?? 100_000) ? intdiv($liability, 2) : 0;
+        // Payments on account are only waived when the bill is under £1,000.
+        $poa = $liability >= ($p['payments_on_account_threshold'] ?? 100_000) ? intdiv($liability, 2) : 0;
 
         $deadline = $year->filingDeadline();
 

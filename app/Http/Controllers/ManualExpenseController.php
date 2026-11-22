@@ -9,13 +9,17 @@ use App\Domain\Ledger\DecisionService;
 use App\Domain\Matching\MerchantKey;
 use App\Models\Allocation;
 use App\Models\ManualExpense;
+use App\Models\TaxYear;
 use App\Support\Money;
 use App\Support\UkTaxYear;
+use Brick\Math\BigDecimal;
+use Brick\Math\RoundingMode;
 use Brick\Money\Currency;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -68,6 +72,13 @@ class ManualExpenseController extends Controller
 
         $currency = strtoupper($data['currency']);
         $date = CarbonImmutable::parse($data['spent_on']);
+        $label = UkTaxYear::fromDate($date)->label();
+        if (TaxYear::query()->where('label', $label)->whereNotNull('locked_at')->exists()) {
+            return back()->with('error', "Tax year {$label} is locked. Unlock it before adding to it.");
+        }
+        if (in_array($data['kind'], Allocation::NEEDS_CATEGORY, true) && empty($data['category_id'])) {
+            return back()->with('error', 'Choose an HMRC category.');
+        }
         $sign = $data['direction'] === 'out' ? -1 : 1;
 
         try {
@@ -78,7 +89,9 @@ class ManualExpenseController extends Controller
                 $pence = $minor;
             } elseif (! empty($data['sterling_from_document'])) {
                 $pence = abs(Money::parse($data['sterling_from_document'])) * $sign;
-                $fx = ['original_amount_minor' => $minor, 'original_currency' => $currency, 'fx_units_per_gbp' => round(abs($minor) / max(1, abs($pence)), 6), 'fx_rate_date' => $date->format('Y-m-d'), 'fx_source' => 'document'];
+                $original = \Brick\Money\Money::ofMinor(abs($minor), Currency::of($currency))->getAmount();
+                $rate = $original->dividedBy(BigDecimal::ofUnscaledValue(max(1, abs($pence)), 2), 6, RoundingMode::HALF_UP);
+                $fx = ['original_amount_minor' => $minor, 'original_currency' => $currency, 'fx_units_per_gbp' => (string) $rate, 'fx_rate_date' => $date->format('Y-m-d'), 'fx_source' => 'document'];
             } else {
                 if (! empty($data['manual_rate'])) {
                     $this->fx->setManual($currency, $date, (string) $data['manual_rate']);
@@ -91,20 +104,28 @@ class ManualExpenseController extends Controller
             return back()->with('error', $e->getMessage());
         }
 
-        $expense = ManualExpense::query()->create([
-            'spent_on' => $date->format('Y-m-d'),
-            'tax_year' => UkTaxYear::fromDate($date)->label(),
-            'description' => $data['description'],
-            'merchant_key' => MerchantKey::from($data['description']),
-            'paid_with' => $data['paid_with'],
-            'amount_pence' => $pence,
-            ...$fx,
-        ]);
-        AuditLog::record('manual_expense.created', $expense, null, $expense->toArray());
+        try {
+            $expense = DB::transaction(function () use ($data, $date, $label, $pence, $fx) {
+                $expense = ManualExpense::query()->create([
+                    'spent_on' => $date->format('Y-m-d'),
+                    'tax_year' => $label,
+                    'description' => $data['description'],
+                    'merchant_key' => MerchantKey::from($data['description']),
+                    'paid_with' => $data['paid_with'],
+                    'amount_pence' => $pence,
+                    ...$fx,
+                ]);
+                AuditLog::record('manual_expense.created', $expense, null, $expense->toArray());
 
-        $result = $this->decisions->apply($data, collect([$expense]));
-        if ($result['errors']) {
-            return back()->with('error', implode(' ', $result['errors']));
+                $result = $this->decisions->apply($data, collect([$expense]));
+                if ($result['errors']) {
+                    throw new \InvalidArgumentException(implode(' ', $result['errors']));
+                }
+
+                return $expense;
+            });
+        } catch (\InvalidArgumentException $e) {
+            return back()->with('error', $e->getMessage());
         }
 
         return back()->with('success', 'Added '.Money::format(abs($pence)).($currency !== 'GBP' ? " ({$currency} converted)" : '').'.');

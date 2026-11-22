@@ -127,7 +127,11 @@ class ImportController extends Controller
         if ($batch->status === 'reverted') {
             return back();
         }
-        $this->importer->revert($batch, $data['reason']);
+        try {
+            $this->importer->revert($batch, $data['reason']);
+        } catch (\RuntimeException $e) {
+            return back()->with('error', $e->getMessage());
+        }
 
         return back()->with('success', "Removed the {$batch->imported_count} transactions from {$batch->original_filename}.");
     }

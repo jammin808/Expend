@@ -6,6 +6,7 @@ use App\Domain\Ledger\AllocationWriter;
 use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\MerchantRule;
+use App\Models\TaxYear;
 use Illuminate\Support\Collection;
 
 /**
@@ -27,8 +28,10 @@ final class Suggester
         $penalty = Category::query()->where('code', 'travel_penalties')->value('id');
         $made = 0;
 
+        $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label')->all();
+
         foreach ($transactions as $tx) {
-            if ($tx->allocations()->exists()) {
+            if (in_array($tx->tax_year, $locked, true) || $tx->allocations()->exists()) {
                 continue;
             }
 

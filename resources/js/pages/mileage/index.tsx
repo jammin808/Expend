@@ -24,7 +24,7 @@ interface Trip {
 interface Props {
     year: string;
     years: string[];
-    rates: { car_van_first: number; car_van_after: number; threshold_miles: number; motorcycle: number; bicycle: number } | null;
+    rates: { car_van_first: number; car_van_after: number; threshold_miles: number; motorcycle: number } | null;
     trips: Trip[];
     total_pence: number;
     total_miles: string;
@@ -97,7 +97,6 @@ export default function Mileage({ year, years, rates, trips, total_pence, total_
                         <NativeSelect value={vehicle.data.type} onChange={(e) => vehicle.setData('type', e.target.value)}>
                             <option value="car_van">Car or van</option>
                             <option value="motorcycle">Motorcycle</option>
-                            <option value="bicycle">Bicycle</option>
                         </NativeSelect>
                         <NativeSelect value={vehicle.data.method} onChange={(e) => vehicle.setData('method', e.target.value)}>
                             <option value="simplified">Flat-rate mileage</option>

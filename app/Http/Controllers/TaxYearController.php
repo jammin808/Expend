@@ -63,6 +63,10 @@ class TaxYearController extends Controller
             'payments_on_account_paid' => 'nullable|string', 'notes' => 'nullable|string|max:2000',
         ]);
 
+        if ($year->isLocked() && collect(['filed_turnover', 'filed_expenses', 'filed_profit', 'payments_on_account_paid'])->contains(fn ($f) => $request->has($f))) {
+            return back()->with('error', "{$label} is locked. Unlock it before changing its figures.");
+        }
+
         $before = $year->toArray();
         $year->fill(array_filter([
             'status' => $data['status'] ?? null,

@@ -36,7 +36,7 @@ final class Money
             $text = $m[1];
         }
 
-        $text = str_replace(['£', '$', '€', ',', ' ', "\u{00A0}"], '', $text);
+        $text = str_replace(['£', '$', '€', ' ', "\u{00A0}"], '', $text);
         $text = preg_replace('/^(GBP|USD|EUR)/i', '', $text);
 
         if (preg_match('/^(.*?)(CR|DR)$/i', $text, $m)) {
@@ -53,11 +53,12 @@ final class Money
             $text = ltrim(substr($text, str_starts_with($text, '-') ? 1 : 3));
         }
 
-        if (! preg_match('/^(\d+)(?:\.(\d{1,2}))?$/', $text, $m)) {
-            throw new InvalidArgumentException("Can't read the amount \"{$value}\".");
+        // Commas are only accepted as thousands separators (1,234.56). A decimal comma (12,50) is refused, not guessed.
+        if (! preg_match('/^(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?$/', $text, $m)) {
+            throw new InvalidArgumentException("Can't read the amount \"{$value}\". Use a full stop for pence, like 12.50.");
         }
 
-        $pence = ((int) $m[1]) * 100 + (int) str_pad($m[2] ?? '0', 2, '0');
+        $pence = ((int) str_replace(',', '', $m[1])) * 100 + (int) str_pad($m[2] ?? '0', 2, '0');
 
         return $negative ? -$pence : $pence;
     }

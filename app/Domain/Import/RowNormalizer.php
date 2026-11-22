@@ -71,13 +71,21 @@ final class RowNormalizer
             counterparty: $counterparty,
             reference: $p->referenceColumn ? (trim($row[$p->referenceColumn] ?? '') ?: null) : null,
             amountPence: $amount,
-            balanceAfterPence: $p->balanceColumn ? Money::parse($row[$p->balanceColumn] ?? '') : null,
+            balanceAfterPence: self::balance($p, $row),
             originalAmountMinor: $foreign ? ($amount < 0 ? -abs($original) : abs($original)) : null,
             originalCurrency: $foreign ? $currency : null,
             bankCategory: $p->categoryColumn ? (trim($row[$p->categoryColumn] ?? '') ?: null) : null,
             raw: $row,
             line: $line,
         );
+    }
+
+    private static function balance(ImportProfile $p, array $row): ?int
+    {
+        $balance = $p->balanceColumn ? Money::parse($row[$p->balanceColumn] ?? '') : null;
+
+        // When amounts are flipped (card exports), the balance is flipped too so the running check still adds up.
+        return ($balance !== null && $p->invertSign) ? -$balance : $balance;
     }
 
     public static function date(string $value, string $format): CarbonImmutable

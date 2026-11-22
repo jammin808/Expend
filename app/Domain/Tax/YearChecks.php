@@ -32,18 +32,32 @@ final class YearChecks
                 $cells[$month] = ['count' => $inMonth->count(), 'continuity' => 'unknown'];
             }
 
-            // Balance continuity: each month's first balance should follow on from the previous month's last.
+            // Balance continuity: the balance before the month's first day must equal a closing balance on the
+            // previous posting day. Rows on one day can be in either order in a statement, so any order is accepted.
             $withBalance = $txs->filter(fn ($t) => $t->balance_after_pence !== null)->values();
             if ($withBalance->count() > 1) {
+                $byDay = $withBalance->groupBy(fn ($t) => $t->posted_on->format('Y-m-d'))->sortKeys();
+                $days = $byDay->keys()->values();
                 foreach ($months as $month) {
-                    $first = $withBalance->first(fn ($t) => $t->posted_on->format('Y-m') === $month);
-                    if (! $first) {
+                    $firstDay = $days->first(fn ($d) => str_starts_with($d, $month));
+                    if (! $firstDay) {
                         continue;
                     }
-                    $idx = $withBalance->search($first);
-                    $prev = $idx > 0 ? $withBalance[$idx - 1] : null;
-                    $cells[$month]['continuity'] = $prev === null ? 'unknown'
-                        : ($prev->balance_after_pence + $first->amount_pence === $first->balance_after_pence ? 'ok' : 'gap');
+                    $idx = $days->search($firstDay);
+                    if ($idx === 0) {
+                        $cells[$month]['continuity'] = 'unknown';
+
+                        continue;
+                    }
+                    $prevDay = $byDay[$days[$idx - 1]];
+                    $today = $byDay[$firstDay];
+                    // Closing balance of the previous day: a balance there that no other row that day continues from.
+                    $prevOpenings = $prevDay->map(fn ($t) => $t->balance_after_pence - $t->amount_pence)->all();
+                    $prevClosings = $prevDay->pluck('balance_after_pence')->reject(fn ($b) => in_array($b, $prevOpenings, true))->all() ?: $prevDay->pluck('balance_after_pence')->all();
+                    $todayClosings = $today->pluck('balance_after_pence')->all();
+                    $todayOpenings = $today->map(fn ($t) => $t->balance_after_pence - $t->amount_pence)->reject(fn ($b) => in_array($b, $todayClosings, true))->all()
+                        ?: $today->map(fn ($t) => $t->balance_after_pence - $t->amount_pence)->all();
+                    $cells[$month]['continuity'] = array_intersect($prevClosings, $todayOpenings) ? 'ok' : 'gap';
                 }
             }
 
