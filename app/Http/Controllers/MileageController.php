@@ -30,7 +30,8 @@ class MileageController extends Controller
             'total_pence' => $result['total_pence'],
             'total_miles' => $result['total_miles'],
             'vehicles' => Vehicle::query()->orderBy('name')->get(['id', 'name', 'type', 'method', 'registration']),
-            'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on', 'postcode', 'location']),
+            'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on', 'postcode', 'location'])
+                ->map(fn ($j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'postcode' => $j->postcode, 'location' => $j->location]),
         ]);
     }
 

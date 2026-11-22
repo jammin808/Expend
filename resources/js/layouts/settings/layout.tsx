@@ -12,6 +12,11 @@ const sidebarNavItems: NavItem[] = [
         icon: null,
     },
     {
+        title: 'Integrations',
+        url: '/settings/integrations',
+        icon: null,
+    },
+    {
         title: 'Rules',
         url: '/settings/rules',
         icon: null,

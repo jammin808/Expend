@@ -94,6 +94,7 @@ class JobController extends Controller
             'documents' => Document::query()->where('work_job_id', $job->id)->whereNull('parent_id')->withCount('children')->orderByDesc('received_at')->get()
                 ->map(fn ($d) => DocumentController::row($d)),
             'invoices' => Invoice::query()->where('work_job_id', $job->id)->get()->map(fn ($i) => InvoiceController::row($i)),
+            'kinds' => Document::KINDS,
             'lookups' => Present::lookups(),
             'clients' => Client::query()->orderBy('name')->get(['id', 'name']),
         ]);

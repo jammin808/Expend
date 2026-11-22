@@ -39,7 +39,7 @@ class InvoiceController extends Controller
                     'amount_minor' => $l->amount_minor, 'source_quote' => $l->source_quote,
                 ]),
             ],
-            'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on']),
+            'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on'])->map(fn ($j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d')]),
             'clients' => Client::query()->orderBy('name')->get(['id', 'name']),
         ]);
     }

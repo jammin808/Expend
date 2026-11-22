@@ -1,11 +1,14 @@
+import { DocLine, type DocRow } from '@/components/doc-line';
 import { ItemDrawer } from '@/components/item-drawer';
 import { JobForm, type JobData } from '@/components/job-form';
+import { JobSheet, type SheetFact } from '@/components/job-sheet';
 import { Money } from '@/components/money';
 import { StatusPill } from '@/components/status-pill';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/app-layout';
 import { day, kindLabels, money } from '@/lib/format';
+import { type InvoiceRow } from '@/pages/invoices/index';
 import { type Item, type Lookups } from '@/types';
 import { Head, router } from '@inertiajs/react';
 import { useState } from 'react';
@@ -29,9 +32,13 @@ interface Props {
     near: Item[];
     lookups: Lookups;
     clients: { id: number; name: string }[];
+    facts: SheetFact[];
+    documents: DocRow[];
+    invoices: InvoiceRow[];
+    kinds: Record<string, string>;
 }
 
-export default function JobShow({ job, lines, mileage, totals, near, lookups, clients }: Props) {
+export default function JobShow({ job, lines, mileage, totals, near, lookups, clients, facts, documents, invoices, kinds }: Props) {
     const [editing, setEditing] = useState(false);
     const [drawer, setDrawer] = useState<{ source: 'bank' | 'manual'; id: number } | null>(null);
 
@@ -74,6 +81,67 @@ export default function JobShow({ job, lines, mileage, totals, near, lookups, cl
                         </div>
                     ))}
                 </div>
+                <section className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h2 className="font-semibold">Job sheet</h2>
+                        <div className="flex gap-2">
+                            <label className="hover:bg-muted cursor-pointer rounded-md border px-3 py-1.5 text-sm">
+                                Add documents
+                                <input
+                                    type="file"
+                                    multiple
+                                    className="hidden"
+                                    onChange={(e) =>
+                                        e.target.files?.length &&
+                                        router.post(
+                                            '/documents',
+                                            { files: Array.from(e.target.files), work_job_id: job.id },
+                                            { forceFormData: true, preserveScroll: true },
+                                        )
+                                    }
+                                />
+                            </label>
+                            <Button size="sm" variant="outline" onClick={() => router.post(`/jobs/${job.id}/invoice`)}>
+                                Draft invoice
+                            </Button>
+                        </div>
+                    </div>
+                    <JobSheet job={job} facts={facts} documents={documents} />
+                </section>
+
+                {documents.length > 0 && (
+                    <section className="space-y-2">
+                        <h2 className="font-semibold">Documents</h2>
+                        <ul className="divide-y rounded-xl border">
+                            {documents.map((d) => (
+                                <li key={d.id}>
+                                    <DocLine d={d} kinds={kinds} />
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
+
+                {invoices.length > 0 && (
+                    <section className="space-y-2">
+                        <h2 className="font-semibold">Invoices</h2>
+                        <ul className="divide-y rounded-xl border text-sm">
+                            {invoices.map((i) => (
+                                <li key={i.id}>
+                                    <a href={`/invoices/${i.id}`} className="hover:bg-muted/40 flex justify-between p-3">
+                                        <span>
+                                            {i.number ?? 'Draft invoice'}
+                                            {i.number ? ` · ${i.status}` : ''}
+                                            {i.overdue ? ' · overdue' : ''}
+                                        </span>
+                                        <span className="tabular-nums">{money(i.total_minor, i.currency)}</span>
+                                    </a>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
+
                 {job.fee_pence ? (
                     <p className="text-muted-foreground text-sm">
                         Agreed fee {money(job.fee_pence)}. Income counts payments you've confirmed as this job's.

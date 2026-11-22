@@ -2,9 +2,12 @@
 
 namespace Database\Seeders;
 
+use App\Domain\Ai\DocumentReader;
+use App\Domain\Documents\DocumentIntake;
 use App\Domain\Import\CsvReader;
 use App\Domain\Import\Importer;
 use App\Domain\Import\ProfileDetector;
+use App\Domain\Invoices\InvoiceService;
 use App\Models\Account;
 use App\Models\CalendarEvent;
 use App\Models\Client;
@@ -15,6 +18,7 @@ use App\Models\Vehicle;
 use App\Models\WorkJob;
 use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
+use Dompdf\Dompdf;
 use Illuminate\Database\Seeder;
 
 /**
@@ -120,6 +124,8 @@ class DemoSeeder extends Seeder
             @unlink($path);
         }
 
+        $this->demoPurchaseOrder($jobs[1]);
+
         $car = Vehicle::query()->firstOrCreate(['name' => 'My car'], ['type' => 'car_van', 'method' => 'simplified']);
         foreach (array_slice($jobs, 0, 4) as $job) {
             MileageTrip::query()->create([
@@ -127,5 +133,47 @@ class DemoSeeder extends Seeder
                 'from_place' => 'Home', 'to_place' => $job->location, 'miles' => '86.0', 'purpose' => 'Drive to venue (return trip)',
             ]);
         }
+    }
+
+    /** A fictional PO, read as if by the AI (no API call), to show the job sheet and invoice drafting. */
+    private function demoPurchaseOrder(WorkJob $job): void
+    {
+        $date = CarbonImmutable::instance($job->starts_on);
+        $pdf = new Dompdf;
+        $pdf->loadHtml("<h1>Purchase Order PO-7781</h1><p>{$job->client->name}, 12 Wharf Street, Manchester M1 2AB. Accounts: accounts@example.com</p>"
+            ."<p>Event: {$job->title} at {$job->location}, {$date->format('j F Y')}. Call time 07:00, load-in 07:30, show finishes 23:00.</p>"
+            .'<p>Travel: rail tickets booked by production. Hotel: Premier Inn, 1 night, booked and paid by production.</p>'
+            .'<p>Parking: crew car park C, pass at stage door.</p>'
+            .'<table><tr><td>Show day technician</td><td>1 x 950.00</td><td>950.00</td></tr><tr><td>Prep day</td><td>1 x 350.00</td><td>350.00</td></tr></table>'
+            .'<p>Total 1,300.00 GBP. Payment terms: 30 days from invoice.</p>');
+        $pdf->render();
+        $doc = app(DocumentIntake::class)->store($pdf->output(), 'PO-7781.pdf', 'application/pdf', 'email', [
+            'from' => 'bookings@example.com', 'subject' => 'Booking confirmation and PO for '.$job->title, 'received_at' => $date->subDays(20),
+        ]);
+        $quote = fn (string $q) => $q;
+        app(DocumentReader::class)->save($doc, [
+            'kind' => 'po', 'summary' => "PO-7781 from {$job->client->name} for {$job->title}: show day and prep day, £1,300 total. Hotel and rail booked by production.",
+            'job_link' => ['job_id' => $job->id, 'reason' => 'Same client, venue and date'], 'new_job' => null,
+            'facts' => [
+                ['field' => 'call_time', 'label' => 'Call time', 'value' => '07:00', 'date' => $date->format('Y-m-d'), 'time' => '07:00', 'quote' => $quote('Call time 07:00'), 'page' => 1],
+                ['field' => 'load_in', 'label' => 'Load-in', 'value' => '07:30', 'date' => $date->format('Y-m-d'), 'time' => '07:30', 'quote' => 'load-in 07:30', 'page' => 1],
+                ['field' => 'finish_time', 'label' => 'Show finishes', 'value' => '23:00', 'date' => $date->format('Y-m-d'), 'time' => '23:00', 'quote' => 'show finishes 23:00', 'page' => 1],
+                ['field' => 'venue', 'label' => 'Venue', 'value' => $job->location, 'date' => null, 'time' => null, 'quote' => "at {$job->location}", 'page' => 1],
+                ['field' => 'travel', 'label' => 'Travel', 'value' => 'Rail tickets booked by production', 'date' => null, 'time' => null, 'quote' => 'rail tickets booked by production', 'page' => 1],
+                ['field' => 'accommodation', 'label' => 'Hotel', 'value' => 'Premier Inn, 1 night, booked and paid by production', 'date' => null, 'time' => null, 'quote' => 'Hotel: Premier Inn, 1 night, booked and paid by production', 'page' => 1],
+                ['field' => 'parking', 'label' => 'Parking', 'value' => 'Crew car park C, pass at stage door', 'date' => null, 'time' => null, 'quote' => 'crew car park C, pass at stage door', 'page' => 1],
+                ['field' => 'contact', 'label' => 'Production manager', 'value' => 'Sam (mobile on the call sheet)', 'date' => null, 'time' => null, 'quote' => 'Production manager Sam', 'page' => 1],
+            ],
+            'po' => [
+                'po_number' => 'PO-7781', 'bill_to_name' => $job->client->name, 'bill_to_address' => "12 Wharf Street\nManchester M1 2AB", 'bill_to_email' => 'accounts@example.com',
+                'currency' => 'GBP', 'payment_terms_days' => 30, 'total' => ['amount_minor' => 130000, 'quote' => 'Total 1,300.00 GBP'],
+                'lines' => [
+                    ['description' => 'Show day technician', 'quantity' => 1, 'unit_price_minor' => 95000, 'amount_minor' => 95000, 'quote' => 'Show day technician 1 x 950.00 950.00'],
+                    ['description' => 'Prep day', 'quantity' => 1, 'unit_price_minor' => 35000, 'amount_minor' => 35000, 'quote' => 'Prep day 1 x 350.00 350.00'],
+                ],
+            ],
+            'receipt' => null,
+        ], [['id' => $job->id]], 'demo (no AI call)');
+        app(InvoiceService::class)->draftFromDocument($doc->fresh('job'));
     }
 }

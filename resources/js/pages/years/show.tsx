@@ -308,6 +308,19 @@ export default function YearShow({ year, progress, coverage, groups, summary, es
                             : 'Everything in this year has a confirmed decision.'}{' '}
                         Each item shows that day's calendar entries and any jobs around the date.
                     </p>
+                    {progress.unreviewed_count > 0 && (
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="mt-3"
+                            onClick={() => router.post('/ai/suggest', { tax_year: year.label }, { preserveScroll: true })}
+                        >
+                            Ask AI to suggest the next 40
+                        </Button>
+                    )}
+                    <p className="text-muted-foreground mt-2 text-xs">
+                        AI suggestions arrive unconfirmed and labelled; you accept or change each one.
+                    </p>
                 </Step>
 
                 <Step n={4} title="Checks before filing">

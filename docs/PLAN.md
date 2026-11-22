@@ -11,6 +11,10 @@ manual job allocation, jobs and fee matching, mileage at each year's rate, and o
 monthly rates. Not built yet: hotel stays and journeys (§6.5–6.7), Gmail, AI (§6.8), recharges (§6.9),
 invoicing, MTD quarterly export and passkeys. See the README for setup and deployment.
 
+**Update (23 Nov 2026):** documents (upload, email forwarding, Telegram), AI reading with quote checks, job
+sheets, invoices from POs, the assistant with figure checks, AI transaction suggestions and car hire are
+built; an independent review's ten findings are fixed with regression tests.
+
 ---
 
 ## 0. What changed from v1

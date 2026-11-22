@@ -46,7 +46,7 @@ class DocumentController extends Controller
         $document->load(['facts', 'job', 'children.facts', 'parent']);
 
         return Inertia::render('documents/show', [
-            'document' => self::row($document) + [
+            'document' => array_merge(self::row($document), [
                 'text' => $document->text ? mb_substr($document->text, 0, 60_000) : null,
                 'text_status' => $document->text_status,
                 'extraction' => $document->extraction,
@@ -54,9 +54,9 @@ class DocumentController extends Controller
                 'facts' => $document->facts->map(fn ($f) => $f->only(['id', 'field', 'label', 'value', 'at_time', 'quote', 'page', 'verified', 'verification_note']) + ['on_date' => $f->on_date?->format('Y-m-d')]),
                 'children' => $document->children->map(fn (Document $c) => self::row($c)),
                 'parent' => $document->parent ? self::row($document->parent) : null,
-                'invoices' => $document->id ? Invoice::query()->where('document_id', $document->id)->get(['id', 'number', 'status', 'total_minor']) : [],
-            ],
-            'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on']),
+                'invoices' => Invoice::query()->where('document_id', $document->id)->get(['id', 'number', 'status', 'total_minor']),
+            ]),
+            'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on'])->map(fn ($j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d')]),
             'kinds' => Document::KINDS,
             'aiReady' => AiConfig::ready(),
         ]);

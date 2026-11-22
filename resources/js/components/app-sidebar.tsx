@@ -13,7 +13,20 @@ import {
 } from '@/components/ui/sidebar';
 import { type SharedData } from '@/types';
 import { Link, usePage } from '@inertiajs/react';
-import { Briefcase, Car, CreditCard, FileSpreadsheet, Inbox, LayoutGrid, ListChecks, Settings, Upload } from 'lucide-react';
+import {
+    Briefcase,
+    Car,
+    CreditCard,
+    FileSpreadsheet,
+    FileText,
+    Inbox,
+    LayoutGrid,
+    ListChecks,
+    ReceiptText,
+    Settings,
+    Sparkles,
+    Upload,
+} from 'lucide-react';
 import AppLogo from './app-logo';
 
 export function AppSidebar() {
@@ -22,6 +35,7 @@ export function AppSidebar() {
 
     const main = [
         { title: 'Overview', url: '/dashboard', icon: LayoutGrid },
+        { title: 'Assistant', url: '/assistant', icon: Sparkles },
         { title: 'Inbox', url: '/inbox', icon: Inbox, badge: nav?.inbox },
         { title: 'Tax years', url: '/years', icon: ListChecks },
         { title: 'Transactions', url: '/transactions', icon: FileSpreadsheet },
@@ -29,6 +43,8 @@ export function AppSidebar() {
     ];
     const work = [
         { title: 'Jobs', url: '/jobs', icon: Briefcase },
+        { title: 'Documents', url: '/documents', icon: FileText },
+        { title: 'Invoices', url: '/invoices', icon: ReceiptText },
         { title: 'Mileage', url: '/mileage', icon: Car },
         { title: 'Accounts', url: '/accounts', icon: CreditCard },
         { title: 'Settings', url: '/settings/ledger', icon: Settings },

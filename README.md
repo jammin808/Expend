@@ -27,13 +27,25 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   10,000 miles), counted as a travel expense for the job.
 - **Other currencies**: cash or receipts in USD, EUR and others convert using the document's sterling
   figure if it has one, otherwise HMRC's monthly exchange rate for that date (or your own rate).
+- **Documents** (POs, job invites, production packs, call sheets, bookings, receipts) by upload, email
+  forwarding or a private Telegram bot. Claude reads them into a **job sheet**: call and load-in times, venue,
+  travel, accommodation and who booked it, contacts, PO number, rates and invoicing details. Every detail
+  keeps the exact words it came from and is checked against the document's text; anything that can't be
+  checked is marked for you.
+- **Invoices from POs**: PO lines prefill a draft; the total is checked against the PO; issuing gives the next
+  number and a PDF, after which it can't be edited (void and re-issue instead). Incoming payments of the
+  invoice amount are suggested against it.
+- **Assistant**: ask anything about your money, jobs, dates and documents, in the app or on Telegram. It
+  looks things up with read-only tools, cites records, labels suggestions and estimates, and every money
+  figure it quotes is checked against your data; anything it can't match is flagged. It can suggest
+  decisions for your Inbox but never confirms anything. AI suggestions for a whole tax year are one click.
 - **Spreadsheet export** of any year (return figures, every transaction, mileage), for filing or records.
 - **Security**: one account only (registration closes after you sign up), two-factor sign-in with
   recovery codes, strict security headers and content security policy, locked tax years, encrypted
   calendar feed address, encrypted backups the server itself can't read.
 
-Not built yet (see the plan): hotel-stay and journey matching, Gmail booking emails, AI suggestions and
-document reading, invoicing, Making Tax Digital quarterly export, passkeys.
+Not built yet (see the plan): night-by-night hotel-stay and journey matching, direct Gmail search (use
+forwarding for now), recharges, Making Tax Digital quarterly export, passkeys.
 
 ## Run it on your computer
 
@@ -61,7 +73,8 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 64 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX, 2FA, pages
+php artisan test        # 86 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+                        # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint
 ```
@@ -107,7 +120,12 @@ One-time setup:
    17 2 * * * bash ~/domains/expenses.rohleder.tech/app/current/deploy/backup.sh
    ```
    Copy the encrypted backups in `~/ledger-backups` off the server regularly.
-9. **First visit.** Open the site, create your account (sign-up then closes for good), complete Setup,
+9. **AI, email and Telegram** (Settings › Integrations): paste a Claude API key (or set `ANTHROPIC_API_KEY` in
+   `.env`), choose the model (Claude Opus 5.5 by default) and a monthly spending cap. For email, create a
+   mailbox in hPanel (for example `ledger@rohleder.tech`), enter its IMAP details and your own sending
+   addresses, and optionally add a Gmail filter that forwards POs, call sheets and production packs to it.
+   For Telegram, create a bot with @BotFather, paste its token, then send the bot the pairing code shown.
+10. **First visit.** Open the site, create your account (sign-up then closes for good), complete Setup,
    and turn on two-factor sign-in under Settings › Security.
 
 ## Getting your statements
@@ -144,6 +162,10 @@ Then load `database.sql` into an empty database. Try this once before you rely o
 | Return figures, estimate, bill, checks, mileage | `app/Domain/Tax/` |
 | Exchange rates | `app/Domain/Fx/ExchangeRates.php` |
 | Audit log | `app/Domain/Audit/AuditLog.php` |
+| Documents, text extraction, grounding checks | `app/Domain/Documents/` |
+| Claude: document reading, assistant and tools, suggestions | `app/Domain/Ai/` |
+| Invoices and PDF | `app/Domain/Invoices/`, `resources/views/pdf/invoice.blade.php` |
+| Email and Telegram intake | `app/Domain/Mail/`, `app/Domain/Telegram/` |
 | Screens | `resources/js/pages/` |
 
 Tax figures are a cross-check. HMRC's own calculation and your online account are the authority.
