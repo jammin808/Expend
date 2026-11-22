@@ -16,6 +16,7 @@ Status: draft for the code architect. Revised 22 Nov 2026 from the owner's v1 pl
 | Email | Gmail API | Gmail API, read-only, with narrow searches (bookings, receipts) and an access log. Forwarding mailbox as the privacy-first alternative | Hotel-stay checks need on-demand searches around job dates. Access stays read-only and narrow, and the OAuth token-expiry trap is avoided |
 | Calendar | Calendar API | Default: Google Calendar's secret iCal feed (read-only). API optional | No OAuth to maintain |
 | Hotel stays | Not covered | Each stay is assembled from Gmail bookings, calendar and bank payments, then classified night by night against job dates and venue distance. Never auto-confirmed | Hotels are the classic mixed business/personal expense |
+| Travel journeys | Not covered | Uber, Bolt, taxis, Trainline and train operators, TfL, coaches, parking, tolls and fuel are matched to each job's travel window, grouped into one trip per job and confirmed per trip | Travel is mixed business/personal too, and a job with no recorded travel often means a missed claim |
 | Receipts | From email only | Phone camera capture is a primary input | Most receipts are paper or on-screen at the moment of spend |
 | Bank formats | CSV, XLSX, PDF from the start | CSV/OFX first with saved per-bank profiles; XLSX next; PDF last, gated by a balance check | PDF parsing is the least reliable part, and the host cannot run `pdftotext` |
 | PDF generation | Unspecified | dompdf (pure PHP) | `exec`/`shell_exec` are disabled on the host |
@@ -164,7 +165,10 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `stay_nights` | One row per night: date, `amount_pence`, linked job, classification (`business`, `personal`, `review`), reasons, confirmed |
 | `stay_sources` | Links a stay to Gmail message IDs, calendar event UIDs and bank transactions; keeps every version of the booking |
 | `places` | Postcode-to-coordinates cache |
-| `settings` | Home postcode, travel thresholds (far from home, early start, late finish), hotel sender list |
+| `journeys` | One per journey or charge: mode (`rideshare`, `taxi`, `rail`, `tfl`, `coach`, `parking`, `toll`, `road_charge`, `fuel`, `flight`, `car_hire`), provider, travel date and time, from/to places, booking reference, purchase date, `amount_pence`, status (`booked`, `travelled`, `cancelled`, `refunded`), paid by, linked job, classification, reasons, confirmed |
+| `journey_sources` | Links a journey to Gmail message IDs, bank transactions, TfL journey-history rows and calendar events |
+| `merchant_patterns` | Bank-description pattern mapped to provider and type (hotel, ride, rail, TfL, food delivery, parking, penalty charge…). Seeded, editable, refined from your statements |
+| `settings` | Home postcode, travel thresholds (far from home, early start, late finish), hotel and travel sender lists |
 | `invoices`, `invoice_lines`, `payments`, `credit_notes` | `payments` links an invoice to bank transactions; partial payments allowed |
 | `vehicles`, `mileage_trips` | Vehicle claim method (simplified mileage or actual costs, fixed per vehicle); trips with date, from/to, miles, job and a snapshot of the rate used |
 | `periods` | Tax years and quarters; status `open`/`closed`/`submitted`; lock metadata |
@@ -183,6 +187,7 @@ Invariants, enforced in both code and database:
   statement never duplicates rows.
 - A stay's nights sum exactly to its total. Allocations on the linked bank transactions are generated from
   the confirmed nights, so the stay and the ledger always agree.
+- Where TfL journey history is imported, each TfL bank charge equals the sum of the fares behind it.
 - No `ON DELETE CASCADE` on financial tables. Void or reverse instead of deleting.
 - Rows in a locked period cannot change. Guard this in the domain layer and cover it with a test; also use
   a database trigger if the host allows it.
@@ -336,7 +341,7 @@ it up against your jobs night by night, and proposes a split for you to confirm.
 
 | Source | What it gives | How it's read |
 |---|---|---|
-| Gmail booking emails | Hotel, address and postcode, check-in and check-out, guests, booking reference, price, amendments and cancellations | Narrow read-only searches (below). Parsers are tried in order: the schema.org `LodgingReservation` markup that most booking sites and hotel chains embed (the same markup Gmail uses for its booking cards); per-sender parsers for the providers you actually use; optional AI extraction (§6.6); manual entry as a last resort |
+| Gmail booking emails | Hotel, address and postcode, check-in and check-out, guests, booking reference, price, amendments and cancellations | Narrow read-only searches (below). Parsers are tried in order: the schema.org `LodgingReservation` markup that most booking sites and hotel chains embed (the same markup Gmail uses for its booking cards); per-sender parsers for the providers you actually use; optional AI extraction (§6.8); manual entry as a last resort |
 | Google Calendar | Job dates, times and venue. Also hotel reservations, if "Events from Gmail" is on | ICS feed or Calendar API. Gmail-created events have the type `fromGmail` in the API; check whether they also appear in the iCal feed |
 | Bank transactions | What was actually paid, when, and in pounds | Merchant patterns (hotel chains, booking sites); amount matched against the booking; date matched against the booking date (prepaid) or check-out ± 3 days (pay at hotel) |
 | Jobs | Date range, venue postcode, client | Jobs section |
@@ -345,12 +350,22 @@ it up against your jobs night by night, and proposes a split for you to confirm.
 around those dates). Starting queries, editable in Settings:
 
 ```
-from:(booking.com OR expedia OR hotels.com OR airbnb OR premierinn OR travelodge OR ihg.com OR marriott OR hilton OR accor)
+from:(booking.com OR hotels.com OR premierinn.com OR travelodge.co.uk OR ihg.com)
 subject:(booking OR reservation OR confirmation OR receipt) (hotel OR "check-in" OR "check in" OR stay)
 ```
 
-When you confirm a stay from a new sender, that sender is added to the list. Only matching messages are
-fetched, and every one appears in the "what the app read" log.
+The first parsers cover the five providers you use: **Booking.com, Hotels.com, Premier Inn, Travelodge
+and IHG**. Confirm the exact sender addresses against your real emails during the build. When you confirm
+a stay from a new sender, that sender is added to the list. Only matching messages are fetched, and every
+one appears in the "what the app read" log.
+
+**How these providers usually appear on bank statements** (seed `merchant_patterns` with these, then
+refine them from your real statements):
+
+- **Booking.com:** prepaid stays usually show as Booking.com; pay-at-property stays show under the hotel's own name.
+- **Hotels.com:** may show as Hotels.com or Expedia.
+- **IHG:** usually shows under the hotel brand, such as Holiday Inn, Holiday Inn Express or Crowne Plaza.
+- **Premier Inn and Travelodge:** show under their own names.
 
 **One stay per booking.** Stays are keyed by provider and booking reference. Later emails (amendment,
 reminder, receipt, cancellation) update the same stay and keep its history. A stay without a reference is
@@ -373,6 +388,9 @@ matched on hotel and dates.
 Each night gets *business*, *personal* or *needs review*, with its reasons. The stay is then all business,
 all personal, or mixed with a proposed split.
 
+Your usual pattern is **one night per job**. Any night the job doesn't explain is proposed as personal,
+and the stay goes to review.
+
 **Splitting the cost.**
 - Use nightly rates from the booking where given; otherwise split evenly per night.
 - Taxes and fees follow pro rata, and the remainder penny goes to the personal part.
@@ -385,8 +403,12 @@ all personal, or mixed with a proposed split.
   because HMRC looks closely at these.
 - Extra personal nights are personal. Whether travel to and from a mainly-business trip is fully allowable
   is the accountant's call; the app keeps the facts (nights, job, purpose) to support it.
-- **Who paid.** You (the normal case). The client directly: no expense, but kept on the job record. Or you,
-  recharged to the client: an expense, plus a prompt to add it to that job's invoice.
+- **Who paid.** You, or the client.
+  - Some clients book hotels for you directly and you don't pay them back. Those stays carry no expense and
+    nothing to declare; they're kept on the job record only.
+  - Anything you pay yourself during a client-booked stay (parking, an evening meal, an upgrade) is still
+    your expense. It's linked to the stay and reviewed like anything else.
+  - A third option, "you paid, recharged to the client", exists but is off by default.
 - **Timing.** The business/personal decision follows the *stay* dates; the tax year and quarter follow the
   *payment* date (cash basis). A May stay paid in March counts in March's tax year.
 - **Cancellations.** A cancelled stay expects a refund. If none arrives within 30 days, or a cancellation
@@ -398,8 +420,12 @@ all personal, or mixed with a proposed split.
 **Gap checks (both directions)**
 
 - Hotel payment but no booking email: ask for details or a receipt.
-- Booking email but no payment: the pay-at-hotel charge is still pending, the client paid, or a statement
-  is missing.
+- Booking email but no payment:
+  - Until 7 days after check-out, it's treated as a pay-at-hotel charge still to come.
+  - After that, the app proposes *client-booked*, more strongly if the email names a company or says the
+    stay is paid on a business account.
+  - Once you confirm, later bookings that look the same (same booker or company name) are proposed as
+    client-booked straight away, still for review.
 - Job far from home with no stay found: ask "Did you stay overnight?" (likely a missing receipt).
 - Stay with no job nearby: proposed as personal unless you say otherwise.
 
@@ -407,7 +433,88 @@ all personal, or mixed with a proposed split.
 is sent. For no external calls at all, use a local copy of the ONS Postcode Directory instead. Results are
 cached in `places`.
 
-### 6.6 Optional AI extraction (later, opt-in)
+### 6.6 Journeys: trains, taxis, TfL and other travel
+
+Travel is mixed business and personal in the same way as hotels, because the same Uber or Trainline
+account gets used for both. Each journey is checked against the job's travel window and proposed as
+business or personal, with reasons.
+
+**Job travel window.** This is the set of days a job's travel can belong to:
+- the job's working days;
+- the day before or after, when the night-before or night-after rules in §6.5 apply (early start, late
+  finish, far from home);
+- any day you stayed in a hotel for the job.
+
+Stays and journeys use the same window.
+
+**What's covered, and how each type shows up**
+
+| Type | Example bank description | Email | Notes |
+|---|---|---|---|
+| Ride-hailing: Uber, Bolt, FREENOW | `UBER *TRIP`, `BOLT.EU` | Trip receipt with pick-up and drop-off address and time | `UBER *EATS` is food, not travel (see Meals below) |
+| Taxis and minicabs | Firm name, or a card-terminal name that's hard to recognise | Sometimes | Unknown merchants on a job day near the venue are suggested as taxi, for review |
+| Rail: Trainline and train operators | `TRAINLINE`, operator name | E-ticket or receipt: origin, destination, travel date and time, railcard | Tickets are often bought weeks ahead. Refunds and Delay Repay are matched back to the journey |
+| TfL: Tube, bus, Overground, Elizabeth line | `TFL TRAVEL CH`: one charge per day, or several days combined | None | Optional: import the journey history from your TfL account to see each journey behind a charge |
+| Coach | National Express, Megabus | Ticket email | |
+| Parking, tolls, congestion and ULEZ charges | NCP, JustPark, RingGo, PayByPhone, Dartford Crossing, TfL road charges | Sometimes | Usually claimable alongside simplified mileage (accountant confirms) |
+| Parking fines and penalty charges | Council or operator name, "PCN" | Sometimes | **Never allowable.** Always classed as disallowable, with the reason shown |
+| Fuel | Fuel-station names | None | Only for a vehicle on actual costs. With simplified mileage, fuel is personal and the app offers to log the mileage trip instead |
+| Flights, car hire | Airline or hire company | Booking email | Later; same matching |
+
+The bank descriptions are examples. Seed `merchant_patterns` with them, then refine from your real statements.
+
+**Gmail searches** add travel senders, for example:
+
+```
+from:(uber.com OR bolt.eu OR thetrainline.com OR nationalexpress.com OR megabus.com)
+```
+
+Add the train operators you book with directly, and confirm sender addresses against your real emails
+during the build. Uber's ride and Eats receipts come from the same sender, so they're told apart by content.
+
+**Classifying a journey**
+
+1. **Date and time.** A journey inside a job travel window supports business. A late-night or weekend
+   journey with no job is proposed as personal.
+2. **Route.** Where the receipt or ticket gives places, journeys between home, a station or airport, your
+   hotel and the venue on job days support business. A route with no link to the job (for example, across
+   town to a restaurant on a non-job evening) goes to review.
+3. **The same place again and again.** If you travel to one venue very often, HMRC may treat it as
+   ordinary commuting rather than business travel. The app flags frequently visited venues for the
+   accountant to decide.
+4. **Who paid.** As with hotels, travel a client books for you carries no expense.
+
+**Timing and refunds.** As with hotels, the business purpose follows the travel date and the tax year
+follows the payment date. A ticket bought in March for an April trip counts in March's tax year. Refunds,
+Delay Repay and cancellations are linked to the original journey and netted off.
+
+**Meals.** `UBER *EATS`, Deliveroo and similar are food, not travel. During an overnight business trip
+they're suggested as Subsistence for that job; otherwise they're proposed as personal.
+
+**Category.** Business journeys go to HMRC category 4, "Car, van and travel expenses". Sub-categories:
+Rail, Taxi, Local transport, Parking and tolls, Fuel (actual-cost vehicles only), Flights, Car hire.
+Penalty charges are disallowable.
+
+**Gap checks**
+
+- Job far from home with no travel found (no train, taxi, fuel or mileage): the app asks "How did you get
+  there?" and offers to log a mileage trip. A missed mileage claim is lost money.
+- Train ticket for a day with no job: review.
+- Ride receipt email with no bank charge: probably a different card or a missing statement.
+- A TfL charge that doesn't equal the sum of its imported journeys: review.
+
+### 6.7 Trips: one view per job
+
+Each job has a trip: outbound travel, hotel stays, local journeys, meals and return travel, shown on one
+timeline with the total travel cost. A trip isn't a separate record. It's the job plus everything linked
+to it within its travel window. The trip total feeds job profitability.
+
+Most travel is confirmed **per trip, not per item**: one tap confirms "7 travel items for Job #42", and
+you open only the items you want to change. Hotel stays in the trip are shown expanded, night by night, so
+confirming the trip confirms them knowingly. Items outside every job's travel window always get their own
+review.
+
+### 6.8 Optional AI extraction (later, opt-in)
 
 An LLM API can extract fields from receipt photos and PDF statements reliably. It sends financial
 documents to a third party, so it is off by default, needs consent per document, and every result must
@@ -502,6 +609,12 @@ pass a validation gate (balance check or amount match).
   | Cancelled booking counted as an expense | Cancellation status; refund matched and netted | Cancel-and-refund fixture |
   | Prepaid stay in the wrong tax year | Tax year from payment date; purpose from stay dates | March payment for a May stay |
   | Rechargeable hotel left off the invoice | Rechargeable flag prompts an invoice line | Job closed with an uninvoiced recharge |
+  | Food delivery (e.g. Uber Eats) counted as travel | Separate merchant patterns for food and rides | `UBER *EATS` fixture |
+  | Fuel claimed for a simplified-mileage vehicle | Vehicle claim method; fuel proposed as personal, mileage trip offered | Fuel on a job day for a mileage vehicle |
+  | Parking fine claimed | Penalty-charge patterns are always disallowable | PCN fixture |
+  | Advance train ticket in the wrong tax year | Tax year from payment date; purpose from travel date | March purchase for April travel |
+  | Regular trips to one venue claimed as business travel | Frequent-venue flag for the accountant | 30 trips to one venue in a year |
+  | Driven job with no mileage claimed | "How did you get there?" gap check | Far-away job with no travel items |
 
 - **ALCOA+ audit trail** (attributable, legible, contemporaneous, original, accurate). Every change records
   who, when, what and why, in a hash chain so tampering can be detected. The chain is verified nightly.
@@ -545,10 +658,10 @@ pass a validation gate (balance check or amount match).
 ### 9.1 Navigation (bottom bar on mobile, sidebar on desktop)
 
 1. **Inbox** (the default screen): everything that needs a decision. That means unreviewed transactions,
-   hotel stays to confirm, missing receipts, possible duplicates, unmatched payments, overdue invoices and
-   sync problems.
+   hotel stays and trips to confirm, missing receipts, possible duplicates, unmatched payments, overdue
+   invoices and sync problems.
 2. **Money:** accounts, transactions, imports.
-3. **Jobs:** clients, jobs, job P&L, mileage, and a year timeline of jobs and hotel stays.
+3. **Jobs:** clients, jobs, job P&L, mileage, a trip view for each job, and a year timeline of jobs and travel.
 4. **Invoices:** create, send, track, credit notes.
 5. **Tax:** quarters, tax-year summary, estimate and set-aside, exports.
 
@@ -568,6 +681,10 @@ new invoice.
 - **Confirm a hotel stay.** The card shows a timeline: job days as bars, and hotel nights as blocks
   labelled business, personal or review. It also shows the distance to the venue and to home, and an icon
   for each source (email, calendar, bank). Tap "Accept split", or tap a night to change it.
+- **Confirm a trip.** The card lists every travel item for the job in time order, for example: train out,
+  taxi to the hotel, hotel night, taxi to the venue, train home. Each item shows its amount and why it was
+  matched ("Uber £18.40 · Thu 23:42 · venue → hotel · during Job #42"). One tap confirms the lot, or tap
+  an item to change it.
 - **Close the quarter.** A checklist screen:
   1. All transactions are reconciled.
   2. Balances match the statements.
@@ -596,11 +713,12 @@ new invoice.
 | 0. Decide and verify (days) | Answer §11; verify the remaining hosting items; create the site and database; CI/CD with an atomic deploy of a hello-world app; backups and heartbeat; hazard log v1 | CI deploys the hello page; a restore drill passes |
 | 1. Walking skeleton | Login (passkey + TOTP); audit log; accounts; CSV import for the main bank with balance check and dedupe; Inbox review; HMRC categories; business, personal and transfer types; quarterly summary with CSV export | The 6 Oct–5 Jan quarter can be done in the app (deadline 7 Feb 2027) |
 | 2. Ledger depth | Splits and business-use %; rules; duplicates UI; period close and lock; more bank profiles; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation |
-| 3. Jobs and stays | Clients; jobs; calendar sync; read-only Gmail connection; booking-email extraction; hotel stays classified night by night; gap checks; job-matching suggestions; mileage and vehicles; job P&L | Every hotel payment is linked to a stay and proposed as business, personal or split, with reasons |
-| 4. Invoicing | Numbering; templates; PDF; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
-| 5. Tax and reports | Tax-year summary; SA103 mapping; trading-allowance comparison; tax estimate and set-aside; P&L; accountant pack (Excel/CSV/PDF plus receipts zip) | The accountant can work from the export alone |
-| 6. Other email receipts | Receipts and invoices from known senders via the Gmail connection (or the forwarding mailbox); attachment extraction; matching | Emailed receipts attach themselves |
-| 7. Automation and extras | Recurring expenses; smarter rules; PDF statements; optional AI extraction; optional Open Banking; optional direct MTD API | No fixed exit criterion |
+| 3. Jobs | Clients; jobs; calendar sync; job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
+| 4. Travel | Read-only Gmail connection; booking and travel email extraction for your providers; hotel stays night by night; journeys; optional TfL journey-history import; trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
+| 5. Invoicing | Numbering; templates; PDF; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
+| 6. Tax and reports | Tax-year summary; SA103 mapping; trading-allowance comparison; tax estimate and set-aside; P&L; accountant pack (Excel/CSV/PDF plus receipts zip) | The accountant can work from the export alone |
+| 7. Other email receipts | Receipts and invoices from known senders via the Gmail connection (or the forwarding mailbox); attachment extraction; matching | Emailed receipts attach themselves |
+| 8. Automation and extras | Recurring expenses; smarter rules; PDF statements; optional AI extraction; optional Open Banking; optional direct MTD API | No fixed exit criterion |
 
 ---
 
@@ -618,10 +736,17 @@ new invoice.
 6. Are you a **Scottish taxpayer**? Scotland has different income-tax bands.
 7. **Mileage:** do you use your own car, and do you claim simplified rates or actual costs?
 8. Are you comfortable keeping this app on the **same hosting account** as your other sites, or should it get its own?
-9. Your **home postcode**, and how far away a job usually is before you stay overnight. This sets the
-   "far from home" default. The postcode goes into the app's settings, not this document.
-10. Which **booking sites and hotel chains** do you mostly use? These get parsers first.
-11. Do **clients** ever book hotels for you, or reimburse you for them?
+9. Your **home postcode**, and how far away a job usually is before you stay overnight (default: 50
+   miles). This sets the "far from home" rule. The postcode goes into the app's settings, not this document.
+10. Do clients also book **trains or taxis** for you, for example through a travel agent or a business Uber account?
+11. Is your **TfL** travel on a contactless card registered to a TfL account? If so, its journey history can be imported.
+
+**Answered (22 Nov 2026)**
+
+- Typical hotel stay: one night per job.
+- Booking providers: Booking.com, Hotels.com, Premier Inn, Travelodge, IHG.
+- Some clients book hotels directly, and the owner doesn't pay them back, so those stays carry no expense.
+- Travel to cover: Uber, Trainline, taxis, TfL and similar, compared against job dates.
 
 ---
 
