@@ -64,10 +64,25 @@ final class ExchangeRates
 
     public function setManual(string $currency, CarbonImmutable $month, string $unitsPerGbp): void
     {
-        ExchangeRate::query()->updateOrCreate(
-            ['currency' => strtoupper($currency), 'period_start' => $month->startOfMonth()->format('Y-m-d'), 'source' => 'manual'],
-            ['period_end' => $month->endOfMonth()->format('Y-m-d'), 'units_per_gbp' => $unitsPerGbp],
-        );
+        $this->save(strtoupper($currency), $month->startOfMonth(), 'manual', $unitsPerGbp, overwrite: true);
+    }
+
+    /** Store a rate. Matches on the calendar date, so the stored time part never causes a duplicate. */
+    private function save(string $currency, CarbonImmutable $month, string $source, string $units, bool $overwrite): void
+    {
+        $existing = $this->stored($currency, $month, $source);
+        if ($existing) {
+            if ($overwrite) {
+                $existing->update(['units_per_gbp' => $units]);
+            }
+
+            return;
+        }
+
+        ExchangeRate::query()->create([
+            'currency' => $currency, 'period_start' => $month->format('Y-m-d'), 'period_end' => $month->endOfMonth()->format('Y-m-d'),
+            'source' => $source, 'units_per_gbp' => $units,
+        ]);
     }
 
     public function fetchMonth(CarbonImmutable $month): int
@@ -86,17 +101,17 @@ final class ExchangeRates
         }
 
         $count = 0;
+        $seen = [];
         foreach ($lines as $line) {
             $cells = str_getcsv($line, ',', '"', '');
             $code = strtoupper(trim($cells[$codeIdx] ?? ''));
             $units = trim($cells[$rateIdx] ?? '');
-            if (strlen($code) !== 3 || ! is_numeric($units)) {
+            // Some currencies appear once per country that uses them (for example XOF); the first entry wins.
+            if (strlen($code) !== 3 || ! is_numeric($units) || isset($seen[$code])) {
                 continue;
             }
-            ExchangeRate::query()->updateOrCreate(
-                ['currency' => $code, 'period_start' => $month->format('Y-m-d'), 'source' => 'hmrc_monthly'],
-                ['period_end' => $month->endOfMonth()->format('Y-m-d'), 'units_per_gbp' => $units],
-            );
+            $seen[$code] = true;
+            $this->save($code, $month, 'hmrc_monthly', $units, overwrite: true);
             $count++;
         }
 

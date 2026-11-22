@@ -10,18 +10,19 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AuthLayout from '@/layouts/auth-layout';
 
-interface LoginForm {
+type LoginForm = {
     email: string;
     password: string;
     remember: boolean;
-}
+};
 
 interface LoginProps {
     status?: string;
     canResetPassword: boolean;
+    canRegister?: boolean;
 }
 
-export default function Login({ status, canResetPassword }: LoginProps) {
+export default function Login({ status, canResetPassword, canRegister }: LoginProps) {
     const { data, setData, post, processing, errors, reset } = useForm<LoginForm>({
         email: '',
         password: '',
@@ -90,12 +91,14 @@ export default function Login({ status, canResetPassword }: LoginProps) {
                     </Button>
                 </div>
 
-                <div className="text-muted-foreground text-center text-sm">
-                    Don't have an account?{' '}
-                    <TextLink href={route('register')} tabIndex={5}>
-                        Sign up
-                    </TextLink>
-                </div>
+                {canRegister && (
+                    <div className="text-muted-foreground text-center text-sm">
+                        First time here?{' '}
+                        <TextLink href={route('register')} tabIndex={5}>
+                            Create your account
+                        </TextLink>
+                    </div>
+                )}
             </form>
 
             {status && <div className="mb-4 text-center text-sm font-medium text-green-600">{status}</div>}

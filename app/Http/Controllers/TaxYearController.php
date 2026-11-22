@@ -10,6 +10,7 @@ use App\Domain\Tax\TaxEstimator;
 use App\Domain\Tax\TaxParameters;
 use App\Domain\Tax\YearChecks;
 use App\Http\Presenters\Present;
+use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\TaxYear;
 use App\Support\Money;
@@ -106,9 +107,18 @@ class TaxYearController extends Controller
         $estimate = TaxEstimator::estimate($label, $summary['net_profit_pence']);
 
         $groups = BankTransaction::query()->where('tax_year', $label)->whereIn('review_status', ['unreviewed', 'suggested'])
-            ->selectRaw('merchant_key, COUNT(*) as n, SUM(ABS(amount_pence)) as value, SUM(CASE WHEN amount_pence > 0 THEN 1 ELSE 0 END) as money_in, MIN(description) as sample')
+            ->selectRaw("merchant_key, COUNT(*) as n, SUM(ABS(amount_pence)) as value, SUM(CASE WHEN amount_pence > 0 THEN 1 ELSE 0 END) as money_in, SUM(CASE WHEN review_status = 'suggested' THEN 1 ELSE 0 END) as suggested, MIN(description) as sample")
             ->groupBy('merchant_key')->orderByDesc('value')->limit(60)->get()
-            ->map(fn ($g) => ['merchant_key' => $g->merchant_key, 'count' => (int) $g->n, 'value_pence' => (int) $g->value, 'money_in' => (int) $g->money_in, 'sample' => $g->sample]);
+            ->map(function ($g) use ($label) {
+                $suggestion = null;
+                if ((int) $g->suggested === (int) $g->n) {
+                    $kinds = Allocation::query()->whereIn('bank_transaction_id', BankTransaction::query()->where('tax_year', $label)->where('merchant_key', $g->merchant_key)->where('review_status', 'suggested')->select('id'))
+                        ->distinct()->pluck('kind');
+                    $suggestion = $kinds->count() === 1 ? (Allocation::KINDS[$kinds->first()] ?? null) : 'Mixed suggestions';
+                }
+
+                return ['merchant_key' => $g->merchant_key, 'count' => (int) $g->n, 'value_pence' => (int) $g->value, 'money_in' => (int) $g->money_in, 'sample' => $g->sample, 'suggested' => (int) $g->suggested, 'suggestion' => $suggestion];
+            });
 
         return Inertia::render('years/show', [
             'year' => [

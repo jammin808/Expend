@@ -41,6 +41,10 @@ class ManualExpenseController extends Controller
             return response()->json(['ok' => true, 'rate' => $rate, 'pence' => $converted]);
         } catch (RateUnavailable|\InvalidArgumentException $e) {
             return response()->json(['ok' => false, 'message' => $e->getMessage()], 422);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json(['ok' => false, 'message' => "The exchange rate couldn't be looked up just now. Enter the rate yourself, or the sterling amount from the document."], 422);
         }
     }
 

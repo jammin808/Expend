@@ -80,14 +80,18 @@ class DecisionController extends Controller
             return back()->with('error', $e->getMessage());
         }
 
-        return back()->with('success', 'Confirmed.');
+        return request()->boolean('quiet') ? back() : back()->with('success', 'Confirmed.');
     }
 
     public function confirmBulk(Request $request): RedirectResponse
     {
-        $data = $request->validate(['ids' => 'required|array', 'ids.*' => 'integer']);
+        $data = $request->validate(['ids' => 'required_without:merchant_key|array', 'ids.*' => 'integer', 'merchant_key' => 'nullable|string', 'tax_year' => 'nullable|string|max:7']);
+        $query = BankTransaction::query()->where('review_status', 'suggested');
+        ! empty($data['ids'])
+            ? $query->whereIn('id', $data['ids'])
+            : $query->where('merchant_key', $data['merchant_key'])->when($data['tax_year'] ?? null, fn ($q, $y) => $q->where('tax_year', $y));
         $done = 0;
-        foreach (BankTransaction::query()->whereIn('id', $data['ids'])->where('review_status', 'suggested')->get() as $tx) {
+        foreach ($query->get() as $tx) {
             try {
                 $this->writer->confirm($tx);
                 $done++;
@@ -106,7 +110,7 @@ class DecisionController extends Controller
             return back()->with('error', $e->getMessage());
         }
 
-        return back()->with('success', 'Sent back to the Inbox.');
+        return request()->boolean('quiet') ? back() : back()->with('success', 'Sent back to the Inbox.');
     }
 
     private function find(string $source, int $id): BankTransaction|ManualExpense
@@ -121,8 +125,10 @@ class DecisionController extends Controller
             $message .= " Left {$result['skipped']} you'd already decided.";
         }
 
-        return $result['errors']
-            ? back()->with('error', implode(' ', $result['errors']))->with('success', $result['saved'] ? $message : null)
-            : back()->with('success', $message);
+        if ($result['errors']) {
+            return back()->with('error', implode(' ', $result['errors']))->with('success', $result['saved'] ? $message : null);
+        }
+
+        return request()->boolean('quiet') ? back() : back()->with('success', $message);
     }
 }

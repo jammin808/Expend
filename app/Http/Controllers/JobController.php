@@ -51,6 +51,24 @@ class JobController extends Controller
             ->whereBetween('posted_on', [$job->starts_on->copy()->subDays(3), $job->ends_on->copy()->addDays(5)])
             ->whereIn('review_status', ['unreviewed', 'suggested'])->orderBy('posted_on')->limit(60)->get();
 
+        // The fee usually arrives later: money in from this client, or for the agreed amount, within 90 days.
+        $clientWords = collect(preg_split('/\s+/', strtoupper((string) $job->client?->name)))
+            ->reject(fn ($w) => strlen($w) < 3 || in_array($w, ['LTD', 'LIMITED', 'THE', 'AND', 'PLC', 'LLP'], true));
+        $fees = BankTransaction::query()->with('account')->where('amount_pence', '>', 0)
+            ->whereIn('review_status', ['unreviewed', 'suggested'])
+            ->whereBetween('posted_on', [$job->starts_on->copy()->subDays(30), $job->ends_on->copy()->addDays(90)])
+            ->where(function ($q) use ($job, $clientWords) {
+                if ($job->fee_pence) {
+                    $q->orWhere('amount_pence', $job->fee_pence);
+                }
+                foreach ($clientWords as $word) {
+                    $q->orWhere('description', 'like', "%{$word}%")->orWhere('counterparty', 'like', "%{$word}%");
+                }
+            })
+            ->when(! $job->fee_pence && $clientWords->isEmpty(), fn ($q) => $q->whereRaw('1 = 0'))
+            ->orderBy('posted_on')->limit(10)->get();
+        $near = $fees->concat($near)->unique('id')->values();
+
         $income = $allocations->where('kind', 'business_income')->whereNotNull('confirmed_at')->sum('amount_pence');
         $spent = -$allocations->where('kind', 'business_expense')->whereNotNull('confirmed_at')->sum('amount_pence');
         $mileagePence = $mileage->sum('claim_pence');

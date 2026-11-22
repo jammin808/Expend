@@ -103,7 +103,7 @@ class TaxTest extends TestCase
     public function test_exchange_rates_come_from_hmrc_monthly_rates_and_can_be_overridden(): void
     {
         Http::fake([
-            'trade-tariff.service.gov.uk/*' => Http::response("Country/Territories,Currency,Currency Code,Currency Units per £1,Start date,End date\nUSA,Dollar,USD,1.2500,01/03/2025,31/03/2025\nEurozone,Euro,EUR,1.2000,01/03/2025,31/03/2025\n"),
+            'trade-tariff.service.gov.uk/*' => Http::response("Country/Territories,Currency,Currency Code,Currency Units per £1,Start date,End date\nUSA,Dollar,USD,1.2500,01/03/2025,31/03/2025\nEurozone,Euro,EUR,1.2000,01/03/2025,31/03/2025\nBenin,CFA Franc,XOF,791.9095,01/03/2025,31/03/2025\nMali,CFA Franc,XOF,791.9095,01/03/2025,31/03/2025\n"),
         ]);
         $fx = app(ExchangeRates::class);
 
@@ -112,6 +112,7 @@ class TaxTest extends TestCase
         $this->assertSame('hmrc_monthly', $usd['source']);
         $this->assertSame('1.25', $usd['units_per_gbp']);
 
+        $fx->setManual('EUR', CarbonImmutable::parse('2025-03-01'), '1.05');
         $fx->setManual('EUR', CarbonImmutable::parse('2025-03-01'), '1.1');
         $this->assertSame(-9091, $fx->toPence(-10000, 'EUR', CarbonImmutable::parse('2025-03-20'))['pence']);
         Http::assertSentCount(1);

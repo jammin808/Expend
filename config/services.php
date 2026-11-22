@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'heartbeat' => [
+        'url' => env('HEARTBEAT_URL'),
+    ],
+
 ];
