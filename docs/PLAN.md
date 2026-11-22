@@ -96,7 +96,7 @@ stable choice on shared hosting.
 | Concern | Choice | Notes |
 |---|---|---|
 | Framework | Laravel (current release) on PHP 8.4 | Fortify for login, TOTP and recovery codes; scheduler; queues; encryption; migrations |
-| UI | Blade + Livewire + Alpine + Tailwind | Server-driven; no SPA complexity. Assets compiled in CI, so the server needs no Node |
+| UI | Inertia + React + TypeScript + Tailwind + shadcn/ui (Laravel's official React starter kit) | App-like review screens: decisions apply instantly and sync in the background; keyboard shortcuts, swipe, large filterable tables. Built in CI with no server-side rendering, so there's no Node process on the server |
 | Database | Hostinger MySQL/MariaDB, InnoDB, utf8mb4, strict mode | |
 | Money | Integer pence (`BIGINT`) in the DB; `brick/money` in PHP | Never floats |
 | Spreadsheets | OpenSpout for large reads/writes; PhpSpreadsheet only where formatting matters | Memory |
