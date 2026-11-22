@@ -20,6 +20,7 @@ Status: draft for the code architect. Revised 22 Nov 2026 from the owner's v1 pl
 | Receipts | From email only | Phone camera capture is a primary input | Most receipts are paper or on-screen at the moment of spend |
 | Bank formats | CSV, XLSX, PDF from the start | CSV/OFX first with saved per-bank profiles; XLSX next; PDF last, gated by a balance check | PDF parsing is the least reliable part, and the host cannot run `pdftotext` |
 | PDF generation | Unspecified | dompdf (pure PHP) | `exec`/`shell_exec` are disabled on the host |
+| Control | "You approve uncertain classifications" | You have the final say on everything. Review every item, allocate to jobs by hand, get rule/matching/AI suggestions, and override any decision at any time; automation never overwrites your edits | The owner's requirement: a final manual override in every case |
 | Navigation | 8 sections | 5 sections: Inbox, Money, Jobs, Invoices, Tax (plus Settings) | Email and Calendar are sources of data, not places you go |
 | Phasing | Reporting in phase 6 | Walking skeleton (import, review, quarterly summary) in phase 1 | Tax deadlines drive the value; next MTD deadline is 7 Feb 2027 |
 | Security | HTTPS, 2FA, encrypted credentials | Adds passkeys, a threat model for a shared hosting account, backups encrypted to an offline key, CSV-injection-safe exports, re-auth for sensitive actions | |
@@ -31,13 +32,18 @@ Status: draft for the code architect. Revised 22 Nov 2026 from the owner's v1 pl
 
 When goals conflict, priority is: **correct money > security > ease of workflow > speed.**
 
+- **You always have the final say.** Rules, matching and AI only *suggest*. You can review every item,
+  allocate anything to a job by hand, and edit or override any decision at any time, whoever made it.
+  Automation never overwrites something you set yourself.
 - **Never silently guess.** Anything uncertain lands in the Inbox with a suggested answer. Nothing becomes
-  "business expense" or "taxable income" without your confirmation or a rule you created.
+  "business expense" or "taxable income" without your confirmation, or a rule you have explicitly set to
+  auto-confirm. Reports show unconfirmed amounts separately as "pending".
 - **Every pound accounted for.** Each bank transaction must be fully allocated (business, personal,
   transfer, etc.) before its period can close.
 - **Originals are sacred.** Imported files and rows are never edited or deleted. Corrections are new
   records with a reason.
-- **Everything is undoable** until a period is locked; after that, changes are explicit adjustments.
+- **Everything is undoable.** Before a period is locked, edits are direct. After it's locked you can still
+  unlock it (with a reason, after re-authenticating) or post an adjustment.
 - **Boring technology.** Few dependencies, mainstream packages, no runtime dependence on Node or external servers.
 
 Targets:
@@ -94,10 +100,11 @@ stable choice on shared hosting.
 | Money | Integer pence (`BIGINT`) in the DB; `brick/money` in PHP | Never floats |
 | Spreadsheets | OpenSpout for large reads/writes; PhpSpreadsheet only where formatting matters | Memory |
 | PDF output | dompdf | Pure PHP |
-| PDF input (phase 7) | smalot/pdfparser | Pure PHP |
+| PDF input (phase 9) | smalot/pdfparser | Pure PHP |
 | Calendar | sabre/vobject | ICS, including recurring events |
 | Email | Gmail API via google/apiclient; PHP imap extension for the forwarding-mailbox alternative | Read-only |
 | Geocoding | postcodes.io, or a local copy of the ONS Postcode Directory | UK postcodes to coordinates, for hotel/venue/home distances |
+| AI (opt-in) | Claude via the official PHP SDK (`anthropic-ai/sdk`) | Queued jobs only; structured outputs; Message Batches for overnight runs (§6.8) |
 | Passkeys | A maintained WebAuthn package (or Laravel's own, if available at build time) | |
 | Quality | Pest, Larastan at a strict level, Infection (mutation testing) on high-risk modules | |
 | CI/CD | GitHub Actions, then deploy over SSH | |
@@ -157,7 +164,8 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `accounts` | Bank and card accounts: type, last four digits only |
 | `import_batches` | File hash, import profile, period covered, opening/closing balance, balance-check result, status. "Undo this import" reverses a whole batch |
 | `bank_transactions` | Raw, immutable rows: account, batch, posting date, `amount_pence`, raw description, balance after, fingerprint, occurrence |
-| `allocations` | Explains a transaction: type (`business_expense`, `business_income`, `personal`, `transfer`, `drawings`, `capital_introduced`, `refund`, `loan`), HMRC category, job, `amount_pence`, business-use %, `vat_pence`, status (`suggested`/`confirmed`), reason, rule |
+| `allocations` | Explains a transaction: type (`business_expense`, `business_income`, `personal`, `transfer`, `drawings`, `capital_introduced`, `refund`, `loan`), HMRC category, job, `amount_pence`, business-use %, `vat_pence`, status (`suggested`/`confirmed`), decided by (`you`, `rule`, `matcher`, `ai`), `manual` flag (you set or changed it), confirmed at, reason, rule |
+| `suggestions` | Every suggestion ever made, from any source (rule, matcher, AI), with its confidence and reasons, and whether you accepted, changed or rejected it. Feeds the accuracy figures and rule learning |
 | `documents` | Receipts, statements, invoice PDFs: SHA-256, MIME type, size, private path; linked to transactions, allocations or jobs |
 | `clients`, `jobs` | A job has a client, date range, location, status and agreed fee |
 | `calendar_events` | ICS UID, start/end, location, linked job |
@@ -188,6 +196,8 @@ Invariants, enforced in both code and database:
 - A stay's nights sum exactly to its total. Allocations on the linked bank transactions are generated from
   the confirmed nights, so the stay and the ledger always agree.
 - Where TfL journey history is imported, each TfL bank charge equals the sum of the fares behind it.
+- **Automation never writes over a manual decision.** Any field you set or change is flagged `manual`.
+  Rule changes, re-matching and AI runs skip it; they can only add a new suggestion alongside it.
 - No `ON DELETE CASCADE` on financial tables. Void or reverse instead of deleting.
 - Rows in a locked period cannot change. Guard this in the domain layer and cover it with a test; also use
   a database trigger if the host allows it.
@@ -284,7 +294,7 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
   closing balance and every running balance. Otherwise the import is held for review. This makes parsing
   errors visible instead of silent.
 - Overlapping statements are expected and safe (see the dedupe fingerprint in §4).
-- **PDF statements (phase 7):** per-bank parsers in pure PHP or optional AI extraction. Both must pass the
+- **PDF statements (phase 9):** per-bank parsers in pure PHP, or AI extraction (§6.8). Both must pass the
   balance check.
 - **Open Banking aggregators:** later, if a provider with acceptable cost and terms exists. Consents need
   periodic renewal.
@@ -316,18 +326,40 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
 - If Gmail's "Events from Gmail" setting is on, hotel reservations may already show up as calendar events.
   Treat them as one more source for stays (§6.5) and deduplicate them against the booking email.
 
-### 6.4 Matching engine
+### 6.4 Suggestions: rules, matching and AI
 
-Matching uses deterministic, explainable scoring, not a black box:
+Three layers propose an answer for each item, and you make the final decision.
 
-1. **User rules** (exact supplier mapped to category or job) apply automatically, stay visible, and can be undone.
-2. **Candidate jobs** score on: transaction date within the job's date range plus a travel window; a
-   location in the description that matches the event location; a booking reference in an email; an amount
-   that matches a known booking.
-3. **The top suggestion is shown with its reasons,** for example "Premier Inn · during Job #42 · booking
-   email 3 Oct". One tap confirms. After you confirm the same supplier three times, the app offers to
-   create a rule.
-4. **Below the confidence threshold** there is no suggestion, only the Inbox item.
+1. **Your rules,** for example "Adobe → Software, 100% business". A rule pre-fills the answer and marks it
+   *suggested by rule*.
+2. **Matching** (deterministic and explainable) scores candidate jobs on:
+   - transaction date within the job's date range plus its travel window;
+   - a location in the description that matches the event location;
+   - a booking reference in an email;
+   - an amount that matches a known booking.
+3. **AI suggestions** (opt-in, §6.8) handle items the first two can't settle: free-text descriptions,
+   unfamiliar merchants, and items that could belong to more than one job.
+
+Each suggestion shows its source, confidence and reasons, for example "Premier Inn · during Job #42 ·
+booking email 3 Oct · matching (high)". When sources disagree, both are shown. Below the confidence
+threshold there is no suggestion at all, only the Inbox item.
+
+**What you can always do**
+
+- Accept a suggestion in one tap, change any part of it, or reject it and decide yourself.
+- Allocate anything to a job by hand, with or without a suggestion, including items automation never touched.
+- Edit or override any decision later, whoever made it. Your edit always wins, and the change is logged
+  with its reason.
+- Re-run matching or AI on demand for one item, a selection or a whole period. A re-run only adds fresh
+  suggestions; it never changes what you've set.
+
+**Auto-confirm is off by default.** You can switch an individual rule to auto-confirm (a monthly phone
+bill, say). Those items are still marked *auto-confirmed by rule*, stay visible in the review table, and
+appear on the quarter-close sign-off list. Hotel stays and AI suggestions can never auto-confirm.
+
+**Learning from your decisions.** When you change a suggestion, the app records what you chose. After
+you've made the same choice three times, it offers to create a rule. Settings shows the acceptance rate for
+each source (rules, matching, AI), so you can judge how far to trust each one.
 
 Hotel stays don't use this general scoring. They follow the night-by-night logic in §6.5.
 
@@ -514,11 +546,50 @@ you open only the items you want to change. Hotel stays in the trip are shown ex
 confirming the trip confirms them knowingly. Items outside every job's travel window always get their own
 review.
 
-### 6.8 Optional AI extraction (later, opt-in)
+### 6.8 AI assistance (opt-in)
 
-An LLM API can extract fields from receipt photos and PDF statements reliably. It sends financial
-documents to a third party, so it is off by default, needs consent per document, and every result must
-pass a validation gate (balance check or amount match).
+AI has two jobs:
+- **Suggesting** how to allocate items: job, HMRC category, business or personal, split.
+- **Extracting** fields from receipt photos, booking emails and PDF statements.
+
+It never confirms anything and never edits a decision. It only adds suggestions, which you accept, change
+or reject like any other.
+
+**Provider and setup**
+
+- Claude via the official PHP SDK (`anthropic-ai/sdk`, installed with Composer). Calls run in queued jobs,
+  never in page requests, so a slow or failed call can't block a screen.
+- Model: Claude Opus 5.5 (`claude-opus-5-5`), with effort set explicitly (start at `low` for routine
+  suggestions, and keep it there only if the test set below shows quality holds).
+- Structured outputs (a JSON schema in `outputConfig`). Every response must name a job from the candidate
+  list (or "none"), a valid category, a business/personal/split decision, a confidence and short reasons.
+  Anything that fails validation is discarded, and the item stays manual.
+- Overnight runs use the Message Batches API, at about half the cost. "Suggest now" on a single item uses a
+  normal request.
+- Check for the `refusal` stop reason and enable the API's server-side fallback. On any error the item just
+  has no AI suggestion; the manual flow is unaffected.
+- A monthly spending cap in Settings, with usage shown on screen.
+
+**What it sees (data minimisation)**
+
+- Sent for a suggestion: date, amount, bank description, and the candidate jobs (dates, town, client name).
+- Sent for extraction: only the document being read.
+- Never sent: account numbers, your whole ledger, or emails not linked to the item.
+- Every request is logged (what was sent, when, for which items) and viewable in Settings, next to Gmail's
+  "what the app read" log.
+- Suggestions and extraction have separate switches, and both stay off until you turn them on. Check the
+  API account's data-retention settings before switching on.
+
+**Checking it's helping**
+
+- Every AI suggestion is stored with the decision you finally made, so Settings shows its acceptance rate,
+  overall and by item type.
+- A fixed test set (anonymised past items with your confirmed answers) is re-run before any prompt or model
+  change. A drop in accuracy blocks the change.
+- If the acceptance rate falls below a threshold (default 70%), the app tells you and switches AI to
+  "show only": its suggestions appear but nothing is pre-filled.
+
+Extraction results also pass the validation gates in §6.1 and §6.5 (balance check, amount match).
 
 ---
 
@@ -615,6 +686,10 @@ pass a validation gate (balance check or amount match).
   | Advance train ticket in the wrong tax year | Tax year from payment date; purpose from travel date | March purchase for April travel |
   | Regular trips to one venue claimed as business travel | Frequent-venue flag for the accountant | 30 trips to one venue in a year |
   | Driven job with no mileage claimed | "How did you get there?" gap check | Far-away job with no travel items |
+  | Automation overwrites a decision you made | `manual` flag; re-runs only add suggestions | Re-run rules and AI over hand-edited items: nothing changes |
+  | AI names a job or category that doesn't exist | Schema validation against the candidate list; invalid output discarded | Malformed and out-of-list responses |
+  | AI unavailable or over budget | Suggestions are optional; the manual flow is unaffected | API errors; spending cap reached |
+  | Auto-confirmed items never looked at | Auto-confirm off by default; quarter sign-off lists them | Quarter close with rule-confirmed items |
 
 - **ALCOA+ audit trail** (attributable, legible, contemporaneous, original, accurate). Every change records
   who, when, what and why, in a hash chain so tampering can be detected. The chain is verified nightly.
@@ -660,7 +735,7 @@ pass a validation gate (balance check or amount match).
 1. **Inbox** (the default screen): everything that needs a decision. That means unreviewed transactions,
    hotel stays and trips to confirm, missing receipts, possible duplicates, unmatched payments, overdue
    invoices and sync problems.
-2. **Money:** accounts, transactions, imports.
+2. **Money:** accounts, imports, and **Review all**: every transaction and its allocation in one table.
 3. **Jobs:** clients, jobs, job P&L, mileage, a trip view for each job, and a year timeline of jobs and travel.
 4. **Invoices:** create, send, track, credit notes.
 5. **Tax:** quarters, tax-year summary, estimate and set-aside, exports.
@@ -676,6 +751,16 @@ new invoice.
   keys), split it, or mark it personal. An undo toast stays for 10 seconds.
   - Keyboard: J/K to move, Enter to confirm, P for personal, S to split, 1–9 for categories.
   - iPhone: swipe right to confirm, swipe left for personal.
+- **Review everything.** The Review all table lists every transaction and its allocation for any period.
+  - Filter by job, category, status (confirmed, suggested, unreviewed), who decided (you, rule, matching,
+    AI), amount or merchant.
+  - Each row shows the current decision and where it came from, with any differing suggestion alongside.
+  - Edit inline, or select many rows and assign them to a job, a category or business/personal in one go.
+  - Opening a row shows its full history: every suggestion and every change, with reasons.
+- **Allocate to a job by hand.** Start from a transaction, from the review table, or from the job page
+  ("Add expenses to this job"). The job page lists unallocated items around the job's dates first, then
+  lets you search everything. You can split one transaction across several jobs, or between a job and
+  personal, with live totals that must balance before you can save.
 - **Capture.** Two taps from the home screen to the camera. The photo is saved on the device first and
   uploaded in the background. If offline, the upload is retried the next time the app opens.
 - **Confirm a hotel stay.** The card shows a timeline: job days as bars, and hotel nights as blocks
@@ -690,6 +775,8 @@ new invoice.
   2. Balances match the statements.
   3. Receipts are attached for items over a chosen amount.
   4. Mileage is logged.
+  5. You've looked over the sign-off list: everything confirmed by an auto-confirm rule or in bulk, plus
+     totals by job and category. Anything on it can still be changed.
 
   Then lock the period and export the MTD summary and the accountant pack.
 - **Invoice.** Start from a job, with client and fee pre-filled. Generate the PDF, mark it sent, and the
@@ -712,13 +799,14 @@ new invoice.
 |---|---|---|
 | 0. Decide and verify (days) | Answer §11; verify the remaining hosting items; create the site and database; CI/CD with an atomic deploy of a hello-world app; backups and heartbeat; hazard log v1 | CI deploys the hello page; a restore drill passes |
 | 1. Walking skeleton | Login (passkey + TOTP); audit log; accounts; CSV import for the main bank with balance check and dedupe; Inbox review; HMRC categories; business, personal and transfer types; quarterly summary with CSV export | The 6 Oct–5 Jan quarter can be done in the app (deadline 7 Feb 2027) |
-| 2. Ledger depth | Splits and business-use %; rules; duplicates UI; period close and lock; more bank profiles; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation |
-| 3. Jobs | Clients; jobs; calendar sync; job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
+| 2. Ledger depth | Review all table with filters, bulk edit and per-item history; splits and business-use %; rules (auto-confirm off by default); duplicates UI; period close and lock; more bank profiles; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation |
+| 3. Jobs | Clients; jobs; calendar sync; manual job allocation (from an item, the review table or the job page); job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
 | 4. Travel | Read-only Gmail connection; booking and travel email extraction for your providers; hotel stays night by night; journeys; optional TfL journey-history import; trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
-| 5. Invoicing | Numbering; templates; PDF; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
-| 6. Tax and reports | Tax-year summary; SA103 mapping; trading-allowance comparison; tax estimate and set-aside; P&L; accountant pack (Excel/CSV/PDF plus receipts zip) | The accountant can work from the export alone |
-| 7. Other email receipts | Receipts and invoices from known senders via the Gmail connection (or the forwarding mailbox); attachment extraction; matching | Emailed receipts attach themselves |
-| 8. Automation and extras | Recurring expenses; smarter rules; PDF statements; optional AI extraction; optional Open Banking; optional direct MTD API | No fixed exit criterion |
+| 5. AI assistance (opt-in) | AI suggestions for items rules and matching can't settle; AI extraction for receipts, booking emails and PDFs; request log, spending cap, acceptance tracking and test set | AI suggestions appear with reasons, never auto-confirm, and their acceptance rate is visible |
+| 6. Invoicing | Numbering; templates; PDF; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
+| 7. Tax and reports | Tax-year summary; SA103 mapping; trading-allowance comparison; tax estimate and set-aside; P&L; accountant pack (Excel/CSV/PDF plus receipts zip) | The accountant can work from the export alone |
+| 8. Other email receipts | Receipts and invoices from known senders via the Gmail connection (or the forwarding mailbox); attachment extraction; matching | Emailed receipts attach themselves |
+| 9. Automation and extras | Recurring expenses; smarter rules; PDF statements; optional Open Banking; optional direct MTD API | No fixed exit criterion |
 
 ---
 
@@ -740,6 +828,8 @@ new invoice.
    miles). This sets the "far from home" rule. The postcode goes into the app's settings, not this document.
 10. Do clients also book **trains or taxis** for you, for example through a travel agent or a business Uber account?
 11. Is your **TfL** travel on a contactless card registered to a TfL account? If so, its journey history can be imported.
+12. Are you happy for **AI suggestions** to send minimised item details (date, amount, bank description,
+    candidate jobs) to the Claude API? Both AI switches stay off until you turn them on.
 
 **Answered (22 Nov 2026)**
 
@@ -747,6 +837,8 @@ new invoice.
 - Booking providers: Booking.com, Hotels.com, Premier Inn, Travelodge, IHG.
 - Some clients book hotels directly, and the owner doesn't pay them back, so those stays carry no expense.
 - Travel to cover: Uber, Trainline, taxis, TfL and similar, compared against job dates.
+- Control: the owner must be able to review everything, allocate expenses to jobs by hand, and get AI
+  suggestions, with a final manual override in every case.
 
 ---
 
