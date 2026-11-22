@@ -874,8 +874,9 @@ new invoice.
 7. **Mileage:** do you use your own car, and do you claim simplified rates or actual costs?
 8. Are you comfortable keeping this app on the **same hosting account** as your other sites, or should it get its own?
 9. Your **home postcode**. It goes into the app's settings, not this document.
-10. Are you happy for **AI suggestions** to send minimised item details (date, amount, bank description,
-    candidate jobs) to the Claude API? Both AI switches stay off until you turn them on.
+10. **AI extraction** sends the whole document being read (a receipt photo, a booking email or a PDF
+    statement) to the Claude API, not just minimised details. Should that switch be on too, or kept for
+    manual use on individual documents?
 
 **Answered (22 Nov 2026)**
 
@@ -888,6 +889,9 @@ new invoice.
 - Clients occasionally book transport, mostly flights. Other transport the owner pays for is sometimes
   recharged to the client.
 - TfL: paid by contactless debit card with no TfL account, so statements show TfL charges only.
+- AI suggestions: the owner agrees to minimised item details (date, amount, bank description, candidate
+  jobs) being sent to the Claude API. Switch suggestions on during setup; the request log, spending cap
+  and "never auto-confirm" rule still apply.
 - Control: the owner must be able to review everything, allocate expenses to jobs by hand, and get AI
   suggestions, with a final manual override in every case.
 
