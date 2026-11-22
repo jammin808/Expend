@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -20,6 +21,7 @@ class AuthenticatedSessionController extends Controller
     {
         return Inertia::render('auth/login', [
             'canResetPassword' => Route::has('password.request'),
+            'canRegister' => ! User::query()->exists(),
             'status' => $request->session()->get('status'),
         ]);
     }
@@ -30,6 +32,15 @@ class AuthenticatedSessionController extends Controller
     public function store(LoginRequest $request): RedirectResponse
     {
         $request->authenticate();
+
+        $user = $request->user();
+        if ($user->hasTwoFactor()) {
+            Auth::guard('web')->logout();
+            $request->session()->put('login.id', $user->id);
+            $request->session()->put('login.remember', $request->boolean('remember'));
+
+            return to_route('two-factor.challenge');
+        }
 
         $request->session()->regenerate();
 

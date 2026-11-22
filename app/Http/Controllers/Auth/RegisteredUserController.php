@@ -21,6 +21,9 @@ class RegisteredUserController extends Controller
      */
     public function create(): Response
     {
+        // Single-user app: registration only exists until the owner's account is created.
+        abort_if(User::query()->exists(), 404);
+
         return Inertia::render('auth/register');
     }
 
@@ -31,6 +34,8 @@ class RegisteredUserController extends Controller
      */
     public function store(Request $request): RedirectResponse
     {
+        abort_if(User::query()->exists(), 404);
+
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|lowercase|email|max:255|unique:'.User::class,
@@ -47,6 +52,6 @@ class RegisteredUserController extends Controller
 
         Auth::login($user);
 
-        return to_route('dashboard');
+        return to_route('setup');
     }
 }
