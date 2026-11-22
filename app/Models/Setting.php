@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Crypt;
  */
 class Setting extends Model
 {
-    public const ENCRYPTED = ['calendar_ics_url', 'anthropic_api_key'];
+    public const ENCRYPTED = ['calendar_ics_url', 'anthropic_api_key', 'imap_password', 'telegram_bot_token', 'telegram_webhook_secret', 'business_bank_details'];
 
     public const DEFAULTS = [
         'home_postcode' => null,
@@ -23,6 +23,25 @@ class Setting extends Model
         'ai_suggestions' => true,
         'ai_extraction' => 'on_demand',
         'mileage_threshold_scope' => 'all_vehicles',
+        'ai_model' => 'claude-opus-5-5',
+        'ai_effort' => 'medium',
+        'ai_monthly_cap_usd' => 40,
+        'business_name' => null,
+        'business_address' => null,
+        'business_email' => null,
+        'business_bank_details' => null,
+        'invoice_prefix' => 'INV-',
+        'invoice_terms_days' => 30,
+        'imap_host' => null,
+        'imap_port' => 993,
+        'imap_username' => null,
+        'imap_password' => null,
+        'allowed_senders' => [],
+        'telegram_bot_token' => null,
+        'telegram_webhook_secret' => null,
+        'telegram_chat_id' => null,
+        'telegram_pairing_code' => null,
+        'anthropic_api_key' => null,
     ];
 
     protected $primaryKey = 'key';

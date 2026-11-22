@@ -39,4 +39,8 @@ return [
         'url' => env('HEARTBEAT_URL'),
     ],
 
+    'anthropic' => [
+        'key' => env('ANTHROPIC_API_KEY'),
+    ],
+
 ];

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\IntegrationSettingsController;
 use App\Http\Controllers\LedgerSettingsController;
 use App\Http\Controllers\Settings\PasswordController;
 use App\Http\Controllers\Settings\ProfileController;
@@ -13,6 +14,13 @@ Route::middleware('auth')->group(function () {
     Route::get('settings/ledger', [LedgerSettingsController::class, 'edit'])->name('ledger.edit');
     Route::put('settings/ledger', [LedgerSettingsController::class, 'update'])->name('ledger.update');
     Route::post('settings/calendar/sync', [LedgerSettingsController::class, 'syncCalendar'])->name('calendar.sync');
+
+    Route::get('settings/integrations', [IntegrationSettingsController::class, 'edit'])->name('integrations.edit');
+    Route::put('settings/integrations/ai', [IntegrationSettingsController::class, 'updateAi'])->name('integrations.ai');
+    Route::put('settings/integrations/business', [IntegrationSettingsController::class, 'updateBusiness'])->name('integrations.business');
+    Route::put('settings/integrations/email', [IntegrationSettingsController::class, 'updateEmail'])->name('integrations.email');
+    Route::post('settings/integrations/telegram', [IntegrationSettingsController::class, 'connectTelegram'])->name('integrations.telegram');
+    Route::delete('settings/integrations/telegram', [IntegrationSettingsController::class, 'disconnectTelegram'])->name('integrations.telegram.disconnect');
 
     Route::get('settings/rules', [LedgerSettingsController::class, 'rules'])->name('rules.index');
     Route::patch('settings/rules/{rule}', [LedgerSettingsController::class, 'updateRule'])->name('rules.update');

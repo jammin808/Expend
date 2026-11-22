@@ -1,20 +1,26 @@
 <?php
 
 use App\Http\Controllers\AccountController;
+use App\Http\Controllers\AssistantController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DecisionController;
+use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\ImportController;
 use App\Http\Controllers\InboxController;
+use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\JobController;
 use App\Http\Controllers\ManualExpenseController;
 use App\Http\Controllers\MileageController;
 use App\Http\Controllers\SetupController;
 use App\Http\Controllers\TaxYearController;
+use App\Http\Controllers\TelegramWebhookController;
 use App\Http\Controllers\TransactionController;
 use App\Models\User;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', fn () => User::query()->exists() ? redirect()->route('dashboard') : redirect()->route('register'))->name('home');
+
+Route::post('hooks/telegram', TelegramWebhookController::class)->middleware('throttle:120,1')->name('hooks.telegram');
 
 Route::middleware(['auth'])->group(function () {
     Route::get('dashboard', DashboardController::class)->name('dashboard');
@@ -55,6 +61,29 @@ Route::middleware(['auth'])->group(function () {
     Route::post('jobs', [JobController::class, 'store'])->name('jobs.store');
     Route::get('jobs/{job}', [JobController::class, 'show'])->name('jobs.show');
     Route::patch('jobs/{job}', [JobController::class, 'update'])->name('jobs.update');
+
+    Route::get('documents', [DocumentController::class, 'index'])->name('documents.index');
+    Route::post('documents', [DocumentController::class, 'store'])->name('documents.store');
+    Route::get('documents/{document}', [DocumentController::class, 'show'])->name('documents.show');
+    Route::patch('documents/{document}', [DocumentController::class, 'update'])->name('documents.update');
+    Route::delete('documents/{document}', [DocumentController::class, 'destroy'])->name('documents.destroy');
+    Route::post('documents/{document}/read', [DocumentController::class, 'read'])->name('documents.read');
+    Route::post('documents/{document}/job', [DocumentController::class, 'createJob'])->name('documents.job');
+    Route::post('documents/{document}/invoice', [DocumentController::class, 'invoice'])->name('documents.invoice');
+    Route::get('documents/{document}/file', [DocumentController::class, 'download'])->name('documents.file');
+
+    Route::get('invoices', [InvoiceController::class, 'index'])->name('invoices.index');
+    Route::post('jobs/{job}/invoice', [InvoiceController::class, 'storeForJob'])->name('invoices.forJob');
+    Route::get('invoices/{invoice}', [InvoiceController::class, 'show'])->name('invoices.show');
+    Route::patch('invoices/{invoice}', [InvoiceController::class, 'update'])->name('invoices.update');
+    Route::post('invoices/{invoice}/issue', [InvoiceController::class, 'issue'])->name('invoices.issue');
+    Route::post('invoices/{invoice}/void', [InvoiceController::class, 'void'])->name('invoices.void');
+    Route::get('invoices/{invoice}/pdf', [InvoiceController::class, 'pdf'])->name('invoices.pdf');
+    Route::delete('invoices/{invoice}', [InvoiceController::class, 'destroy'])->name('invoices.destroy');
+
+    Route::get('assistant', [AssistantController::class, 'index'])->name('assistant');
+    Route::post('assistant/ask', [AssistantController::class, 'ask'])->middleware('throttle:30,1')->name('assistant.ask');
+    Route::post('ai/suggest', [AssistantController::class, 'suggest'])->middleware('throttle:10,1')->name('ai.suggest');
 
     Route::get('mileage', [MileageController::class, 'index'])->name('mileage.index');
     Route::post('vehicles', [MileageController::class, 'storeVehicle'])->name('vehicles.store');

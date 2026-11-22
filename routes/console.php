@@ -2,6 +2,7 @@
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Calendar\CalendarSync;
+use App\Domain\Mail\MailboxFetcher;
 use App\Models\Setting;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
@@ -34,9 +35,24 @@ Artisan::command('ledger:sync-calendar', function (CalendarSync $sync) {
     return 0;
 })->purpose('Refresh calendar events from the private iCal feed');
 
+Artisan::command('ledger:fetch-email', function (MailboxFetcher $fetcher) {
+    if (! MailboxFetcher::configured()) {
+        $this->line('No forwarding mailbox set.');
+
+        return 0;
+    }
+    $result = $fetcher->fetch();
+    $this->info("Took in {$result['taken']} emails, held {$result['held']} for approval.");
+
+    return 0;
+})->purpose('Read new emails from the forwarding mailbox');
+
 // One cron entry on the server runs all of these: * * * * * php artisan schedule:run
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();
 Schedule::command('ledger:verify-audit')->dailyAt('03:10');
+Schedule::command('ledger:fetch-email')->everyFiveMinutes()->withoutOverlapping();
+// Shared hosting has no long-running worker: process queued work (document reading, Telegram) every minute.
+Schedule::command('queue:work --stop-when-empty --max-time=240 --tries=1')->everyMinute()->withoutOverlapping();
 
 // Dead-man's switch: if these pings stop, the monitoring service alerts you that cron has died.
 Schedule::call(function () {

@@ -8,6 +8,9 @@ use App\Http\Presenters\Present;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Client;
+use App\Models\Document;
+use App\Models\DocumentFact;
+use App\Models\Invoice;
 use App\Models\WorkJob;
 use App\Support\Money;
 use App\Support\UkTaxYear;
@@ -84,6 +87,13 @@ class JobController extends Controller
             'mileage' => $mileage,
             'totals' => ['income_pence' => $income, 'costs_pence' => $spent, 'mileage_pence' => $mileagePence, 'profit_pence' => $income - $spent - $mileagePence],
             'near' => $near->map(fn ($tx) => Present::tx($tx))->values(),
+            'facts' => DocumentFact::query()->with('document')->where('work_job_id', $job->id)->orderByDesc('id')->get()
+                ->map(fn ($f) => $f->only(['id', 'field', 'label', 'value', 'at_time', 'quote', 'verified', 'verification_note', 'document_id']) + [
+                    'on_date' => $f->on_date?->format('Y-m-d'), 'document' => $f->document?->original_name, 'received' => $f->document?->received_at?->format('Y-m-d'),
+                ]),
+            'documents' => Document::query()->where('work_job_id', $job->id)->whereNull('parent_id')->withCount('children')->orderByDesc('received_at')->get()
+                ->map(fn ($d) => DocumentController::row($d)),
+            'invoices' => Invoice::query()->where('work_job_id', $job->id)->get()->map(fn ($i) => InvoiceController::row($i)),
             'lookups' => Present::lookups(),
             'clients' => Client::query()->orderBy('name')->get(['id', 'name']),
         ]);

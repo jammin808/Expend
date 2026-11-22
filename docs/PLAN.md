@@ -363,6 +363,9 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
   exactly like train, taxi or TfL costs, and appears in the job's trip and travel totals. Each vehicle uses
   simplified mileage *or* actual costs, never both, and must keep the flat rate once chosen. Warn if fuel
   for a mileage-method vehicle is categorised as business.
+- **Car hire:** usually a business expense (HMRC box 20, "Car hire"). Hire firms are suggested as business car
+  hire for you to confirm and link to the job. Fuel for a hire car is a business cost even when your own car
+  uses the mileage rate; a journey in a hire car is never also claimed as mileage.
 - **Purchases with no job:** a business expense doesn't need a job. "General business" is a first-class
   choice for equipment, software, phone, insurance and similar overheads; the app never nags about them.
   Equipment is flagged as a capital item (deductible under cash basis except cars), with guidance.
@@ -766,6 +769,58 @@ the airport.
 
 ---
 
+### 6.10 Documents, job sheets and invoices from POs
+
+Job invites, production packs, call sheets, POs, booking confirmations and receipts all go into one
+**Documents** area, however they arrive:
+
+- **Upload** in the app (PDF, Word, Excel, images, saved emails).
+- **Forward by email** to a dedicated mailbox on Hostinger (for example `ledger@rohleder.tech`), which the app
+  reads over IMAP every few minutes. Only your own sending addresses are accepted, and anything that fails
+  sender checks waits for your approval. A Gmail filter (subject contains "PO", "purchase order", "call
+  sheet", "production pack" and so on) can forward these automatically, so new POs are picked up without
+  searching.
+- **Send to a Telegram bot**: files and photos become documents; plain questions ("what's my call time on
+  Saturday?") are answered from your data and replied in Telegram. Only your paired Telegram account is
+  accepted.
+
+Each document's text is extracted (PDF text layer, Word, Excel, email body; images and scans are read by the
+AI), classified, and turned into **facts**: venue and address, dates, call, load-in and finish times,
+travel and accommodation (and who booked them), contacts, parking, dress code, PO number, rates, payment
+terms and where to send the invoice. Every fact keeps the exact quote and page it came from.
+
+- **Job sheet:** each job shows its facts in one place with links to the source, newest document first,
+  and flags conflicts (a revised production pack changing the call time). "Apply to job" copies dates,
+  times and venue into the job; it never happens on its own.
+- **Invoices from POs:** a PO's line items, PO number, billing entity, address and terms prefill a draft
+  invoice. You edit and issue it; numbering is sequential and issued invoices can't be edited (void and
+  re-issue instead). The draft total is checked against the PO total. Incoming payments of the invoice
+  amount are suggested as that invoice's payment.
+
+### 6.11 The AI assistant and "no made-up data"
+
+The AI can read everything in the app through **read-only tools**: transactions, decisions, tax-year
+figures, jobs, documents and their facts, mileage and invoices. It can also **propose** decisions, which
+land in the Inbox as AI suggestions. It never confirms anything, never issues an invoice, and never changes
+a decision you made.
+
+Grounding rules, enforced in code, not just in the prompt:
+
+1. **Every extracted value carries a source quote**, and the app checks that quote is really in the
+   document's text. Values whose quote can't be found (or that come only from an image) are marked
+   *unverified* and shown for you to check; they're never applied automatically.
+2. **Numbers are re-checked**: PO line items must add up to the stated total; an invoice draft must match
+   its PO; extracted amounts must appear in their quote.
+3. **Answers use only tool results.** Figures come from the app's own calculations, not from the model's
+   arithmetic. Every amount in an answer is checked against the data the tools returned, and any that
+   can't be matched are flagged.
+4. **Estimates and projections are labelled** as such (tax estimate, bill preview); everything else is
+   actual data with a link to where it came from. "Not found" is a valid answer.
+
+**Model:** Claude, via the official PHP SDK. The model is a setting (default Claude Opus 5.5; Claude Fable
+5.2 is available for the hardest documents at about twice the price, and needs 30-day data retention on
+the API account).
+
 ## 7. Security
 
 ### 7.1 Threat model
@@ -1005,6 +1060,21 @@ new invoice.
 
 ---
 
+## 10a. Lessons from comparable products
+
+Taken (small, high value):
+
+| From | Idea | Here |
+|---|---|---|
+| Dext, Hubdoc, AutoEntry | Send documents by email, app or messaging; extraction straight from the document | Email forwarding, upload and Telegram into one Documents area (§6.10) |
+| TripIt | Forward booking emails and get one itinerary per trip | Job sheet and trip timeline built from forwarded documents |
+| Call-sheet apps (Open Callsheet, FilmTouch) | Read call sheets and production PDFs for the crew member | Facts from production packs and call sheets on the job sheet |
+| FreeAgent, Coconut, ANNA | Tax-to-set-aside figure; invoices matched to incoming payments; a chat assistant over your books | Bill preview and set-aside; payment matching for invoices; the assistant (§6.11) with grounding rules |
+| Xero, QuickBooks | Bank rules that learn from you | Merchant rules (suggest only unless you switch on auto-confirm) |
+
+Left out on purpose: payroll, stock, multi-user, contracts and proposals, GPS mileage tracking, and bank
+feeds through an aggregator (CSV import is enough for now).
+
 ## 11. Setup choices and recorded decisions
 
 The owner will import and enter their own data when running the app. No open question blocks the build.
@@ -1029,6 +1099,11 @@ all can be changed later in Settings.
 - Self-employed since the early 2000s, with a UTR. Only the 2024-25 and 2025-26 returns are outstanding.
 - Goal: a slick app that clears the backlog efficiently, then keeps things up to date going forward.
 - Catch-up must work on any outstanding year, not only the current two.
+- The AI can work with everything, including whole documents (receipts, POs, production packs, emails).
+  Documents arrive by upload, email forwarding or Telegram. Every AI output is checked against real data;
+  nothing is made up unless it's labelled an estimate or projection.
+- Model: the owner asked for "Claude Opus 5.2", which doesn't exist; Opus 5.5 is the default, with Fable 5.2
+  selectable.
 - VAT: not registered.
 - MTD: turnover is under £50,000, so not in scope for 2026-27. It could apply from April 2027 (if 2025-26
   turnover is over £30,000) or April 2028 (over £20,000); the app checks this from the filed figures.

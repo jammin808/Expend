@@ -14,6 +14,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
+        // Telegram can't send a CSRF token; the webhook is protected by its secret header instead.
+        $middleware->validateCsrfTokens(except: ['hooks/telegram']);
         $middleware->web(append: [
             SecurityHeaders::class,
             HandleInertiaRequests::class,

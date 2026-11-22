@@ -58,6 +58,7 @@ final class AllocationWriter
                     'kind' => $line['kind'],
                     'category_id' => in_array($line['kind'], Allocation::NEEDS_CATEGORY, true) ? ($line['category_id'] ?? null) : null,
                     'work_job_id' => $line['work_job_id'] ?? null,
+                    'invoice_id' => $line['invoice_id'] ?? null,
                     'amount_pence' => $line['amount_pence'],
                     'business_use_pct' => $line['business_use_pct'] ?? null,
                     'decided_by' => $decidedBy,
