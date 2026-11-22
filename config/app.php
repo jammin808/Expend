@@ -15,6 +15,9 @@ return [
 
     'name' => env('APP_NAME', 'Laravel'),
 
+    // One-time code required to create the owner account on a live site (empty = not required, e.g. locally).
+    'setup_code' => env('SETUP_CODE', ''),
+
     /*
     |--------------------------------------------------------------------------
     | Application Environment

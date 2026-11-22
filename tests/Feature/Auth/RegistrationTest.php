@@ -38,4 +38,19 @@ class RegistrationTest extends TestCase
         ])->assertNotFound();
         $this->assertSame(1, User::count());
     }
+
+    public function test_a_live_site_needs_the_setup_code_to_register()
+    {
+        config(['app.setup_code' => 'k3y-from-env']);
+        $form = ['name' => 'Owner', 'email' => 'owner@example.com', 'password' => 'a-long-test-password', 'password_confirmation' => 'a-long-test-password'];
+
+        $this->get('/register')->assertNotFound();
+        $this->get('/register?code=wrong')->assertNotFound();
+        $this->post('/register', $form + ['code' => 'wrong'])->assertNotFound();
+        $this->assertSame(0, User::count());
+
+        $this->get('/register?code=k3y-from-env')->assertOk();
+        $this->post('/register', $form + ['code' => 'k3y-from-env'])->assertRedirect(route('setup', absolute: false));
+        $this->assertSame(1, User::count());
+    }
 }

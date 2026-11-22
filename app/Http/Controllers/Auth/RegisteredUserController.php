@@ -19,12 +19,13 @@ class RegisteredUserController extends Controller
     /**
      * Show the registration page.
      */
-    public function create(): Response
+    public function create(Request $request): Response
     {
-        // Single-user app: registration only exists until the owner's account is created.
-        abort_if(User::query()->exists(), 404);
+        // Single-user app: registration only exists until the owner's account is created,
+        // and on a live site only with the one-time setup code from the server's .env.
+        abort_if(User::query()->exists() || ! self::codeOk($request->query('code')), 404);
 
-        return Inertia::render('auth/register');
+        return Inertia::render('auth/register', ['code' => $request->query('code')]);
     }
 
     /**
@@ -34,7 +35,7 @@ class RegisteredUserController extends Controller
      */
     public function store(Request $request): RedirectResponse
     {
-        abort_if(User::query()->exists(), 404);
+        abort_if(User::query()->exists() || ! self::codeOk($request->input('code')), 404);
 
         $request->validate([
             'name' => 'required|string|max:255',
@@ -53,5 +54,12 @@ class RegisteredUserController extends Controller
         Auth::login($user);
 
         return to_route('setup');
+    }
+
+    private static function codeOk(mixed $code): bool
+    {
+        $expected = (string) config('app.setup_code');
+
+        return $expected === '' || (is_string($code) && hash_equals($expected, $code));
     }
 }

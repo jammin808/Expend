@@ -14,10 +14,12 @@ type RegisterForm = {
     email: string;
     password: string;
     password_confirmation: string;
+    code: string;
 };
 
-export default function Register() {
+export default function Register({ code }: { code?: string | null }) {
     const { data, setData, post, processing, errors, reset } = useForm<RegisterForm>({
+        code: code ?? '',
         name: '',
         email: '',
         password: '',
