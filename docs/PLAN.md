@@ -165,7 +165,7 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `accounts` | Bank and card accounts: type, last four digits only |
 | `import_batches` | File hash, import profile, period covered, opening/closing balance, balance-check result, status. "Undo this import" reverses a whole batch |
 | `bank_transactions` | Raw, immutable rows: account, batch, posting date, `amount_pence`, raw description, balance after, fingerprint, occurrence |
-| `allocations` | Explains a transaction: type (`business_expense`, `business_income`, `personal`, `transfer`, `drawings`, `capital_introduced`, `refund`, `loan`), HMRC category, job, `amount_pence`, business-use %, `vat_pence`, status (`suggested`/`confirmed`), decided by (`you`, `rule`, `matcher`, `ai`), `manual` flag (you set or changed it), confirmed at, reason, rule |
+| `allocations` | Explains a transaction: type (`business_expense`, `business_income`, `personal`, `transfer`, `drawings`, `capital_introduced`, `refund`, `loan`, `tax_payment`), HMRC category, job, `amount_pence`, business-use %, `vat_pence`, status (`suggested`/`confirmed`), decided by (`you`, `rule`, `matcher`, `ai`), `manual` flag (you set or changed it), confirmed at, reason, rule |
 | `suggestions` | Every suggestion ever made, from any source (rule, matcher, AI), with its confidence and reasons, and whether you accepted, changed or rejected it. Feeds the accuracy figures and rule learning |
 | `documents` | Receipts, statements, invoice PDFs: SHA-256, MIME type, size, private path; linked to transactions, allocations or jobs |
 | `clients`, `jobs` | A job has a client, date range, location, status and agreed fee |
@@ -215,25 +215,24 @@ on the same day both survive, while the same coffee appearing in two overlapping
 
 ## 5. UK accounting and tax rules
 
-### 5.1 Catching up: first Self Assessment returns
+### 5.1 Catching up: the 2024-25 and 2025-26 returns
 
-No Self Assessment returns have been filed yet for 2024-25 or 2025-26, and there is no accountant. The
-app's first job is to produce the figures for those returns.
+The owner has been self-employed since the early 2000s, has a UTR and has filed before. Only the
+2024-25 and 2025-26 returns are outstanding, and there is no accountant. The app's first job is to clear
+that backlog efficiently; after that, it keeps the books up to date as you go.
 
 **Deadlines for online returns**
 
 | Tax year | Return and payment due | Position on 22 Nov 2026 |
 |---|---|---|
-| 2024-25 (6 Apr 2024 – 5 Apr 2025) | 31 Jan 2026 | Overdue, *if* you were self-employed in that year. Penalties so far: £100 straight away; £10 a day from 1 May 2026, up to £900; then the greater of 5% of the tax due or £300 from the end of July 2026. Another 5%-or-£300 penalty is added after 31 Jan 2027, so file this one first. Interest and late-payment penalties also run on unpaid tax |
+| 2024-25 (6 Apr 2024 – 5 Apr 2025) | 31 Jan 2026 | Overdue. Penalties so far: £100 straight away; £10 a day from 1 May 2026, up to £900; then the greater of 5% of the tax due or £300 from the end of July 2026. Another 5%-or-£300 penalty is added after 31 Jan 2027, so file this one first. Interest and late-payment penalties also run on unpaid tax |
 | 2025-26 (6 Apr 2025 – 5 Apr 2026) | 31 Jan 2027 | Due in about 10 weeks |
 
-Check the exact amounts with HMRC's penalty estimator. HMRC can cancel penalties if you had a reasonable excuse.
+Check the exact amounts with HMRC's penalty estimator. HMRC can cancel penalties if you had a reasonable
+excuse. If HMRC has sent an estimated bill (a "determination") for 2024-25, filing the return replaces it.
 
 **Before the app is ready**
 
-- **Registration.** You need a Unique Taxpayer Reference (UTR) to file. If you haven't registered for Self
-  Assessment as self-employed, do it now. HMRC's letters can take a few weeks to arrive, and the app can't
-  help with this step.
 - **Fallback.** If the app isn't producing figures by about 10 January 2027, export what has been
   categorised to a spreadsheet and file from that. The app must never put the deadline at risk.
 
@@ -243,10 +242,14 @@ Check the exact amounts with HMRC's penalty estimator. HMRC can cancel penalties
   other business income, allowable expenses, net profit). With turnover under £90,000, the short
   self-employment pages accept a single expenses total, but the app still keeps the categories behind it.
 - A **tax estimate**: income tax and Class 4 National Insurance.
-- A **first-bill preview.** If the bill is over £1,000 and less than 80% of your tax was collected at
-  source, HMRC also asks for payments on account towards the next year: half of this year's bill each on
-  31 Jan and 31 Jul. So the first January bill can be about 150% of the year's tax. The app shows this
-  early so it isn't a surprise.
+- A **bill preview**: the year's tax, minus payments on account you've already made for that year, plus
+  the payments on account HMRC will ask for towards the next year (half of the year's bill each on 31 Jan
+  and 31 Jul, if the bill is over £1,000 and less than 80% was collected at source). Payments to HMRC are
+  found in your bank data and recorded against their tax year; you can also enter them by hand. Your HMRC
+  online account shows the authoritative balance.
+- **Checks before you file:** every account has data for every month (no gaps), transfers and card-bill
+  payments are paired, nothing is undecided, and the figures are compared with your last filed return
+  (2023-24, entered once), with big changes flagged.
 
 HMRC's own online calculation is the authority; the app's estimate is a cross-check. The app doesn't file returns.
 
@@ -256,7 +259,7 @@ HMRC's own online calculation is the authority; the app's estimate is a cross-ch
   items) has a short plain-English note in the app and a link to the relevant GOV.UK page. These are
   stored in a `guidance` table with a "last checked" date.
 - Wherever this plan says something needs checking, the app flags it for *you*, with that note and link.
-- Consider a one-off review by an accountant or tax adviser for these first returns, especially a late one.
+- Consider a one-off review by an accountant or tax adviser for these two returns, especially the late 2024-25 one.
 - The **records pack** export (all transactions, decisions and receipts) is kept ready for any HMRC enquiry.
 
 ### 5.2 Making Tax Digital for Income Tax
@@ -805,7 +808,9 @@ the airport.
   | Card-bill payment counted as an expense on top of the card purchases | Automatic transfer pairing between bank and card | Starling payment to Amex plus Amex purchases |
   | Card purchase put in the year the bill was paid | Card transaction date used | Purchase on 3 Apr, bill paid 20 Apr |
   | Amex amounts imported with the wrong sign | Sign convention in the import profile; statement-balance check | Amex CSV fixture |
-  | First tax bill larger than expected | First-bill preview, including payments on account | First-year scenario with a bill over £1,000 |
+  | Tax bill larger than expected | Bill preview, including payments on account already made and due | Year with a bill over £1,000 and part-paid payments on account |
+  | Payment to HMRC counted as a business expense | HMRC payment pattern maps to `tax_payment`, recorded against its tax year | Starling payment to HMRC Self Assessment |
+  | Missing month of statements in a catch-up year | Coverage grid; balance continuity between statements | Year with one month missing |
   | Driven job with no mileage claimed | "How did you get there?" gap check | Far-away job with no travel items |
   | Automation overwrites a decision you made | `manual` flag; re-runs only add suggestions | Re-run rules and AI over hand-edited items: nothing changes |
   | AI names a job or category that doesn't exist | Schema validation against the candidate list; invalid output discarded | Malformed and out-of-list responses |
@@ -870,6 +875,17 @@ new invoice.
 
 ### 9.2 Key flows
 
+- **Catch-up mode (one tax year at a time, 2024-25 first).** A guided flow with a progress bar per year
+  ("2024-25: 82% of value decided, 140 items left"):
+  1. **Import.** Drop in every CSV for the year. A coverage grid shows each account month by month: green
+     when the balance carries over, red where a statement is missing.
+  2. **Big groups first.** Merchants are listed by total value. One decision covers every transaction from
+     a merchant ("all Adobe: Software, business"; "all Tesco: personal"), and you pick out any exceptions.
+     A few dozen decisions usually settle most of the year's value.
+  3. **The rest, one by one.** Each item shows that day's calendar entries (and, once connected, matching
+     emails and the AI suggestion), with keyboard and swipe shortcuts.
+  4. **Checks.** Coverage complete, transfers paired, nothing undecided, comparison with the last filed year.
+  5. **Return figures.** The box-by-box summary and bill preview; then lock the year.
 - **Monthly review (target under 10 minutes).** Import a statement. The Inbox shows each item as a card
   with the best suggestion pre-filled. Confirm it (tap or Enter), change it (category chips or number
   keys), split it, or mark it personal. An undo toast stays for 10 seconds.
@@ -921,8 +937,8 @@ new invoice.
 
 | Phase | Scope | Done when |
 |---|---|---|
-| 0. Decide and verify (days) | Owner: register for Self Assessment or find your UTR, now; answer §11; verify the remaining hosting items; create the site and database; CI/CD with an atomic deploy of a hello-world app; backups and heartbeat; hazard log v1 | CI deploys the hello page; a restore drill passes |
-| 1. Catch-up returns (figures ready by mid-January 2027) | Login (passkey + TOTP); audit log; accounts; CSV import for Starling, Amex and Capital One with dedupe, balance or statement checks and automatic card-bill transfer pairing; Inbox and Review all with filters and bulk edit, including "decide for all transactions from this merchant"; HMRC categories; business, personal and transfer types; calendar context on each item (read-only iCal feed showing what was on that day); return summary, tax estimate and first-bill preview per tax year; spreadsheet export | The 2025-26 figures (and 2024-25's, if needed) can be typed into HMRC online straight from the app |
+| 0. Decide and verify (days) | Confirm the setup defaults in §11; verify the remaining hosting items; create the site and database; CI/CD with an atomic deploy of a hello-world app; backups and heartbeat; hazard log v1 | CI deploys the hello page; a restore drill passes |
+| 1. Catch-up returns (figures ready by mid-January 2027) | Login (passkey + TOTP); audit log; accounts; CSV import for Starling, Amex and Capital One with dedupe, balance or statement checks and automatic card-bill transfer pairing; Inbox and Review all with filters and bulk edit, including "decide for all transactions from this merchant"; HMRC categories; business, personal and transfer types; calendar context on each item (read-only iCal feed showing what was on that day); catch-up mode with coverage grid and big-groups-first review; HMRC payments recorded per tax year; return summary, tax estimate, bill preview and pre-filing checks per tax year; spreadsheet export. Stretch goal if time allows (otherwise phase 5): AI suggestions for category and business/personal | The 2024-25 and 2025-26 figures can be typed into HMRC online straight from the app |
 | 2. Ledger depth | Per-item history; splits and business-use %; rules (auto-confirm off by default); duplicates UI; period close and lock; quarterly MTD summary and export; column-mapping wizard for new accounts; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation, ready for MTD if it applies from April 2027 |
 | 3. Jobs | Clients; jobs; calendar sync; manual job allocation (from an item, the review table or the job page); job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
 | 4. Travel | Read-only Gmail connection; booking and travel email extraction for your providers; hotel stays night by night; journeys; client-booked flight itineraries; rechargeable items and claim packs; TfL charges matched by day (journey-history import optional); trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
@@ -934,25 +950,28 @@ new invoice.
 
 ---
 
-## 11. Open questions for the owner
+## 11. Setup choices and recorded decisions
 
-1. **When did you start self-employment**, and are you registered for Self Assessment (do you have a
-   UTR)? This decides whether 2024-25 is overdue (§5.1).
-2. Are the **Amex and Capital One cards** business cards, or personal cards used partly for business?
-3. **Gmail access.** Is it a personal account or Google Workspace? (Workspace allows an "Internal" OAuth
-   app.) Are you happy for the app to hold read-only Gmail access, which is recommended for hotel checks,
-   or would you rather use the forwarding mailbox?
-4. Are you a **Scottish taxpayer**? Scotland has different income-tax bands.
-5. **Mileage:** do you use your own car, and do you claim simplified rates or actual costs?
-6. Are you comfortable keeping this app on the **same hosting account** as your other sites, or should it get its own?
-7. Your **home postcode**. It goes into the app's settings, not this document.
-8. **AI extraction** sends the whole document being read (a receipt photo, a booking email or a PDF
-    statement) to the Claude API, not just minimised details. Should that switch be on too, or kept for
-    manual use on individual documents?
+The owner will import and enter their own data when running the app. No open question blocks the build.
+The remaining choices are made in a **setup wizard** on first run; each has a default until changed, and
+all can be changed later in Settings.
 
-**Answered (22 Nov 2026)**
+| Setting | Default until you change it |
+|---|---|
+| Amex and Capital One: business or mixed-use cards | Mixed use: each transaction decided individually; interest and fees go to review |
+| Gmail connection | Read-only Gmail API (forwarding mailbox available instead) |
+| Scottish taxpayer | No |
+| Vehicles and mileage method | Added in setup; simplified mileage unless you choose actual costs |
+| Home postcode | Entered in setup (stored in settings only) |
+| Last filed return (2023-24) figures | Entered in setup, for the year-on-year check |
+| AI suggestions | On (owner agreed) |
+| AI extraction | On demand: a "Read with AI" button on each document |
+| Hosting | Same hosting account as the other sites, with the §7 mitigations; can move later |
 
-- Tax returns: none filed yet for 2024-25 or 2025-26; producing them is the reason for the app.
+**Recorded decisions (22 Nov 2026)**
+
+- Self-employed since the early 2000s, with a UTR. Only the 2024-25 and 2025-26 returns are outstanding.
+- Goal: a slick app that clears the backlog efficiently, then keeps things up to date going forward.
 - VAT: not registered.
 - MTD: turnover is under £50,000, so not in scope for 2026-27. It could apply from April 2027 (if 2025-26
   turnover is over £30,000) or April 2028 (over £20,000); the app checks this from the filed figures.
