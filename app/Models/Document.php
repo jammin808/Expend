@@ -24,7 +24,7 @@ class Document extends Model
 
     protected $guarded = ['id'];
 
-    protected $casts = ['extraction' => 'array', 'received_at' => 'datetime', 'extracted_at' => 'datetime'];
+    protected $casts = ['job_rejected' => 'array', 'extraction' => 'array', 'received_at' => 'datetime', 'extracted_at' => 'datetime'];
 
     public function job(): BelongsTo
     {

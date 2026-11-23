@@ -118,7 +118,7 @@ export default function DocumentShow({ document: d, jobs, kinds, aiReady }: Prop
                             {kinds[d.kind]} · {d.received} · via {d.source}
                             {d.from ? ` · from ${d.from}` : ''}
                         </p>
-                        {d.extraction && <CheckBadge check={d.check} subject={{ type: 'document', id: d.id }} className="mt-1" />}
+                        {d.extraction && <CheckBadge full check={d.check} subject={{ type: 'document', id: d.id }} className="mt-1" />}
                         {d.parent && (
                             <p className="text-sm">
                                 Attachment of{' '}

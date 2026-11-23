@@ -45,6 +45,8 @@ final class CalendarSync
             $endsAt = isset($event->DTEND) ? CarbonImmutable::instance($event->DTEND->getDateTime()) : null;
             $rows[] = [
                 'uid' => (string) ($event->UID ?? md5($startsAt.(string) $event->SUMMARY)),
+                // Set on each occurrence of a repeating entry: its original start, which stays the same if it's moved.
+                'recurrence_id' => isset($event->{'RECURRENCE-ID'}) ? CarbonImmutable::instance($event->{'RECURRENCE-ID'}->getDateTime())->utc()->format('Y-m-d H:i:s') : null,
                 'starts_at' => $startsAt->format('Y-m-d H:i:s'),
                 'ends_at' => $endsAt?->format('Y-m-d H:i:s'),
                 'all_day' => $allDay,
@@ -77,7 +79,7 @@ final class CalendarSync
             ->map(fn (CalendarEvent $e) => [
                 'summary' => $e->summary,
                 'location' => $e->location,
-                'time' => $e->all_day ? null : $e->starts_at->format('H:i').($e->ends_at ? '–'.$e->ends_at->format('H:i') : ''),
+                'time' => $e->all_day ? null : $e->localStart()->format('H:i').($e->ends_at ? '–'.$e->localEnd()->format('H:i') : ''),
             ])->all();
     }
 }

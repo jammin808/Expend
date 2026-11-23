@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Verification\Verifier;
+use App\Jobs\FindJobs;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
 use App\Models\Client;
@@ -27,7 +28,6 @@ class JobFinderController extends Controller
     public function index(): Response
     {
         $open = JobCandidate::query()->where('status', 'open')->orderBy('starts_on')->limit(200)->get();
-        $optionIds = $open->flatMap(fn ($c) => $c->reasons['jobs'] ?? [])->unique();
         $jobs = WorkJob::query()->with('client')->where('status', '!=', 'cancelled')->orderByDesc('starts_on')->limit(400)->get();
         $checks = Verification::forMany('job_candidate', $open->pluck('id'));
 
@@ -40,7 +40,7 @@ class JobFinderController extends Controller
         return Inertia::render('jobs/finder', [
             'candidates' => $open->map(fn (JobCandidate $c) => $c->only(['id', 'title', 'client_name', 'start_time', 'end_time', 'location', 'postcode', 'po_number', 'score', 'found_by']) + [
                 'starts_on' => $c->starts_on->format('Y-m-d'), 'ends_on' => $c->ends_on->format('Y-m-d'), 'sources' => $c->sources,
-                'why' => $c->reasons['why'] ?? [], 'options' => array_values(array_intersect($c->reasons['jobs'] ?? [], $optionIds->all())),
+                'why' => $c->reasons['why'] ?? [], 'options' => array_values(array_intersect($c->reasons['jobs'] ?? [], $jobs->pluck('id')->all())),
                 'edited' => $c->edited_at !== null, 'check' => $checks[$c->id] ?? null,
                 'strength' => $c->score >= 8 ? 'strong' : ($c->score >= 5 ? 'likely' : 'possible'),
             ])->values(),
@@ -66,7 +66,11 @@ class JobFinderController extends Controller
     {
         $year = $request->validate(['year' => 'nullable|string|regex:/^\d{4}-\d{2}$/'])['year'] ?? null;
         try {
-            $r = $finder->run($year);
+            // The rules run now; the AI pass (which can take a minute) runs in the background straight after.
+            $r = $finder->run($year, false);
+            if (JobFinder::aiAllowed()) {
+                FindJobs::dispatch($year, true);
+            }
         } catch (Throwable $e) {
             report($e);
 
@@ -75,7 +79,7 @@ class JobFinderController extends Controller
         JobCandidate::query()->where('status', 'open')->get()->each(fn ($c) => $verifier->candidate($c));
 
         return back()->with('success', "Linked {$r['linked']} to your jobs and found {$r['proposed']} possible ".($r['proposed'] === 1 ? 'job' : 'jobs').'.'
-            .($r['ai_rejected'] ? " {$r['ai_rejected']} AI answers didn’t match the calendar entry they quoted and were ignored." : ''));
+            .(JobFinder::aiAllowed() ? ' Unclear calendar entries are being checked with AI in the background; refresh in a minute.' : ''));
     }
 
     public function update(Request $request, JobCandidate $candidate): RedirectResponse
@@ -136,9 +140,18 @@ class JobFinderController extends Controller
         $data = $request->validate(['type' => 'required|in:calendar,document', 'id' => 'required|integer', 'action' => 'required|in:confirm,unlink']);
         if ($data['type'] === 'calendar') {
             $link = CalendarJobLink::query()->findOrFail($data['id']);
-            $before = $link->only(['work_job_id', 'linked_by']);
-            $link->update($data['action'] === 'confirm' ? ['linked_by' => 'you'] : ['linked_by' => 'you', 'work_job_id' => null, 'reason' => 'Not this job']);
-            AuditLog::record('calendar.link_'.$data['action'].'ed', $link, $before, $link->only(['work_job_id', 'linked_by']));
+            if ($data['action'] === 'confirm') {
+                $before = $link->only(['work_job_id', 'linked_by']);
+                $link->update(['linked_by' => 'you']);
+                AuditLog::record('calendar.link_confirmed', $link, $before, $link->only(['work_job_id', 'linked_by']));
+            } else {
+                $event = CalendarEvent::query()->where('uid', $link->event_uid)->get()->first(fn (CalendarEvent $e) => $e->key() === $link->event_key);
+                if ($event) {
+                    $finder->unlinkCalendar($event, $link->work_job_id);
+                } else {
+                    $link->update(['work_job_id' => null, 'linked_by' => 'you', 'rejected' => array_values(array_unique([...($link->rejected ?? []), $link->work_job_id]))]);
+                }
+            }
         } else {
             $doc = Document::query()->findOrFail($data['id']);
             $data['action'] === 'confirm' ? $finder->linkDocument($doc, $doc->job, 'you') : $finder->linkDocument($doc, null, 'you');
@@ -158,7 +171,7 @@ class JobFinderController extends Controller
         if ($data['type'] === 'calendar') {
             $event = JobFinder::event($data['key'], $data['date']);
             abort_unless($event, 404);
-            $data['action'] === 'link' ? $finder->linkCalendar($event, $job, 'you', 'Linked by you') : $finder->linkCalendar($event, null, 'you', 'Not this job');
+            $data['action'] === 'link' ? $finder->linkCalendar($event, $job, 'you', 'Linked by you') : $finder->unlinkCalendar($event, $job->id);
         } else {
             $item = TravelItem::query()->findOrFail($data['id']);
             $finder->linkTravel($item, $data['action'] === 'link' ? $job : null, 'you');
@@ -207,7 +220,7 @@ class JobFinderController extends Controller
         $data = $request->validate(['key' => 'required|string|size:40', 'date' => 'required|date_format:Y-m-d', 'undo' => 'boolean']);
         $event = JobFinder::event($data['key'], $data['date']);
         abort_unless($event, 404);
-        ($data['undo'] ?? false) ? $finder->unlinkCalendar($event) : $finder->linkCalendar($event, null, 'you', 'Not a job');
+        ($data['undo'] ?? false) ? $finder->forgetCalendar($event) : $finder->markNotJob($event);
 
         return back()->with('success', ($data['undo'] ?? false) ? 'Undone.' : 'Marked as not a job.');
     }
@@ -219,17 +232,18 @@ class JobFinderController extends Controller
         $checks = Verification::forMany('calendar_link', $links->where('work_job_id', $job->id)->pluck('id'));
 
         return CalendarEvent::query()
-            ->where('starts_at', '>=', $job->starts_on->copy()->subDay()->format('Y-m-d 00:00:00'))
-            ->where('starts_at', '<=', $job->ends_on->copy()->addDay()->format('Y-m-d 23:59:59'))
-            ->orderBy('starts_at')->limit(40)->get()
+            ->where('starts_at', '>=', $job->starts_on->copy()->subDays(2)->format('Y-m-d 00:00:00'))
+            ->where('starts_at', '<=', $job->ends_on->copy()->addDays(2)->format('Y-m-d 23:59:59'))
+            ->orderBy('starts_at')->limit(60)->get()
+            ->filter(fn (CalendarEvent $e) => $e->day() >= $job->starts_on->copy()->subDay()->format('Y-m-d') && $e->day() <= $job->ends_on->copy()->addDay()->format('Y-m-d'))->values()
             ->map(function (CalendarEvent $e) use ($links, $job, $checks) {
                 $link = $links[$e->key()] ?? null;
 
                 return [
-                    'key' => $e->key(), 'date' => $e->starts_at->format('Y-m-d'), 'summary' => $e->summary, 'location' => $e->location,
-                    'time' => $e->all_day ? null : $e->starts_at->format('H:i').($e->ends_at ? '–'.$e->ends_at->format('H:i') : ''),
+                    'key' => $e->key(), 'date' => $e->day(), 'summary' => $e->summary, 'location' => $e->location,
+                    'time' => $e->all_day ? null : $e->localStart()->format('H:i').($e->ends_at ? '–'.$e->localEnd()->format('H:i') : ''),
                     'linked' => $link?->work_job_id === $job->id, 'other_job' => $link?->work_job_id && $link->work_job_id !== $job->id ? $link->work_job_id : null,
-                    'by' => $link?->linked_by, 'not_job' => $link && ! $link->work_job_id, 'check' => $link ? ($checks[$link->id] ?? null) : null,
+                    'by' => $link?->linked_by, 'not_job' => (bool) $link?->not_job, 'check' => $link ? ($checks[$link->id] ?? null) : null,
                 ];
             })->all();
     }

@@ -207,10 +207,13 @@ final class Verifier
     {
         $text = (string) $text;
         $why = [];
+        // The PO number has to be in the document as a whole reference (not inside a phone number or an amount); a PO
+        // number the AI read only counts if it's really there too.
         $jobPo = JobFinder::normalisePo($job->po_number);
-        if ($jobPo && ((JobFinder::normalisePo($po) === $jobPo) || str_contains(preg_replace('/[^A-Z0-9]/', '', strtoupper($text)), $jobPo))) {
+        if ($jobPo && strlen($jobPo) >= 4 && self::poInText($text, $jobPo)) {
             return ['ok' => true, 'why' => ['the job’s PO number is in it']];
         }
+        unset($po);
         $dated = false;
         for ($d = CarbonImmutable::parse($job->starts_on->format('Y-m-d')), $i = 0; $d->lte($job->ends_on) && $i < 21; $d = $d->addDay(), $i++) {
             if (self::dateInText($text, $d->format('Y-m-d'))) {
@@ -242,6 +245,29 @@ final class Verifier
         }
 
         return ['ok' => $dated && $named !== null, 'why' => $why];
+    }
+
+    /**
+     * Is this PO number in the text as a reference of its own? Separators are only allowed where the PO number has
+     * them (so "4500123" doesn't match the phone number "0161 450 0123"), and a leading "PO" is optional.
+     */
+    public static function poInText(string $text, string $po): bool
+    {
+        $groups = array_values(array_filter(preg_split('/[^A-Za-z0-9]+/', $po) ?: [], fn ($g) => $g !== ''));
+        if (! $groups || strlen(implode('', $groups)) < 3) {
+            return false;
+        }
+        $lead = '';
+        if (preg_match('/^PO(\d\w*)$/i', $groups[0], $m)) {
+            $groups = ['PO', $m[1], ...array_slice($groups, 1)]; // "PO7781" is written "PO-7781" or "PO 7781" too
+        }
+        if (strtoupper($groups[0]) === 'PO' && count($groups) > 1) {
+            array_shift($groups);
+            $lead = '(?:PO[\s\-\/:#.]*)?';
+        }
+        $body = implode('[\s\-\/:#.]*', array_map(fn ($g) => preg_quote($g, '/'), $groups));
+
+        return (bool) preg_match('/(?<![A-Z0-9£$€.,])'.$lead.$body.'(?![A-Z0-9]|[.,]\d)/i', $text);
     }
 
     /** Does the text state this date anywhere (any common UK way of writing it)? */
@@ -365,14 +391,14 @@ final class Verifier
 
     public function calendarLink(CalendarJobLink $link): Verification
     {
-        $event = CalendarEvent::query()->where('uid', $link->event_uid)->where('starts_at', $link->event_starts_at->format('Y-m-d H:i:s'))->first();
+        $event = CalendarEvent::query()->where('uid', $link->event_uid)->get()->first(fn (CalendarEvent $e) => $e->key() === $link->event_key);
         $job = $link->work_job_id ? WorkJob::query()->find($link->work_job_id) : null;
         $checks = [['what' => 'Calendar entry', 'ok' => (bool) $event, 'note' => $event ? 'Still in your calendar' : 'No longer in your calendar (moved or deleted)']];
         if ($event && $link->summary && Grounding::normalise($link->summary) !== Grounding::normalise((string) $event->summary)) {
             $checks[] = ['what' => 'Title', 'ok' => false, 'note' => 'The entry was renamed to “'.mb_substr((string) $event->summary, 0, 80).'”'];
         }
         if ($event && $job) {
-            $ok = $job->starts_on->copy()->subDay()->lte($event->lastDay()) && $job->ends_on->copy()->addDay()->gte($event->starts_at->copy()->startOfDay());
+            $ok = $job->starts_on->format('Y-m-d') <= $event->lastDay()->addDay()->format('Y-m-d') && $job->ends_on->format('Y-m-d') >= CarbonImmutable::parse($event->day())->subDay()->format('Y-m-d');
             $checks[] = ['what' => 'Dates', 'ok' => $ok, 'note' => $ok ? 'On the job’s dates' : 'The job’s dates no longer match the entry'];
         }
 

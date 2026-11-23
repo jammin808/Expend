@@ -124,6 +124,9 @@ final class DocumentReader
         // The AI's job link is double-checked against the document before it's used: the job's PO number, or one
         // of its dates together with its client, venue or title. Otherwise it's kept only as a hint for you.
         $linkHint = null;
+        if ($jobId && ($document->job_linked_by === 'you' || in_array($jobId, $document->job_rejected ?? [], true))) {
+            $jobId = null; // you decided this document's job (or that it isn't this one): a re-read never changes that
+        }
         if ($jobId && ! $document->work_job_id) {
             $job = WorkJob::query()->with('client')->find($jobId);
             $evidence = $status === 'extracted' && $job ? Verifier::jobEvidence($text, $job, $po['po_number'] ?? null) : ['ok' => false, 'why' => []];
@@ -154,7 +157,7 @@ final class DocumentReader
                 'status' => 'extracted',
                 'error' => null,
                 'work_job_id' => $document->work_job_id ?? $jobId,
-                'job_linked_by' => $document->work_job_id ? $document->job_linked_by : ($jobId ? 'ai' : null),
+                'job_linked_by' => $document->work_job_id || $document->job_linked_by === 'you' ? $document->job_linked_by : ($jobId ? 'ai' : null),
             ]);
             $document->facts()->delete();
             foreach ($facts as $fact) {
@@ -169,16 +172,31 @@ final class DocumentReader
         return $document->fresh(['facts']);
     }
 
-    /** Keep facts in step when a document is linked to a different job. */
+    /**
+     * Link a document (and the attachments that go with it) to a job, keeping its details in step. When you unlink it,
+     * the job is remembered as "not this job". Automatic links leave alone any attachment you linked yourself.
+     */
     public static function relink(Document $document, ?int $jobId, ?string $by = null): void
     {
-        $document->update(['work_job_id' => $jobId] + ($by ? ['job_linked_by' => $by] : []));
-        if ($by) {
-            $document->children()->update(['job_linked_by' => $by]);
+        $owner = $by === 'you';
+        $apply = function (Document $d) use ($jobId, $by, $owner) {
+            $fields = ['work_job_id' => $jobId];
+            if ($by !== null) {
+                $fields['job_linked_by'] = $jobId ? $by : null;
+            }
+            if ($owner && ! $jobId && $d->work_job_id) {
+                $fields['job_rejected'] = array_values(array_unique([...($d->job_rejected ?? []), $d->work_job_id]));
+            }
+            $d->update($fields);
+            DocumentFact::query()->where('document_id', $d->id)->update(['work_job_id' => $jobId]);
+        };
+        $apply($document);
+        foreach ($document->children()->get() as $child) {
+            if (! $owner && $child->job_linked_by === 'you') {
+                continue;
+            }
+            $apply($child);
         }
-        DocumentFact::query()->where('document_id', $document->id)->update(['work_job_id' => $jobId]);
-        $document->children()->update(['work_job_id' => $jobId]);
-        DocumentFact::query()->whereIn('document_id', $document->children()->pluck('id'))->update(['work_job_id' => $jobId]);
     }
 
     private function newJob(?array $job, ?string $text, string $status): ?array

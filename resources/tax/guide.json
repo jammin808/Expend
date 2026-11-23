@@ -1,0 +1,3201 @@
+{
+  "researched_on": "2026-11-23",
+  "categories": {
+    "turnover": {
+      "title": "Turnover (fees and sales)",
+      "allowable": "no",
+      "summary": "Turnover is all the money your business earns before any expenses. It is income, not an expense. On the cash basis (the default from 2024-25) you count it when the money reaches you; on traditional accounting you count it when the work is done and invoiced.",
+      "rules": [
+        "Include every payment for your work: day rates, fees, overtime, tips, commissions and payments in kind.",
+        "Include money clients pay you to cover your costs (recharges, per diems, buyouts). Then claim the real allowable costs as expenses.",
+        "Cash basis: record the income on the date you are paid, not the PO date or invoice date.",
+        "Traditional accounting: include work done and invoiced but still unpaid at your year end.",
+        "If a contractor took CIS tax off, enter the full amount before the deduction.",
+        "If turnover is £90,000 or more (or would be over a full year) you must use the full SA103F pages; below that you can use SA103S.",
+        "SA103F box 15; SA103S box 9.",
+        "If all your trading and miscellaneous income is £1,000 or less in total it is covered by the trading allowance and usually doesn't need reporting (not if it's from a connected party)."
+      ],
+      "examples_allowed": [
+        "Day rate invoiced against a client PO",
+        "Overtime, travel-day and cancellation fees",
+        "Per diems or expense reimbursements a client pays you",
+        "Kit hire you charge a client as part of your service",
+        "A fee paid in a foreign currency (converted to pounds)"
+      ],
+      "examples_not_allowed": [
+        "Money you put into the business yourself, or a loan",
+        "Refunds from suppliers (reduce the expense instead)",
+        "Wages from a PAYE job (they go on the employment pages)",
+        "Transfers between your own accounts",
+        "Income from a different trade (it needs its own self-employment pages)"
+      ],
+      "evidence_to_keep": [
+        "Every invoice, with PO number, client, date and amount",
+        "Remittance advices and bank statements showing the money in",
+        "CIS payment and deduction statements, if any",
+        "Self-billing statements from clients, if any"
+      ],
+      "watch_out": [
+        "Check that every invoice raised is in your records before you file.",
+        "If a client reimburses an expense, don't leave the reimbursement out of income and still claim the cost.",
+        "Foreign-currency fees must be converted to pounds (see foreign_currency)."
+      ],
+      "sources": [
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "SA103S Self-employment (short) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69ce15395cf899414a0bc69f/SA103S_Notes_2026.pdf"
+        },
+        {
+          "title": "Cash basis (GOV.UK, printable guide)",
+          "url": "https://www.gov.uk/simpler-income-tax-cash-basis/print"
+        },
+        {
+          "title": "Tax-free allowances on property and trading income (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/tax-free-allowances-on-property-and-trading-income"
+        }
+      ]
+    },
+    "other_income": {
+      "title": "Other business income",
+      "allowable": "no",
+      "summary": "This is trading income that isn't part of your normal fees, such as rent from letting part of your business premises. It is still taxable. It goes in SA103F box 16 (SA103S box 10).",
+      "rules": [
+        "Use it for trading income not included in turnover, for example income from letting part of your business accommodation.",
+        "If you are VAT-registered, use the cash basis and keep figures including VAT, put any net VAT repayment from HMRC here.",
+        "Income from another trade goes on separate self-employment pages, not here.",
+        "The £1,000 trading allowance is claimed in SA103F box 16.1 instead of expenses. You can't claim both, and it can't create a loss."
+      ],
+      "examples_allowed": [
+        "Net VAT repayment received (cash basis with VAT-inclusive figures)",
+        "Rent from sub-letting part of a business storage unit"
+      ],
+      "examples_not_allowed": [
+        "Income from a separate business",
+        "Personal gifts or money from family",
+        "Your normal fees (they go in turnover)"
+      ],
+      "evidence_to_keep": [
+        "Letter, statement or agreement showing what the payment was for",
+        "Bank record of the receipt"
+      ],
+      "watch_out": [
+        "Ask an accountant: one-off receipts such as insurance or compensation payouts can be taxable trading income or capital; get advice on how to treat them."
+      ],
+      "sources": [
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "SA103S Self-employment (short) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69ce15395cf899414a0bc69f/SA103S_Notes_2026.pdf"
+        }
+      ]
+    },
+    "cost_of_goods": {
+      "title": "Cost of goods bought for resale or goods used",
+      "allowable": "yes",
+      "summary": "The cost of goods you sell on, or use up in a job you charge for, is allowable. For crew work this is usually small. It goes in SA103F box 17 (SA103S box 11).",
+      "rules": [
+        "Allowable: goods for resale, raw materials and direct costs of producing what you sell.",
+        "Not allowable: goods or materials bought for private use.",
+        "Cash basis: claim when you pay. Traditional accounting: adjust for opening and closing stock.",
+        "If you take stock out for your own use, add it back (SA103F box 60)."
+      ],
+      "examples_allowed": [
+        "Items you buy to sell on to a client",
+        "Parts or consumables bought for one client job and charged on to that client"
+      ],
+      "examples_not_allowed": [
+        "Things you buy for yourself",
+        "Tools and kit you keep using for years (see equipment)",
+        "Depreciation of equipment"
+      ],
+      "evidence_to_keep": [
+        "Supplier invoice or receipt with date, supplier, item and amount",
+        "The job or PO it was used on, if recharged"
+      ],
+      "watch_out": [
+        "Kit you keep and reuse is equipment, not cost of goods.",
+        "If a client paid you back, the payment must be in turnover (or netted off), not ignored."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: reselling goods (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/reselling-goods"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "materials": {
+      "title": "Materials and consumables",
+      "allowable": "yes",
+      "summary": "Materials and consumables that you use up while working are allowable. On the tax return they are reported with cost of goods in SA103F box 17 (SA103S box 11).",
+      "rules": [
+        "Allowable: raw materials and direct costs of the work you sell.",
+        "Not allowable: materials for private use.",
+        "Items you keep and use for 2 years or more are equipment, not materials."
+      ],
+      "examples_allowed": [
+        "Gaffer tape, cable ties, batteries and gels used up on jobs",
+        "Fixings, cable ends and small parts used in repairs on site",
+        "Cleaning products for your work kit"
+      ],
+      "examples_not_allowed": [
+        "Household supplies",
+        "Long-life tools or kit (see equipment)"
+      ],
+      "evidence_to_keep": [
+        "Receipts or invoices",
+        "Note of the job they were used on if the cost is large or recharged"
+      ],
+      "watch_out": [
+        "Bulk-bought consumables used partly at home: claim only the business share."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: reselling goods (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/reselling-goods"
+        },
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "subcontractors": {
+      "title": "Construction industry subcontractors (CIS)",
+      "allowable": "yes",
+      "summary": "Payments to subcontractors for construction work are allowable. This box (SA103F box 18) is only for construction work. If you pay other crew for non-construction work, use freelancers instead.",
+      "rules": [
+        "SA103F box 18 covers payments to subcontractors or anyone else for construction work.",
+        "If you take on subcontractors for construction work you may need to register as a contractor under the Construction Industry Scheme.",
+        "Payments for non-business work are not allowable.",
+        "Claim the payment before any CIS tax you deducted."
+      ],
+      "examples_allowed": [
+        "Paying a subcontractor for construction work on a business job (check CIS applies)"
+      ],
+      "examples_not_allowed": [
+        "Building work at your home",
+        "Ordinary crew labour that isn't construction (use freelancers)"
+      ],
+      "evidence_to_keep": [
+        "Subcontractor invoices",
+        "CIS verification records, monthly returns and deduction statements",
+        "Bank payments"
+      ],
+      "watch_out": [
+        "Ask an accountant: whether any staging, rigging or set-building you subcontract counts as construction under CIS.",
+        "CIS has its own registration, verification and monthly return rules, with penalties."
+      ],
+      "sources": [
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "Expenses if you're self-employed: staff (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/staff"
+        }
+      ]
+    },
+    "staff": {
+      "title": "Staff costs (employees)",
+      "allowable": "yes",
+      "summary": "Wages, bonuses, pensions and employer's National Insurance for people you employ are allowable. What you pay yourself is not. It goes in SA103F box 19 (SA103S box 13).",
+      "rules": [
+        "Allowable: salaries, wages, bonuses, pensions, benefits, agency fees, employer's NI and staff training.",
+        "Not allowable: your own salary, drawings, pension payments or National Insurance.",
+        "Not allowable: carers or domestic help, for example nannies.",
+        "Pay to a relative or friend is allowable only for real work at a commercial rate; anything above that can be disallowed.",
+        "Staff costs not paid within 9 months after the end of the accounting period are disallowable for that period."
+      ],
+      "examples_allowed": [
+        "Wages for an assistant employed through PAYE",
+        "Employer's NI on those wages",
+        "Agency fees for temporary staff"
+      ],
+      "examples_not_allowed": [
+        "Money you pay yourself",
+        "Paying a partner well above the going rate for little work",
+        "Childcare"
+      ],
+      "evidence_to_keep": [
+        "Payroll records and payslips",
+        "Timesheets or job records, especially for family members",
+        "Bank payments"
+      ],
+      "watch_out": [
+        "Ask an accountant: paying a family member needs real work, a sensible rate and actual payment.",
+        "If you employ anyone you'll normally need to run PAYE."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: staff (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/staff"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47105: remuneration of relatives and friends",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47105"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "freelancers": {
+      "title": "Freelancers and other crew you pay",
+      "allowable": "yes",
+      "summary": "Paying other self-employed crew to help on jobs you have been booked for is allowable. These payments go in SA103F box 19 as subcontract labour, not box 18, which is for construction only.",
+      "rules": [
+        "Allowable when you engage them for your business, for example you supply a two-person crew and pay the second person.",
+        "SA103F box 19 includes subcontract labour costs not included elsewhere.",
+        "Get an invoice from them for every job.",
+        "Only claim what you actually paid. If the client pays them directly, it isn't your cost."
+      ],
+      "examples_allowed": [
+        "Paying a fellow technician you bring in on a job",
+        "Paying a driver to deliver your kit to a venue"
+      ],
+      "examples_not_allowed": [
+        "Paying someone for a personal favour",
+        "Crew the client books and pays directly"
+      ],
+      "evidence_to_keep": [
+        "Their invoice with name, dates, job and amount",
+        "Bank transfer record",
+        "The PO or job reference it relates to"
+      ],
+      "watch_out": [
+        "Ask an accountant: if someone works regularly for you under your direction, check whether they are really an employee for tax."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: staff (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/staff"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel": {
+      "title": "Travel (general)",
+      "allowable": "partly",
+      "summary": "Business travel is allowable, but travel between home and a permanent or regular workplace (commuting) is not. If your home is your business base and you work at a series of temporary venues, travel from home to those venues is normally allowable.",
+      "rules": [
+        "Allowable: train, bus, tram, air and taxi fares; hotel rooms and meals on overnight business trips; parking; vehicle hire.",
+        "Not allowable: non-business travel, fines and travel between home and work.",
+        "A journey with any private purpose is a dual-purpose journey and is not allowable. You can't split it.",
+        "Itinerant traders: where home is the base and work sites are temporary and change, home-to-site travel is normally allowable.",
+        "If you travel to one regular, predictable place (for example a hire company's warehouse every day), HMRC may treat it as your base, making home-to-there commuting.",
+        "Stopping on the way (for example at a supplier) doesn't turn a commute into a business journey.",
+        "SA103F box 20; SA103S box 12."
+      ],
+      "examples_allowed": [
+        "Train to a venue for a load-in",
+        "Taxi from the venue to your hotel after a late load-out",
+        "Flight to an overseas show"
+      ],
+      "examples_not_allowed": [
+        "Travel for a holiday added on to a job",
+        "Daily journeys to a fixed regular workplace",
+        "Parking or speeding fines"
+      ],
+      "evidence_to_keep": [
+        "Tickets and receipts",
+        "Booking confirmations",
+        "Call sheet or schedule showing venue and times",
+        "The job or PO each trip relates to"
+      ],
+      "watch_out": [
+        "Ask an accountant: a long run at one venue, or regularly reporting to one client's base, can turn the trip from home into commuting.",
+        "The 24-month and 40% temporary workplace rules are employee rules; HMRC's business manual doesn't use them for the self-employed (see travel_rules)."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37620: travel costs: to and between sites",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37620"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37605: travel costs: home to work",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37605"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37635: travel costs: predictability of place of work",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37635"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37630: travel costs: home to work by way of a supplier",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37630"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37935: intrinsic duality: travel between home and work",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37935"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel_accommodation": {
+      "title": "Hotels and overnight accommodation",
+      "allowable": "partly",
+      "summary": "When a job means you have to stay away from home overnight, the hotel and reasonable meals are allowable. Accommodation at your business base, or for private reasons, is not.",
+      "rules": [
+        "Allowable where a business trip needs one or more nights away from home.",
+        "Reasonable meal costs taken with the overnight stay are allowable, whether or not they're on the hotel bill.",
+        "Not allowable: accommodation at your base of operations, even if a contract says you must live there.",
+        "The night before an early call, or after a late finish, at a distant venue can be part of the business trip if it's really needed.",
+        "Costs for a partner or family travelling with you are not allowable.",
+        "Extra nights for a holiday are private."
+      ],
+      "examples_allowed": [
+        "Hotel near a venue 150 miles from home for a three-day build",
+        "Budget hotel the night before a 6am load-in far from home",
+        "Hotel after a 1am load-out when driving home would be unsafe"
+      ],
+      "examples_not_allowed": [
+        "Your partner's share of the room",
+        "Extra weekend nights for sightseeing",
+        "Rent on a flat near a place you work at permanently"
+      ],
+      "evidence_to_keep": [
+        "Itemised hotel invoice",
+        "Call sheet or schedule showing call and wrap times",
+        "A short note of why the stay was needed"
+      ],
+      "watch_out": [
+        "Ask an accountant: long stays at one location (weeks or months) may mean it has become your base.",
+        "If the client books and pays the hotel, don't claim it.",
+        "Only reasonable costs are allowed."
+      ],
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM47705: travel and subsistence: meals and accommodation",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47705"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37670: meals and subsistence",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37670"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37675: subcontractors: travel and subsistence",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37675"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47710: living expenses abroad: UK trades",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47710"
+        },
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        }
+      ]
+    },
+    "travel_rail": {
+      "title": "Train, tube, bus and tram fares",
+      "allowable": "partly",
+      "summary": "Public transport fares for business journeys are allowable. Fares for commuting to a regular workplace, and personal trips, are not.",
+      "rules": [
+        "Allowable for business journeys, for example home to a temporary venue, venue to venue, or to a client meeting.",
+        "Not allowable for travel between home and a permanent or regular base.",
+        "If one ticket covers business and private travel, only a clearly business journey is allowable; dual-purpose journeys are not.",
+        "SA103F box 20; SA103S box 12."
+      ],
+      "examples_allowed": [
+        "Return rail ticket to a festival site you're crewing",
+        "Tube fares between two venues on the same day"
+      ],
+      "examples_not_allowed": [
+        "A season ticket to a regular workplace",
+        "Fares for a day out"
+      ],
+      "evidence_to_keep": [
+        "Tickets, e-tickets or booking confirmations",
+        "Contactless or Oyster journey history",
+        "Job or PO reference for each trip"
+      ],
+      "watch_out": [
+        "Mark personal journeys on your journey history so they aren't claimed by mistake."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37620: travel costs: to and between sites",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37620"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37605: travel costs: home to work",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37605"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel_taxi": {
+      "title": "Taxis and ride-hailing",
+      "allowable": "partly",
+      "summary": "Taxi fares for business journeys are allowable. Taxis for private trips, for commuting to a regular workplace, or as part of entertaining clients are not.",
+      "rules": [
+        "Allowable on business journeys, for example hotel to venue, or venue to station after a late finish.",
+        "Not allowable for travel between home and a permanent or regular base.",
+        "Travel that is part of entertaining clients (for example taking a client to dinner) is not allowable.",
+        "SA103F box 20; SA103S box 12."
+      ],
+      "examples_allowed": [
+        "Taxi from a venue to your hotel after load-out",
+        "Taxi carrying kit to a temporary venue"
+      ],
+      "examples_not_allowed": [
+        "Taxi home from a night out",
+        "Taxi with a client to a restaurant"
+      ],
+      "evidence_to_keep": [
+        "Receipt or app trip record showing date, route and fare",
+        "Job or PO reference"
+      ],
+      "watch_out": [
+        "Ride-hailing apps mix personal and work trips; tag business trips as you go."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45025: entertainment: travelling costs",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45025"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37620: travel costs: to and between sites",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37620"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel_local": {
+      "title": "Local travel",
+      "allowable": "partly",
+      "summary": "Short local journeys for work, such as getting between venues, suppliers or client meetings, are allowable. Local trips that are commuting or personal are not.",
+      "rules": [
+        "Allowable when the journey is wholly for business.",
+        "Not allowable for travel from home to a regular place of work, or for private errands.",
+        "A business stop on a private or commuting journey doesn't make it a business journey.",
+        "SA103F box 20; SA103S box 12."
+      ],
+      "examples_allowed": [
+        "Bus to a supplier to collect a part for a job",
+        "Hire bike or e-scooter between two venues"
+      ],
+      "examples_not_allowed": [
+        "Trip to the shops",
+        "Daily journey to a regular base"
+      ],
+      "evidence_to_keep": [
+        "Receipts or app records",
+        "A note of the purpose of each trip"
+      ],
+      "watch_out": [
+        "Small amounts add up; record them as you go rather than estimating at year end."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37630: travel costs: home to work by way of a supplier",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37630"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37620: travel costs: to and between sites",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37620"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel_flights": {
+      "title": "Flights",
+      "allowable": "partly",
+      "summary": "Flights for business trips, such as working on an overseas show, are allowable. If a trip is partly a holiday, HMRC can refuse the whole travel cost.",
+      "rules": [
+        "Allowable when the trip is wholly for business.",
+        "If a trip has a dual purpose (business and holiday), the travel cost is disallowed entirely.",
+        "Accommodation and meals abroad while you are working there for the business are allowable; holiday days are not.",
+        "Costs of a partner or family travelling with you are not allowable.",
+        "SA103F box 20; SA103S box 12."
+      ],
+      "examples_allowed": [
+        "Flight to a European tour date you are booked on",
+        "Baggage fee for carrying work kit"
+      ],
+      "examples_not_allowed": [
+        "Your partner's flight",
+        "Flight for a holiday that includes a short meeting"
+      ],
+      "evidence_to_keep": [
+        "Booking confirmation and e-ticket",
+        "The booking or PO for the overseas job",
+        "Boarding passes"
+      ],
+      "watch_out": [
+        "Ask an accountant: if you extend a work trip for leisure, get advice before claiming the flight.",
+        "Foreign currency costs need converting to pounds."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37610: travel costs: overseas conference plus holiday",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37610"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47710: living expenses abroad: UK trades",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47710"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel_parking": {
+      "title": "Parking, tolls and congestion charges",
+      "allowable": "partly",
+      "summary": "Parking, tolls and congestion charges on business journeys are allowable, and you can claim them on top of the mileage flat rate. Parking at a regular workplace you commute to, and any fines, are not.",
+      "rules": [
+        "Allowable on business journeys, including when you use the simplified mileage rate.",
+        "Not allowable where the journey is home to a permanent or regular workplace.",
+        "Fines and penalty charges are never allowable (see travel_penalties).",
+        "SA103F box 20; SA103S box 12."
+      ],
+      "examples_allowed": [
+        "Venue or car park charges during a load-in",
+        "Bridge or road tolls driving to a job",
+        "Congestion charge driving kit into central London for a job"
+      ],
+      "examples_not_allowed": [
+        "Parking near a regular workplace",
+        "Parking or bus-lane penalty notices"
+      ],
+      "evidence_to_keep": [
+        "Parking receipts or app records",
+        "Toll and congestion charge receipts",
+        "Matching entry in your mileage log"
+      ],
+      "watch_out": [
+        "Keep parking costs separate from fines in your records."
+      ],
+      "sources": [
+        {
+          "title": "Simplified expenses: vehicles (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/vehicles"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM75005: simplified expenses: motor vehicles",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim75005"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37605: travel costs: home to work",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37605"
+        },
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        }
+      ]
+    },
+    "travel_mileage": {
+      "title": "Mileage (simplified flat rate)",
+      "allowable": "yes",
+      "summary": "Instead of claiming the actual costs of your own car or van, you can claim a flat rate for each business mile. For 2026-27 the rate is 55p a mile for the first 10,000 miles and 25p after that; it was 45p and 25p before 6 April 2026.",
+      "rules": [
+        "Cars and vans: 45p a mile for the first 10,000 business miles and 25p after, up to 2025-26.",
+        "Cars and vans: 55p a mile for the first 10,000 and 25p after, for 2026-27 (in law: Taxation (Energy and Vehicles) Act 2026).",
+        "Announced at Budget 2026, not yet law: the rate above 10,000 miles rises from 25p to 35p from 6 April 2027.",
+        "Motorcycles: 24p a mile, with no 10,000-mile band.",
+        "The 10,000 miles counts the total business miles in all cars and vans you claim on the flat rate in the period.",
+        "The flat rate replaces fuel, insurance, repairs, servicing, road tax, MOT and depreciation. Don't claim those as well.",
+        "You can still claim parking, tolls and congestion charges on business journeys.",
+        "Once you use the flat rate for a vehicle you must keep using it while that vehicle is in the business.",
+        "You can't use the flat rate for a vehicle you've claimed capital allowances on, or (cash basis) whose cost you deducted.",
+        "Only business journeys count, not commuting or private trips.",
+        "The flat rate is for cars, goods vehicles and motorcycles. Bicycles aren't covered; claim actual costs instead.",
+        "There is no extra amount for carrying passengers."
+      ],
+      "examples_allowed": [
+        "Driving from home to a temporary venue and back (itinerant work)",
+        "Driving between two venues on the same day",
+        "Driving to a supplier to collect kit for a job"
+      ],
+      "examples_not_allowed": [
+        "Driving to a regular base you attend daily",
+        "Private trips",
+        "Miles in a hire car whose fuel you also claim"
+      ],
+      "evidence_to_keep": [
+        "A mileage log made at the time: date, start and end, purpose or job/PO, miles",
+        "Odometer readings at the start and end of each tax year",
+        "Call sheets or bookings that match the trips"
+      ],
+      "watch_out": [
+        "Decide flat rate or actual costs when the vehicle first goes into the business; you can't switch until you change vehicle.",
+        "A log written up from memory at year end is weak evidence.",
+        "Ask an accountant: if you use more than one car or van, or a hire car, check how the flat rate applies."
+      ],
+      "sources": [
+        {
+          "title": "Simplified expenses: vehicles (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/vehicles"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM75005: simplified expenses: motor vehicles",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim75005"
+        },
+        {
+          "title": "Increasing mileage rates: policy paper, 17 June 2026 (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/increase-to-approved-mileage-allowance-payments-amaps-and-self-employed-simplified-mileage-rates/increasing-mileage-rates"
+        },
+        {
+          "title": "Taxation (Energy and Vehicles) Act 2026, section 2 (legislation.gov.uk)",
+          "url": "https://www.legislation.gov.uk/ukpga/2026/26"
+        },
+        {
+          "title": "ITTOIA 2005 section 94F: the appropriate mileage amount (legislation.gov.uk)",
+          "url": "https://www.legislation.gov.uk/ukpga/2005/5/section/94F"
+        },
+        {
+          "title": "Budget 2026: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/budget-2026-overview-of-tax-legislation-and-rates-ootlar"
+        }
+      ]
+    },
+    "travel_car_hire": {
+      "title": "Car and van hire",
+      "allowable": "partly",
+      "summary": "Hire charges for a vehicle used on business journeys are allowable. For longer hires or leases of cars with CO2 above 50g/km, 15% of the cost is disallowed under traditional accounting.",
+      "rules": [
+        "Allowable: hire charges for business use; claim the fuel separately as an actual cost.",
+        "Short hires of 45 consecutive days or less are not restricted.",
+        "Longer car hires or leases (from 6 April 2021) with CO2 over 50g/km: disallow 15% of the hire cost (traditional accounting).",
+        "The 15% restriction doesn't apply on the cash basis.",
+        "Any private use of the hire vehicle must be taken out.",
+        "SA103F box 20; SA103S box 12."
+      ],
+      "examples_allowed": [
+        "Van hired for a week to move your kit to a festival",
+        "Car hired at the airport for an overseas job"
+      ],
+      "examples_not_allowed": [
+        "Hire car used for a holiday",
+        "Fines charged to you by the hire company"
+      ],
+      "evidence_to_keep": [
+        "Hire agreement and invoice showing dates",
+        "Fuel receipts",
+        "Mileage or journey record for the hire period"
+      ],
+      "watch_out": [
+        "Don't claim mileage at the flat rate for the same journeys in a hire vehicle as well as hire and fuel.",
+        "Fines passed on by the hire company are not allowable (see travel_penalties)."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47714: cars: restriction of hiring costs",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47714"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47750: car hire: short-term hiring in",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47750"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel_fuel": {
+      "title": "Fuel and charging",
+      "allowable": "partly",
+      "summary": "Fuel or electric charging for business journeys is allowable if you claim actual vehicle costs. If you use the mileage flat rate for that vehicle you can't also claim its fuel.",
+      "rules": [
+        "Actual costs method: claim the business share of fuel for your own vehicle, based on business miles as a share of total miles.",
+        "Flat rate method: fuel is included in the rate, so claim nothing extra for that vehicle.",
+        "Fuel for a hire vehicle used on business is allowable.",
+        "Fuel for private and commuting trips is not allowable.",
+        "SA103F box 20; SA103S box 12."
+      ],
+      "examples_allowed": [
+        "Diesel for your van on actual costs, business share",
+        "Fuel for a hire van used to move kit to a job"
+      ],
+      "examples_not_allowed": [
+        "Fuel for your car when you claim 55p a mile for it",
+        "Fuel for family trips"
+      ],
+      "evidence_to_keep": [
+        "Fuel receipts",
+        "Mileage log showing business and total miles"
+      ],
+      "watch_out": [
+        "On actual costs you need total and business mileage to work out the business share."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        },
+        {
+          "title": "Simplified expenses: vehicles (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/vehicles"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM75005: simplified expenses: motor vehicles",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim75005"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel_subsistence": {
+      "title": "Meals and subsistence when travelling",
+      "allowable": "partly",
+      "summary": "Food is normally a private cost, but HMRC allows reasonable meals when you are travelling for work in an itinerant trade, on occasional trips outside your normal pattern, or on overnight stays. Routine daily lunches at a regular local workplace are not allowable.",
+      "rules": [
+        "Allowable: reasonable meal costs on an overnight business trip.",
+        "Allowable: reasonable food and drink while travelling in the course of the trade, if the travel is allowable and the trade is itinerant at the time, or the trip is occasional and outside your normal pattern.",
+        "Not allowable: meals at your normal base, or routine lunches near a regular local site.",
+        "No part of a disallowed meal can be claimed as the 'extra cost' of eating out.",
+        "The self-employed claim actual, reasonable costs. HMRC's business manual gives no flat daily rates for the self-employed.",
+        "SA103F box 20 (overnight meals); other meals are disallowable."
+      ],
+      "examples_allowed": [
+        "Evening meal during a two-night stay for an out-of-town show",
+        "Breakfast at a service station while driving to a distant venue",
+        "Food bought on a long travel day to a temporary site"
+      ],
+      "examples_not_allowed": [
+        "Lunch every day near a warehouse you work at regularly",
+        "Meals with friends",
+        "Food on days you're not travelling for work"
+      ],
+      "evidence_to_keep": [
+        "Receipts made at the time",
+        "Call sheet or job record showing you were travelling",
+        "Note of the trip it belongs to"
+      ],
+      "watch_out": [
+        "Ask an accountant: subsistence on day trips depends on the facts; HMRC may challenge regular daily meals.",
+        "If the client provides catering or pays a per diem, record the per diem as income and claim only real extra costs."
+      ],
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM47705: travel and subsistence: meals and accommodation",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47705"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37670: meals and subsistence",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37670"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37675: subcontractors: travel and subsistence",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37675"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37900: expenditure having an intrinsic duality of purpose",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37900"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "travel_penalties": {
+      "title": "Fines and penalty charges",
+      "allowable": "no",
+      "summary": "Fines and penalty charges are never allowable, even if you got them while working. This includes parking tickets, speeding fines and bus-lane or congestion charge penalties.",
+      "rules": [
+        "GOV.UK lists fines or penalty charges as costs you can't claim.",
+        "A penalty intended as punishment is not allowable.",
+        "SA103F treats fines as disallowable (box 35 if included in box 20)."
+      ],
+      "examples_allowed": [],
+      "examples_not_allowed": [
+        "Parking ticket at a venue",
+        "Speeding fine on the way to a job",
+        "Penalty for not paying a congestion or clean air zone charge on time"
+      ],
+      "evidence_to_keep": [
+        "Record them separately so they aren't claimed by mistake"
+      ],
+      "watch_out": [
+        "The congestion charge itself is allowable on a business trip; the penalty for not paying it is not."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM38500: fines, penalties and damages",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim38500"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "premises": {
+      "title": "Business premises (rent, rates, power)",
+      "allowable": "yes",
+      "summary": "Rent, business rates, power and security for premises used for the business, such as a lock-up or storage unit for your kit, are allowable. Buying premises, and private use of premises, are not. It goes in SA103F box 21 (SA103S box 14).",
+      "rules": [
+        "Allowable: rent for business premises, business and water rates, light, heat, power, property insurance and security.",
+        "Not allowable: the cost of buying premises, or any non-business part of them.",
+        "Home costs go under use_of_home (business share or flat rate)."
+      ],
+      "examples_allowed": [
+        "Storage unit rent for road cases and kit",
+        "Electricity for a workshop where you maintain kit"
+      ],
+      "examples_not_allowed": [
+        "Storage of personal belongings in the same unit",
+        "Deposit or purchase price of a building"
+      ],
+      "evidence_to_keep": [
+        "Rental agreement and invoices",
+        "Utility and rates bills"
+      ],
+      "watch_out": [
+        "If a unit holds personal items too, claim only the business share."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "insurance": {
+      "title": "Business insurance",
+      "allowable": "partly",
+      "summary": "Insurance taken out for the business is allowable, such as public liability, professional indemnity, kit insurance and business vehicle cover. Insurance on your own life or health is not.",
+      "rules": [
+        "Allowable: public liability and other business insurance, professional indemnity premiums, and insurance on business equipment.",
+        "Vehicle insurance is part of car, van and travel costs (not if you use the mileage flat rate).",
+        "Not allowable: premiums for your own life, accident or illness cover, such as income protection.",
+        "Where a policy covers business and private items, claim the business share.",
+        "SA103F box 21 (property), box 28 (indemnity), box 20 (vehicles)."
+      ],
+      "examples_allowed": [
+        "Public liability insurance required by venues",
+        "Equipment insurance for your tools and kit",
+        "Professional indemnity cover"
+      ],
+      "examples_not_allowed": [
+        "Life insurance",
+        "Personal income protection or private medical cover for yourself",
+        "Home contents cover for personal items"
+      ],
+      "evidence_to_keep": [
+        "Policy schedule showing what is covered",
+        "Premium invoices or bank records"
+      ],
+      "watch_out": [
+        "Ask an accountant: insurance payouts for business kit or lost work may be taxable."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: legal and financial costs (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/legal-financial"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45560: insurance: own health policies",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45560"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45501: insurance: fixed assets",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45501"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "use_of_home": {
+      "title": "Use of home",
+      "allowable": "partly",
+      "summary": "If you work from home you can claim part of your household costs, either as a flat monthly amount or as a fair share of the actual bills. The flat rate doesn't include phone or internet, which you claim separately.",
+      "rules": [
+        "Flat rate (25 hours or more a month at home): 25-50 hours £10 a month; 51-100 hours £18; 101 hours or more £26.",
+        "Actual costs: a fair share of heating, electricity, Council Tax, mortgage interest or rent, using a reasonable method such as rooms used and time spent.",
+        "Mortgage capital repayments are never allowable.",
+        "Fixed costs (Council Tax, rent, mortgage interest, insurance) need part of the home set aside solely for business for a period.",
+        "Running costs (heat, light) are split by how much the business actually uses.",
+        "Minor use (for example doing paperwork at home) can be claimed on any reasonable basis.",
+        "SA103F box 21; SA103S box 14."
+      ],
+      "examples_allowed": [
+        "£10 a month for 30 hours a month of admin, quoting and invoicing at home",
+        "A share of heating and electricity for a room used as an office"
+      ],
+      "examples_not_allowed": [
+        "A share of the whole mortgage repayment",
+        "Costs of rooms with no business use"
+      ],
+      "evidence_to_keep": [
+        "Record of hours worked at home each month (flat rate)",
+        "Household bills and your workings for the business share (actual costs)"
+      ],
+      "watch_out": [
+        "Ask an accountant: before claiming a share of mortgage interest, rent or Council Tax, especially if a room is used only for business.",
+        "Some HMRC manual pages still mention the old £500 cash basis interest cap; it was removed from 2024-25."
+      ],
+      "sources": [
+        {
+          "title": "Simplified expenses: working from home (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/working-from-home"
+        },
+        {
+          "title": "Expenses if you're self-employed: overview (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47820: use of home: specific expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47820"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM75010: simplified expenses: use of home",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim75010"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "repairs": {
+      "title": "Repairs and maintenance",
+      "allowable": "yes",
+      "summary": "Repairing and maintaining business equipment and premises is allowable. Improvements, or replacing a whole asset, are capital costs instead. It goes in SA103F box 22 (SA103S box 15).",
+      "rules": [
+        "Allowable: repairs and maintenance of business premises and equipment.",
+        "Replacing a part is a repair; replacing the whole asset is not.",
+        "Improvements, or changing what an asset can do, are capital.",
+        "Vehicle repairs go in car, van and travel costs, and aren't claimed if you use the mileage flat rate.",
+        "Repairs to non-business items are not allowable."
+      ],
+      "examples_allowed": [
+        "Re-terminating damaged cables",
+        "Servicing a lighting desk or fixing a broken flight case",
+        "PAT testing your kit"
+      ],
+      "examples_not_allowed": [
+        "Upgrading kit to a better model (capital)",
+        "Repairing personal items"
+      ],
+      "evidence_to_keep": [
+        "Repair invoices",
+        "Parts receipts",
+        "Note of which item was repaired"
+      ],
+      "watch_out": [
+        "Putting a run-down second-hand item into usable condition after buying it is capital, not a repair."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM46901: repairs and renewals: overview",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim46901"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "office": {
+      "title": "Office costs",
+      "allowable": "yes",
+      "summary": "Day-to-day office costs such as postage, printing, ink and small office items are allowable. Bigger equipment is equipment (see equipment). It goes in SA103F box 23 (SA103S box 18).",
+      "rules": [
+        "Allowable: postage, stationery, printing, printer ink, small office equipment.",
+        "Items you'd normally use for less than 2 years can be claimed as expenses.",
+        "Cash basis: computers and printers are allowable expenses. Traditional accounting: claim capital allowances instead.",
+        "Not allowable: any non-business use."
+      ],
+      "examples_allowed": [
+        "Printer ink and paper for invoices and rider paperwork",
+        "Postage to send invoices or kit"
+      ],
+      "examples_not_allowed": [
+        "Household printing",
+        "Furniture for a room with no business use"
+      ],
+      "evidence_to_keep": [
+        "Receipts or invoices"
+      ],
+      "watch_out": [
+        "Claim only the business share of items used at home by the family."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "phone_internet": {
+      "title": "Phone and internet",
+      "allowable": "partly",
+      "summary": "You can claim the business share of your phone and internet bills. Business calls are allowable, plus a business share of line rental and broadband. It goes in SA103F box 23 (SA103S box 18).",
+      "rules": [
+        "Allowable: the business part of phone, mobile and internet bills.",
+        "Example from GOV.UK: £200 phone bill with £70 of business calls means you claim £70.",
+        "Line rental and broadband: claim a business proportion.",
+        "Where private use is not significant, HMRC accepts the full cost.",
+        "The working-from-home flat rate does not include phone or internet, so claim these separately."
+      ],
+      "examples_allowed": [
+        "Business share of your mobile contract",
+        "Business share of home broadband used for quotes, invoicing and show files",
+        "A separate work SIM"
+      ],
+      "examples_not_allowed": [
+        "Family members' phone contracts",
+        "Streaming or TV packages bundled with broadband"
+      ],
+      "evidence_to_keep": [
+        "Bills",
+        "A sample period of itemised use to support the business percentage"
+      ],
+      "watch_out": [
+        "Work out your business percentage from a typical period and keep using it until things change."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "Expenses if you're self-employed: overview (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47820: use of home: specific expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47820"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37007: wholly and exclusively: overview (apportionment)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37007"
+        },
+        {
+          "title": "Simplified expenses: working from home (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/working-from-home"
+        }
+      ]
+    },
+    "software": {
+      "title": "Software and subscriptions to apps",
+      "allowable": "yes",
+      "summary": "Software and app subscriptions used for the business are allowable. Under traditional accounting, software you buy outright and use for 2 years or more goes through capital allowances instead. It goes in SA103F box 23 (SA103S box 18).",
+      "rules": [
+        "Allowable as an expense: software used for less than 2 years, and software with regular licence renewal payments.",
+        "Traditional accounting: other software is claimed through capital allowances.",
+        "Cash basis: software is an allowable expense.",
+        "Claim only the business share if you also use it privately."
+      ],
+      "examples_allowed": [
+        "Bookkeeping or MTD software",
+        "Lighting or audio design software licence",
+        "Cloud storage for show files"
+      ],
+      "examples_not_allowed": [
+        "Games or personal apps",
+        "Family share of a subscription"
+      ],
+      "evidence_to_keep": [
+        "Invoices or app store receipts",
+        "Licence terms if it's a one-off purchase"
+      ],
+      "watch_out": [
+        "If you need MTD for Income Tax, the software must be HMRC-recognised."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "Five things you need to know ahead of the MTD for Income Tax quarterly deadline (GOV.UK news)",
+          "url": "https://www.gov.uk/government/news/five-things-you-need-to-know-ahead-of-making-tax-digital-for-income-tax-quarterly-deadline"
+        }
+      ]
+    },
+    "stationery": {
+      "title": "Stationery and printing",
+      "allowable": "yes",
+      "summary": "Stationery, printing and postage for the business are allowable. They go in SA103F box 23 (SA103S box 18).",
+      "rules": [
+        "Allowable: stationery, printing, postage and printer ink.",
+        "Not allowable: personal or household use."
+      ],
+      "examples_allowed": [
+        "Notebooks and labels for kit",
+        "Printing call sheets or cable plans"
+      ],
+      "examples_not_allowed": [
+        "School supplies for children",
+        "Personal cards"
+      ],
+      "evidence_to_keep": [
+        "Receipts"
+      ],
+      "watch_out": [
+        "Mixed shopping receipts: claim only the business items."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "advertising": {
+      "title": "Advertising",
+      "allowable": "yes",
+      "summary": "Advertising your services is allowable, such as directory listings, adverts and website costs. Entertaining clients is not, even though it's on the same tax return line. It goes in SA103F box 24 (SA103S box 19).",
+      "rules": [
+        "Allowable: adverts in newspapers or directories, mailshots, free samples and website costs.",
+        "Entertaining clients, suppliers or customers is disallowable (SA103F box 39).",
+        "Branded promotional items are limited to £50 per recipient per tax year (see marketing)."
+      ],
+      "examples_allowed": [
+        "Paid listing on a crew directory",
+        "Website hosting and domain",
+        "Paid social media ads for your services"
+      ],
+      "examples_not_allowed": [
+        "Drinks with a production manager",
+        "Tickets to a gig for a client"
+      ],
+      "evidence_to_keep": [
+        "Invoices and receipts",
+        "Copies or screenshots of the adverts"
+      ],
+      "watch_out": [
+        "Keep entertainment separate in your records so it isn't claimed."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: marketing, entertainment and subscriptions (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/marketing-entertainment-subscriptions"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "marketing": {
+      "title": "Marketing and promotion",
+      "allowable": "yes",
+      "summary": "Marketing that promotes your business is allowable, such as a website, showreel, business cards and branded giveaways. Gifts that aren't branded, and food, drink or vouchers, are not.",
+      "rules": [
+        "Allowable: website costs and most promotional items showing your business name or logo.",
+        "Branded gifts: no more than £50 per recipient per tax year in total.",
+        "Not allowable as gifts: food, drink, tobacco, or vouchers exchangeable for goods.",
+        "Charity donations aren't allowable as business expenses, though sponsorship payments may be.",
+        "SA103F box 24 (entertainment and gifts that fail the rules are disallowable)."
+      ],
+      "examples_allowed": [
+        "Business cards and a website",
+        "Branded torches or multi-tools given to production managers (£50 limit each)",
+        "Photography of your work for a portfolio"
+      ],
+      "examples_not_allowed": [
+        "A bottle of wine or hamper for a client",
+        "Gift cards for regular clients",
+        "Unbranded gifts"
+      ],
+      "evidence_to_keep": [
+        "Receipts",
+        "List of who received branded gifts and the value, per tax year"
+      ],
+      "watch_out": [
+        "The £50 limit counts everything given to the same person in the tax year."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: marketing, entertainment and subscriptions (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/marketing-entertainment-subscriptions"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45065: gifts: overview",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45065"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45070: gifts: small gifts exception (£50)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45070"
+        },
+        {
+          "title": "Expenses if you're self-employed: subscriptions (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/subscriptions"
+        }
+      ]
+    },
+    "entertainment": {
+      "title": "Client entertainment and hospitality",
+      "allowable": "no",
+      "summary": "Entertaining clients, suppliers or customers is not allowable, even if it helps win work. This includes meals, drinks, event tickets and related travel. Entertaining your own employees can be allowable.",
+      "rules": [
+        "Not allowable: entertaining clients, suppliers or customers, including food and drink.",
+        "Not allowable: tickets to sporting, music or other events, and venue hire or transport tied to entertaining.",
+        "Travel that is part of entertaining is not allowable.",
+        "Exception: events where employees are the main attendees, such as a staff party.",
+        "If you are VAT-registered you can't reclaim VAT on business entertainment either.",
+        "Put it in SA103F box 24 and the same amount in box 39 as disallowable, or leave it out."
+      ],
+      "examples_allowed": [
+        "Annual meal for your employees (if you have staff)"
+      ],
+      "examples_not_allowed": [
+        "Buying drinks for a production team after a show",
+        "Lunch with a client to discuss work",
+        "Festival tickets for a client"
+      ],
+      "evidence_to_keep": [
+        "Keep receipts but mark them as non-allowable"
+      ],
+      "watch_out": [
+        "Ask an accountant: your own meal when entertaining a client is normally treated as part of the entertaining, not as subsistence."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: marketing, entertainment and subscriptions (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/marketing-entertainment-subscriptions"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45000: business entertainment and gifts: contents",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45000"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45025: entertainment: travelling costs",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45025"
+        },
+        {
+          "title": "Reclaim VAT on business expenses (GOV.UK)",
+          "url": "https://www.gov.uk/charge-reclaim-record-vat/reclaim-vat-business-expenses"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "interest": {
+      "title": "Interest on business loans",
+      "allowable": "partly",
+      "summary": "Interest on loans, overdrafts and hire purchase used for the business is allowable. Repaying the money you borrowed is not. It goes in SA103F box 25 (SA103S box 17).",
+      "rules": [
+        "Allowable: interest on bank and business loans, hire purchase interest and alternative finance payments.",
+        "Not allowable: repayments of the loan itself.",
+        "If part of a loan or card balance is private, claim only the business share of the interest.",
+        "Cash basis 2023-24 and earlier: interest deductions were capped at £500. From 2024-25 the cap is removed."
+      ],
+      "examples_allowed": [
+        "Interest on a loan used to buy a van",
+        "Hire purchase interest on kit",
+        "Interest on a credit card used only for business"
+      ],
+      "examples_not_allowed": [
+        "Monthly capital repayments",
+        "Interest on a personal loan for a holiday",
+        "Interest charged by HMRC on late tax"
+      ],
+      "evidence_to_keep": [
+        "Loan or HP agreement",
+        "Annual statements showing interest separately"
+      ],
+      "watch_out": [
+        "Ask an accountant: where business and personal borrowing are mixed, the split needs care."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: legal and financial costs (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/legal-financial"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "Expanding the cash basis: policy paper (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/expanding-the-income-tax-cash-basis-for-self-employed-individuals-and-partnerships/expanding-the-cash-basis"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45740: interest on late paid tax and NIC",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45740"
+        }
+      ]
+    },
+    "finance": {
+      "title": "Bank, card and other financial charges",
+      "allowable": "yes",
+      "summary": "Bank charges, overdraft fees, card fees and leasing payments for the business are allowable. Capital repayments are not. It goes in SA103F box 26 (SA103S box 17).",
+      "rules": [
+        "Allowable: bank, overdraft and credit card charges, hire purchase and lease interest, leasing payments and alternative finance payments.",
+        "Not allowable: capital repayments.",
+        "Claim only the business share of charges on an account you also use privately."
+      ],
+      "examples_allowed": [
+        "Business bank account monthly fee",
+        "Card machine or payment platform fees",
+        "Currency conversion fees on a client payment"
+      ],
+      "examples_not_allowed": [
+        "Charges on a personal account with no business use",
+        "Loan capital repayments"
+      ],
+      "evidence_to_keep": [
+        "Bank and card statements",
+        "Platform fee statements"
+      ],
+      "watch_out": [
+        "A separate business account makes the business share easy to prove."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: legal and financial costs (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/legal-financial"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "bad_debts": {
+      "title": "Bad debts",
+      "allowable": "partly",
+      "summary": "Under traditional accounting you can claim an invoice you've already counted as income but will never be paid. On the cash basis there's nothing to claim, because unpaid invoices were never counted as income. It goes in SA103F box 27.",
+      "rules": [
+        "Traditional accounting only.",
+        "The debt must be in your turnover and written off as bad or doubtful (to the extent it's estimated to be bad).",
+        "Not allowable: general provisions such as a percentage of turnover.",
+        "Not allowable: debts not included in turnover, or from selling fixed assets.",
+        "If you later get paid, the money is income."
+      ],
+      "examples_allowed": [
+        "Traditional accounting: an invoice to a production company that went into liquidation"
+      ],
+      "examples_not_allowed": [
+        "Cash basis: any unpaid invoice",
+        "A 5% 'just in case' provision"
+      ],
+      "evidence_to_keep": [
+        "The invoice and chasing emails",
+        "Insolvency notices or a note of why the debt is bad"
+      ],
+      "watch_out": [
+        "Each debt must be looked at individually."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: legal and financial costs (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/legal-financial"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM42701: bad debts: overview",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim42701"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM42700: bad debts: contents",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim42700"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "professional": {
+      "title": "Accountancy, legal and professional fees",
+      "allowable": "partly",
+      "summary": "Fees for accountants, solicitors and other professionals for business reasons are allowable, plus professional indemnity insurance. Legal costs of buying assets, fines and costs of settling tax disputes are not. It goes in SA103F box 28 (SA103S box 16).",
+      "rules": [
+        "Allowable: accountants, solicitors, surveyors and architects hired for business reasons, and indemnity insurance.",
+        "Allowable by long HMRC practice: normal recurring accountancy fees for preparing business accounts.",
+        "Not allowable: the cost of preparing and submitting your personal Self Assessment return (for example non-business income or capital gains work).",
+        "Not allowable: legal costs of buying property or large equipment, and costs of settling tax disputes.",
+        "Not allowable: fines for breaking the law."
+      ],
+      "examples_allowed": [
+        "Accountant's fee for preparing your business accounts",
+        "Solicitor's fee to chase an unpaid invoice"
+      ],
+      "examples_not_allowed": [
+        "Accountant's fee for your rental property or capital gains",
+        "Fees for an HMRC dispute settled with extra tax"
+      ],
+      "evidence_to_keep": [
+        "Professional invoices, ideally split between business accounts and personal tax work"
+      ],
+      "watch_out": [
+        "Ask an accountant: ask for invoices split between business accounts and personal tax return work."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: legal and financial costs (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/legal-financial"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM46450: accountancy expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim46450"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "depreciation": {
+      "title": "Depreciation and loss on sale of assets",
+      "allowable": "no",
+      "summary": "Depreciation is not allowable for tax. You get tax relief for equipment through the cash basis deduction or capital allowances instead. SA103F box 29 is only for traditional accounting, and the amount is added back.",
+      "rules": [
+        "Depreciation, and losses on selling assets, are not allowable expenses.",
+        "Traditional accounting: if your accounts include depreciation, put it in box 29 and also in box 44 (disallowable).",
+        "Cash basis: you deduct the cost of most equipment when you pay for it, so there's no depreciation.",
+        "Relief for equipment comes from capital allowances (traditional) or the cash basis deduction."
+      ],
+      "examples_allowed": [],
+      "examples_not_allowed": [
+        "Writing down the value of a laptop each year",
+        "Loss on selling your old van"
+      ],
+      "evidence_to_keep": [
+        "Asset list with purchase dates, costs and sale proceeds"
+      ],
+      "watch_out": [
+        "Don't claim depreciation as well as capital allowances or the cash basis deduction."
+      ],
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM35201: capital/revenue divide: depreciation",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim35201"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "Expenses if you're self-employed: reselling goods (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/reselling-goods"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "other": {
+      "title": "Other business expenses",
+      "allowable": "partly",
+      "summary": "This covers allowable costs that don't fit elsewhere, such as trade journals, professional subscriptions and sundry running costs. Donations, political payments, ordinary clothing and gym fees are not allowable. It goes in SA103F box 30 (SA103S box 19).",
+      "rules": [
+        "Allowable: trade or professional journals and subscriptions, trade body or professional membership related to your business, sundry running costs.",
+        "Cash basis with VAT-inclusive figures: net VAT payments to HMRC go here.",
+        "Not allowable: payments to clubs, charities or political parties, gym membership, ordinary clothing, and any non-business part of a cost.",
+        "Charity donations may get Gift Aid relief instead (see gift_aid)."
+      ],
+      "examples_allowed": [
+        "Trade body membership related to your work",
+        "Industry magazine subscription",
+        "Net VAT paid to HMRC (cash basis, VAT-inclusive)"
+      ],
+      "examples_not_allowed": [
+        "Gym membership",
+        "Donation to a charity",
+        "Payments to a political party"
+      ],
+      "evidence_to_keep": [
+        "Receipts, membership invoices"
+      ],
+      "watch_out": [
+        "Don't use 'other' for costs that belong in a specific box."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: subscriptions (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/subscriptions"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "equipment": {
+      "title": "Equipment, tools and kit",
+      "allowable": "capital",
+      "summary": "Kit you buy and keep, such as tools, a laptop or a van, is capital. On the cash basis (the default) you deduct the cost when you pay, except for cars. On traditional accounting you claim capital allowances, usually the Annual Investment Allowance of up to £1 million.",
+      "rules": [
+        "Cash basis: equipment, tools, computers and vans are allowable expenses when paid for.",
+        "Cash basis exceptions: cars (capital allowances only), land, assets that won't lose 90% of their value within 20 years, and items not for continuing use in the business.",
+        "Traditional accounting: claim capital allowances. AIA is £1 million a year and lets you claim the full cost of most equipment (not cars).",
+        "Traditional accounting: a 40% first-year allowance applies to new, unused main-rate items (not cars) bought from 1 January 2026.",
+        "Items you'd normally use for less than 2 years can be claimed as expenses.",
+        "Private use: reduce the claim by the private use share (for example a laptop used half privately: claim half).",
+        "Items you owned before using them in the business can't get AIA; use market value with writing down allowances (traditional).",
+        "If you sell kit you've claimed for, the sale price becomes taxable (cash basis receipt or capital allowance balancing charge).",
+        "SA103F boxes 49-57 for capital allowances; on cash basis, include in the relevant expense box."
+      ],
+      "examples_allowed": [
+        "Multimeter, cable tester, hand tools and power tools",
+        "Laptop for show files and admin (business share)",
+        "Road cases, radios, a van used for the business"
+      ],
+      "examples_not_allowed": [
+        "A car's purchase price as an expense (capital allowances only)",
+        "Kit bought for a hobby",
+        "Depreciation"
+      ],
+      "evidence_to_keep": [
+        "Purchase invoices with dates (date of purchase decides the tax year)",
+        "Asset list: item, cost, date, business use %, sale date and price",
+        "Finance or HP agreements"
+      ],
+      "watch_out": [
+        "Buying kit just to save tax still costs you more than the tax saved.",
+        "Ask an accountant: large purchases near the year end, mixed-use items, and switching between cash basis and traditional accounting."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "Cash basis (GOV.UK, printable guide)",
+          "url": "https://www.gov.uk/simpler-income-tax-cash-basis/print"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM72035: cash basis: capital expenditure",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim72035"
+        },
+        {
+          "title": "Capital allowances: Annual Investment Allowance (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/annual-investment-allowance"
+        },
+        {
+          "title": "Capital allowances: first year allowances (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/first-year-allowances"
+        },
+        {
+          "title": "Claim capital allowances: 40% first-year allowance (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/40-first-year-allowance"
+        },
+        {
+          "title": "Capital allowances: what you can claim on (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/what-you-can-claim-on"
+        },
+        {
+          "title": "HMRC Capital Allowances Manual CA27005: private use of assets by sole traders",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/capital-allowances-manual/ca27005"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "training": {
+      "title": "Training courses",
+      "allowable": "partly",
+      "summary": "Training that updates or extends the skills you use in your current business is allowable. Training to start a new business, or move into an unrelated area, is not.",
+      "rules": [
+        "Allowable: courses that improve skills you already use, keep you up to date with industry technology, or add new skills related to changes in your industry.",
+        "Allowable: new skills that support your business, including admin skills like bookkeeping.",
+        "Not allowable: training to start a new business or to expand into areas not directly related to your industry.",
+        "HMRC updated its training guidance (BIM35660, last updated 4 August 2026).",
+        "SA103F box 30 (SA103S box 19)."
+      ],
+      "examples_allowed": [
+        "IPAF or PASMA refresher for rigging access work you already do",
+        "Course on a new lighting console used in the industry",
+        "Bookkeeping or MTD software course"
+      ],
+      "examples_not_allowed": [
+        "A degree to change career",
+        "Training for an unrelated side business"
+      ],
+      "evidence_to_keep": [
+        "Course invoice and outline",
+        "Certificate",
+        "Note of how it relates to your current work"
+      ],
+      "watch_out": [
+        "Ask an accountant: big courses that open up a new area of work may be capital and not allowable."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: training courses (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/training-courses"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM35660: training expenditure (updated 4 August 2026)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim35660"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "clothing": {
+      "title": "Clothing and protective gear",
+      "allowable": "partly",
+      "summary": "Protective gear, uniforms and costumes are allowable. Everyday clothing is not, even if you only wear it for work or a client requires it. Plain black 'show blacks' count as everyday clothing.",
+      "rules": [
+        "Allowable to buy, clean or repair: protective clothing such as safety boots, hard hats, hi-vis and gloves.",
+        "Allowable: overalls or aprons that protect everyday clothes, if only used for work.",
+        "Allowable: specialist clothing or uniforms that aren't everyday clothing, and costumes.",
+        "Not allowable: everyday clothing such as suits, shirts, dresses or ordinary shoes, even if worn only for work.",
+        "A dress code (for example 'all blacks') doesn't make ordinary clothes allowable.",
+        "SA103F box 30 (ordinary clothing is disallowable)."
+      ],
+      "examples_allowed": [
+        "Steel toe-cap boots, rigging gloves, hard hat, hi-vis vest",
+        "Fall-arrest harness",
+        "A branded uniform you must buy and wear for a job"
+      ],
+      "examples_not_allowed": [
+        "Plain black T-shirts and trousers",
+        "Ordinary trainers",
+        "Laundering everyday clothes"
+      ],
+      "evidence_to_keep": [
+        "Receipts showing the item",
+        "Note of the safety or job reason"
+      ],
+      "watch_out": [
+        "Ask an accountant: branded clothing that could still be worn day to day."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: clothing (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/clothing"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37910: intrinsic duality: clothing",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37910"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    }
+  },
+  "topics": {
+    "wholly_and_exclusively": {
+      "title": "Wholly and exclusively (duality and apportionment)",
+      "summary": "A cost is allowable only if it is spent wholly and exclusively for the business. If a cost has two purposes that can't be separated, none of it is allowable. If a clear business part can be identified, that part is allowable.",
+      "rules": [
+        "The law (ITTOIA 2005 s34) blocks any cost not incurred wholly and exclusively for the trade.",
+        "Dual purpose: if one cost serves business and private purposes at once and can't be split, disallow it all (for example a holiday with a short meeting).",
+        "Apportionment: where a definite part of a cost is for business, that part is allowable (for example business miles, business calls, a room used for work).",
+        "Use a reasonable method, such as a representative sample period, and keep using it until things change.",
+        "Some costs always have a private purpose built in, such as everyday clothes, ordinary meals and home-to-work travel.",
+        "The test is about purpose, judged from the facts and evidence, not just what you say you intended.",
+        "What you do with profits after earning them (drawings, paying tax) isn't an expense."
+      ],
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM37000: wholly and exclusively: contents",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37000"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37007: wholly and exclusively: overview (apportionment)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37007"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37050: how to establish purpose",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37050"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37900: expenditure having an intrinsic duality of purpose",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37900"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37800: expense of earning or application of profits",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37800"
+        },
+        {
+          "title": "Expenses if you're self-employed: overview (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed"
+        }
+      ]
+    },
+    "travel_rules": {
+      "title": "Travel rules for a self-employed crew member",
+      "summary": "Business travel is allowable but ordinary commuting is not. If your home is your business base and you travel to a series of temporary venues, that travel is normally allowable. The employee 24-month and 40% rules don't formally apply to you; the test is your base of operations and whether the trip has a private purpose.",
+      "rules": [
+        "Home to a permanent or regular place of work is commuting and not allowable.",
+        "Itinerant trade: if you move from home to a series of temporary jobs, and home is your base, home-to-site travel is normally allowable (Horton v Young).",
+        "Predictability matters: going to a fixed, regular place points to that place being your base (Powell v Jackman).",
+        "Doing admin at home or keeping tools there doesn't by itself make home your base.",
+        "Travel between work sites, and from your base to a temporary site, is business travel.",
+        "Very long distances can still be questioned (HMRC's example of someone living in London working only in Cornwall).",
+        "24-month and 40% rules: these are in employee law (ITEPA s339). HMRC's Business Income Manual does not use them for traders.",
+        "Meals: allowable when travelling in the course of an itinerant trade, on occasional trips outside your normal pattern, or with an overnight stay; only reasonable amounts.",
+        "Overnight stays: hotel and reasonable meals are allowable when the trip needs a night away; not at your base.",
+        "Night before or after: allowable when genuinely needed for the job (early call or late finish far from home).",
+        "Trips mixed with a holiday: the travel cost can be disallowed in full.",
+        "Keep records made at the time: mileage log, receipts, call sheets.",
+        "Ask an accountant: long runs at one venue, regular work at one client's base, or long stays away can change whether travel and hotels are allowable."
+      ],
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM37620: travel costs: to and between sites",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37620"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37635: travel costs: predictability of place of work",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37635"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37605: travel costs: home to work",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37605"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37935: intrinsic duality: travel between home and work",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37935"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47705: travel and subsistence: meals and accommodation",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47705"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37670: meals and subsistence",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37670"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37675: subcontractors: travel and subsistence",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37675"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37610: travel costs: overseas conference plus holiday",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37610"
+        },
+        {
+          "title": "HMRC Employment Income Manual EIM32080: the 24-month rule (employees)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/employment-income-manual/eim32080"
+        },
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        }
+      ]
+    },
+    "mileage_simplified": {
+      "title": "Simplified mileage (flat rate)",
+      "summary": "Instead of actual running costs you can claim a flat rate per business mile for a car, van or motorcycle. The car and van rate is 55p for the first 10,000 miles in 2026-27 (45p before 6 April 2026), then 25p. Once chosen for a vehicle, you must stick with it.",
+      "rules": [
+        "Cars and goods vehicles: higher rate for the first 10,000 business miles, 25p after.",
+        "The 10,000 miles counts total business miles in all cars and vans claimed on the flat rate in the period.",
+        "Motorcycles: 24p a mile.",
+        "Bicycles: not covered by simplified expenses for the self-employed; claim actual costs. (The 20p bicycle rate is for employees.)",
+        "No passenger supplement.",
+        "Can't mix: the flat rate replaces fuel, insurance, repairs, servicing, road tax, MOT and depreciation for that vehicle.",
+        "Parking, tolls and congestion charges on business trips are claimed on top.",
+        "Can't use it if you've claimed capital allowances on the vehicle, or deducted its cost under the cash basis.",
+        "You can choose per vehicle; once chosen you keep it until that vehicle leaves the business.",
+        "Keep a mileage log for every business journey."
+      ],
+      "by_year": {
+        "2023-24": "Cars and vans 45p (first 10,000 miles), 25p after; motorcycles 24p.",
+        "2024-25": "Cars and vans 45p (first 10,000 miles), 25p after; motorcycles 24p.",
+        "2025-26": "Cars and vans 45p (first 10,000 miles), 25p after; motorcycles 24p.",
+        "2026-27": "Cars and vans 55p (first 10,000 miles), 25p after; motorcycles 24p. Announced 21 May 2026, backdated to 6 April 2026, in law by the Taxation (Energy and Vehicles) Act 2026 (15 July 2026).",
+        "2027-28": "Announced at Budget 2026, not yet law: 55p (first 10,000) and 35p after 10,000 miles from 6 April 2027, to be made by statutory instrument."
+      },
+      "sources": [
+        {
+          "title": "Simplified expenses: vehicles (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/vehicles"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM75005: simplified expenses: motor vehicles",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim75005"
+        },
+        {
+          "title": "Increasing mileage rates: policy paper, 17 June 2026 (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/increase-to-approved-mileage-allowance-payments-amaps-and-self-employed-simplified-mileage-rates/increasing-mileage-rates"
+        },
+        {
+          "title": "Taxation (Energy and Vehicles) Act 2026, section 2 (legislation.gov.uk)",
+          "url": "https://www.legislation.gov.uk/ukpga/2026/26"
+        },
+        {
+          "title": "ITTOIA 2005 section 94F: the appropriate mileage amount (legislation.gov.uk)",
+          "url": "https://www.legislation.gov.uk/ukpga/2005/5/section/94F"
+        },
+        {
+          "title": "Budget 2026: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/budget-2026-overview-of-tax-legislation-and-rates-ootlar"
+        }
+      ]
+    },
+    "use_of_home": {
+      "title": "Use of home: flat rate or actual share",
+      "summary": "You can claim home running costs either with a monthly flat rate based on hours worked at home, or as a reasonable share of actual bills. You can't use both, and phone and internet are claimed separately either way.",
+      "rules": [
+        "Flat rate needs 25 hours or more of business work at home in the month.",
+        "Flat rates: 25-50 hours £10 a month; 51-100 hours £18; 101+ hours £26.",
+        "Actual share: split costs by a reasonable method, such as rooms used and time.",
+        "Fixed costs (Council Tax, mortgage interest, rent, insurance) need part of the home used solely for business for a period.",
+        "Running costs (heating, lighting) follow actual business usage.",
+        "Mortgage capital repayments are not allowable.",
+        "Small claims for light use (for example paperwork) can be on any reasonable basis.",
+        "Phone and internet: business share as an actual cost on top."
+      ],
+      "sources": [
+        {
+          "title": "Simplified expenses: working from home (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/working-from-home"
+        },
+        {
+          "title": "Expenses if you're self-employed: overview (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47820: use of home: specific expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47820"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM75010: simplified expenses: use of home",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim75010"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "trading_allowance": {
+      "title": "Trading allowance (£1,000)",
+      "summary": "The trading allowance gives up to £1,000 of trading income tax-free each year. If your income is higher, you can deduct the £1,000 instead of your actual expenses, but not both. For a full-time freelancer, claiming actual expenses is almost always better.",
+      "rules": [
+        "Gross trading income of £1,000 or less in a tax year: usually no need to tell HMRC.",
+        "Above £1,000: choose either the £1,000 allowance or your actual expenses and capital allowances.",
+        "It can be split across more than one trade and miscellaneous income, but the total is £1,000.",
+        "It can't be used to create a loss.",
+        "It can't be used for income from your employer, or from a company or partnership you (or a connected person) own or control.",
+        "Claimed in SA103F box 16.1 or SA103S box 10.1."
+      ],
+      "by_year": {
+        "2023-24": "£1,000",
+        "2024-25": "£1,000",
+        "2025-26": "£1,000",
+        "2026-27": "£1,000",
+        "2027-28": "Announced at Budget 2026, not yet law: rises to £3,000 from 6 April 2027, with the Self Assessment trading income reporting threshold also rising to £3,000."
+      },
+      "sources": [
+        {
+          "title": "Tax-free allowances on property and trading income (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/tax-free-allowances-on-property-and-trading-income"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "SA103S Self-employment (short) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69ce15395cf899414a0bc69f/SA103S_Notes_2026.pdf"
+        },
+        {
+          "title": "Budget 2026: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/budget-2026-overview-of-tax-legislation-and-rates-ootlar"
+        }
+      ]
+    },
+    "cash_basis": {
+      "title": "Cash basis (default from 2024-25)",
+      "summary": "From 6 April 2024 the cash basis is the default for sole traders. You record income when you're paid and expenses when you pay them. You can opt out and use traditional (accruals) accounting by ticking a box on your return.",
+      "rules": [
+        "Income counts when received; expenses when paid.",
+        "Most equipment (including vans) is deducted as an expense when paid; cars still get capital allowances (or the mileage rate).",
+        "Not deductible on the cash basis: cars, land, assets that won't lose 90% of value within 20 years, items not for continuing use, education or training as capital.",
+        "No bad debt relief, because unpaid invoices are never counted as income.",
+        "From 2024-25: no turnover limit, no £500 interest cap, and losses get the same reliefs as under traditional accounting.",
+        "The 15% car hire restriction doesn't apply on the cash basis.",
+        "To opt out, choose traditional accounting and tick SA103F box 10; you may need transitional adjustments when you switch.",
+        "Traditional may suit you if a lender wants accounts or you have high stock or large unpaid invoices at year end.",
+        "Who can't use it includes companies, LLPs and partnerships with a company partner."
+      ],
+      "by_year": {
+        "2023-24": "Opt-in only. Entry limit £150,000 turnover; leave above £300,000. Interest capped at £500. Cash basis losses couldn't be set against other income.",
+        "2024-25": "Default for eligible sole traders; opt out to use traditional accounting. Turnover limits, £500 interest cap and loss restrictions removed.",
+        "2025-26": "Same as 2024-25.",
+        "2026-27": "Same as 2024-25."
+      },
+      "sources": [
+        {
+          "title": "Cash basis (GOV.UK, printable guide)",
+          "url": "https://www.gov.uk/simpler-income-tax-cash-basis/print"
+        },
+        {
+          "title": "Expanding the cash basis: policy paper (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/expanding-the-income-tax-cash-basis-for-self-employed-individuals-and-partnerships/expanding-the-cash-basis"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM72005: cash basis from 6 April 2024: overview",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim72005"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM72010: cash basis: eligibility",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim72010"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM72035: cash basis: capital expenditure",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim72035"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "capital_allowances": {
+      "title": "Capital allowances",
+      "summary": "Capital allowances give tax relief for kit and vehicles you buy and keep. On the cash basis you only need them for cars. On traditional accounting most equipment gets the Annual Investment Allowance (AIA) of up to £1 million, and cars go into pools based on their CO2 emissions.",
+      "rules": [
+        "AIA: £1 million a year; full relief for most plant and machinery, but not cars.",
+        "AIA can't be claimed on items you owned before using them in the business, or on gifts.",
+        "40% first-year allowance: new, unused main-rate items (not cars) bought on or after 1 January 2026.",
+        "Full expensing (100%) and the 50% special rate FYA are for companies only, not sole traders.",
+        "Main pool writing down allowance: 18% a year to 5 April 2026, 14% from 6 April 2026.",
+        "Special rate pool: 6% a year (integral features, long-life assets, cars over 50g/km).",
+        "Small pools: if a pool is £1,000 or less you can claim it all.",
+        "Cars bought from April 2021: new zero-emission or electric 100% first-year allowance (bought before April 2027); up to 50g/km main pool; over 50g/km special rate pool.",
+        "Private use: each mixed-use asset goes in its own single asset pool and the allowance is reduced by the private share.",
+        "Selling an asset can create a balancing charge (taxable) or balancing allowance.",
+        "Cash basis: capital allowances only for cars; other kit is deducted as an expense.",
+        "Can't claim capital allowances if you use the trading allowance.",
+        "Ask an accountant: mixed-use assets, cars, disposals, and switching between cash basis and traditional accounting."
+      ],
+      "by_year": {
+        "2023-24": "AIA £1m. Main pool WDA 18%, special rate 6%. 100% FYA for new zero-emission cars.",
+        "2024-25": "AIA £1m. Main pool WDA 18%, special rate 6%. 100% FYA for new zero-emission cars.",
+        "2025-26": "AIA £1m. Main pool 18%, special rate 6%. New 40% FYA for main-rate items (not cars) bought from 1 January 2026. Zero-emission goods vehicle allowance ended 5 April 2025.",
+        "2026-27": "AIA £1m. Main pool WDA 14% from 6 April 2026; special rate 6%. 40% FYA continues. 100% FYA for new zero-emission cars and EV chargepoints bought before April 2027.",
+        "2027-28": "Announced at Budget 2026, not yet law: main-rate FYA 50% for spending from 1 January 2027; main pool WDA 12% from 6 April 2027 (Income Tax). Any extension of the zero-emission car FYA beyond April 2027: not confirmed."
+      },
+      "sources": [
+        {
+          "title": "Capital allowances: Annual Investment Allowance (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/annual-investment-allowance"
+        },
+        {
+          "title": "Capital allowances: business cars (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/business-cars"
+        },
+        {
+          "title": "Work out your writing down allowances: rates and pools (GOV.UK)",
+          "url": "https://www.gov.uk/work-out-capital-allowances/rates-and-pools"
+        },
+        {
+          "title": "Capital allowances: first year allowances (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/first-year-allowances"
+        },
+        {
+          "title": "Capital allowances: what you can claim on (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/what-you-can-claim-on"
+        },
+        {
+          "title": "Reduce the main rate WDA and increase the main rate FYA: policy paper, 29 October 2026 (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/reduce-the-main-rate-writing-down-allowance-and-increase-the-main-rate-first-year-allowance/capital-allowances-reduce-the-main-rate-writing-down-allowance-and-increase-the-main-rate-first-year-allowance"
+        },
+        {
+          "title": "HMRC Capital Allowances Manual CA27005: private use of assets by sole traders",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/capital-allowances-manual/ca27005"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "Budget 2025: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2025-overview-of-tax-legislation-and-rates-ootlar/budget-2025-overview-of-tax-legislation-and-rates-ootlar"
+        },
+        {
+          "title": "Budget 2026: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/budget-2026-overview-of-tax-legislation-and-rates-ootlar"
+        }
+      ]
+    },
+    "losses": {
+      "title": "Trading losses",
+      "summary": "If your allowable costs are more than your income, you have a trading loss. You can use it to reduce tax on other income this year or last year, carry it forward against future profits from the same trade, or in the early years carry it back three years.",
+      "rules": [
+        "Sideways relief: set the loss against total income of the loss year and/or the previous year (ITA 2007 s64).",
+        "Claim deadline for s64 and early years relief: 12 months after 31 January following the loss year (for a 2025-26 loss, 31 January 2028).",
+        "You can't choose a part amount: the loss is used as far as possible against that year's income.",
+        "Early years relief: losses in the first 4 tax years of a trade can be carried back against total income of the 3 previous years, earliest first (s72).",
+        "Carry forward: unused losses go against future profits of the same trade (s83). Make the claim within 4 years of the end of the loss year (usually on your return).",
+        "Terminal loss relief: loss in the final 12 months can go back against profits of the same trade for 3 years.",
+        "Cap: relief against other income is limited to the greater of £50,000 or 25% of adjusted total income; the cap doesn't apply against profits of the same trade.",
+        "Restrictions apply if you spend less than 10 hours a week on average on the trade, or it isn't run commercially with a view to profit.",
+        "Losses can also be set against capital gains after other income.",
+        "Ask an accountant: choosing which year to use a loss in, and the hours and commercial tests."
+      ],
+      "by_year": {
+        "2023-24": "Cash basis losses (2013-14 to 2023-24) could not be set against other income or carried back; carry forward only.",
+        "2024-25": "Cash basis losses now get the same reliefs as traditional accounting.",
+        "2025-26": "Same as 2024-25. For a 2025-26 loss, early years carry-back is only available if the business began after 5 April 2022.",
+        "2026-27": "Same rules; cap still £50,000 or 25% of adjusted total income."
+      },
+      "sources": [
+        {
+          "title": "HS227 Losses (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/losses-hs227-self-assessment-helpsheet/hs227-losses-2026"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM85000: trade losses: contents",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim85000"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM85045: early years loss relief",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim85045"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM85075: loss relief: time limits",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim85075"
+        },
+        {
+          "title": "Expanding the cash basis: policy paper (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/expanding-the-income-tax-cash-basis-for-self-employed-individuals-and-partnerships/expanding-the-cash-basis"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "payments_on_account": {
+      "title": "Payments on account",
+      "summary": "Payments on account are two advance payments towards next year's tax, each usually half of last year's bill. They are due on 31 January and 31 July. If you expect a lower bill, you can ask to reduce them.",
+      "rules": [
+        "Two payments, due 31 January (in the tax year) and 31 July (after it), each normally half of last year's Self Assessment tax including Class 4 NI.",
+        "Not needed if last year's Self Assessment bill was under £1,000, or more than 80% of your tax was already paid at source (for example through PAYE).",
+        "The balancing payment (what's left) is due by 31 January after the tax year, along with the first payment on account for the next year.",
+        "First year: your first January bill can include the whole of last year's tax plus half again as the first payment on account.",
+        "Reduce them online in your Self Assessment account or with form SA303 if you expect lower profits.",
+        "If you reduce them too far, HMRC charges interest on the shortfall.",
+        "Payments on account are tax, not a business expense."
+      ],
+      "by_year": {
+        "2023-24": "Same rules.",
+        "2024-25": "Same rules.",
+        "2025-26": "Same rules.",
+        "2026-27": "Same rules. Announced at Budget 2026: from April 2029, people who make payments on account will move to smaller, more regular automated in-year payments (details not yet confirmed)."
+      },
+      "sources": [
+        {
+          "title": "Understand your Self Assessment bill: payments on account (GOV.UK)",
+          "url": "https://www.gov.uk/understand-self-assessment-bill/payments-on-account"
+        },
+        {
+          "title": "Budget 2026: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/budget-2026-overview-of-tax-legislation-and-rates-ootlar"
+        }
+      ]
+    },
+    "national_insurance": {
+      "title": "National Insurance (Class 2 and Class 4)",
+      "summary": "Self-employed people pay Class 4 NI on profits above £12,570. Since April 2024 you no longer have to pay Class 2; if your profits are at or above the Small Profits Threshold it's treated as paid so your State Pension record is protected. Below that, you can pay Class 2 voluntarily.",
+      "rules": [
+        "Class 4 is worked out on your profits and paid through Self Assessment with your income tax.",
+        "Class 4 lower profits limit £12,570 and upper profits limit £50,270 (2023-24 to 2026-27).",
+        "Class 2 (from 2024-25): not payable; treated as paid if profits are at or above the Small Profits Threshold.",
+        "Below the Small Profits Threshold you can pay voluntary Class 2 to protect your State Pension and benefits.",
+        "You must be registered as self-employed for Class 2 to be treated as paid or to pay voluntarily.",
+        "Class 4 isn't due if you reached State Pension age before the start of the tax year.",
+        "NI is not a business expense."
+      ],
+      "by_year": {
+        "2023-24": "Class 4: 9% on £12,570-£50,270, 2% above. Class 2: £3.45 a week, payable if profits £12,570 or more; treated as paid between £6,725 and £12,570; voluntary below £6,725.",
+        "2024-25": "Class 4: 6% on £12,570-£50,270, 2% above. Class 2: no longer payable; treated as paid if profits £6,725 or more; voluntary rate £3.45 a week.",
+        "2025-26": "Class 4: 6% and 2%. Class 2 Small Profits Threshold £6,845; voluntary rate £3.50 a week.",
+        "2026-27": "Class 4: 6% on £12,570-£50,270, 2% above. Class 2 Small Profits Threshold £7,105; voluntary rate £3.65 a week. Budget 2025 announced removing voluntary Class 2 for periods abroad from 6 April 2026, by secondary legislation (check before relying on it).",
+        "2027-28": "Announced at Budget 2026: Small Profits Threshold £7,355; voluntary Class 2 £3.80 a week. Lower and upper profits limits held at £12,570 and £50,270 until 2030-31."
+      },
+      "sources": [
+        {
+          "title": "Self-employed National Insurance rates (GOV.UK)",
+          "url": "https://www.gov.uk/self-employed-national-insurance-rates"
+        },
+        {
+          "title": "Rates and allowances: National Insurance contributions (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/rates-and-allowances-national-insurance-contributions/rates-and-allowances-national-insurance-contributions"
+        },
+        {
+          "title": "Reduction in Class 1 and Class 4 NICs and removal of the requirement to pay Class 2 (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/changes-to-national-insurance-contributions-from-6-january-2024/a-reduction-in-the-main-rates-of-primary-class-1-and-class-4-national-insurance-contributions-and-the-removal-of-the-requirement-to-pay-class-2-nation"
+        },
+        {
+          "title": "Budget 2026 OOTLAR Annex A: rates and allowances (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/annex-a-rates-and-allowances"
+        },
+        {
+          "title": "Budget 2025: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2025-overview-of-tax-legislation-and-rates-ootlar/budget-2025-overview-of-tax-legislation-and-rates-ootlar"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "personal_allowance_taper": {
+      "title": "Personal Allowance taper (£100,000 to £125,140)",
+      "summary": "Your £12,570 Personal Allowance is reduced by £1 for every £2 of adjusted net income over £100,000, and is gone at £125,140. In that band each extra £1 of income effectively costs 60p in income tax (40% plus the lost allowance), before NI. Pension contributions and Gift Aid reduce adjusted net income and can restore the allowance.",
+      "rules": [
+        "Personal Allowance £12,570 for 2023-24 to 2026-27, and frozen to 2030-31.",
+        "Taper: lose £1 of allowance for every £2 of adjusted net income above £100,000; nil at £125,140.",
+        "Adjusted net income: taxable income minus trading losses and gross pension contributions paid without relief, minus grossed-up Gift Aid and relief-at-source pension contributions (£1.25 for each £1 paid).",
+        "Effective marginal income tax rate in the taper band is 60% (plus 2% Class 4 NI on profits above £50,270).",
+        "Rates (England, Wales, NI): basic 20% on the first £37,700 above the allowance, higher 40% up to £125,140, additional 45% above.",
+        "Scotland has different bands and rates."
+      ],
+      "by_year": {
+        "2023-24": "PA £12,570; taper from £100,000; additional rate threshold £125,140.",
+        "2024-25": "Same.",
+        "2025-26": "Same.",
+        "2026-27": "Same; Budget 2025 froze the PA and basic rate limit to 2030-31."
+      },
+      "sources": [
+        {
+          "title": "Income Tax rates: income over £100,000 (GOV.UK)",
+          "url": "https://www.gov.uk/income-tax-rates/income-over-100000"
+        },
+        {
+          "title": "Income Tax rates and Personal Allowances (GOV.UK)",
+          "url": "https://www.gov.uk/income-tax-rates"
+        },
+        {
+          "title": "Income Tax rates and allowances for current and past years (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/rates-and-allowances-income-tax/income-tax-rates-and-allowances-current-and-past"
+        },
+        {
+          "title": "Adjusted net income (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/adjusted-net-income"
+        },
+        {
+          "title": "Budget 2025: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2025-overview-of-tax-legislation-and-rates-ootlar/budget-2025-overview-of-tax-legislation-and-rates-ootlar"
+        },
+        {
+          "title": "Budget 2026 OOTLAR Annex A: rates and allowances (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/annex-a-rates-and-allowances"
+        }
+      ]
+    },
+    "pension_contributions": {
+      "title": "Pension contributions",
+      "summary": "Paying into a personal pension gets tax relief. With relief at source you pay £80 and the provider adds £20. If you pay higher-rate tax, your basic rate band is extended by the gross contribution, giving extra relief, and the contribution also reduces adjusted net income for the £100,000 taper.",
+      "rules": [
+        "Relief at source: the provider claims 20% basic rate relief and adds it to your pot.",
+        "Higher or additional rate: claim the extra relief on your Self Assessment return.",
+        "How: the basic rate limit and higher rate limit are increased by the gross contribution.",
+        "Relief is limited to the higher of 100% of your UK taxable earnings or £3,600 gross a year.",
+        "Annual allowance £60,000, with unused allowance carried forward from the previous 3 years if conditions are met.",
+        "Tapered annual allowance if threshold income is over £200,000 and adjusted income over £260,000 (minimum £10,000).",
+        "Money purchase annual allowance £10,000 if you have flexibly accessed a pension.",
+        "Gross relief-at-source contributions reduce adjusted net income, which can restore the Personal Allowance above £100,000.",
+        "Personal pension contributions are not a business expense; they're claimed on the main return."
+      ],
+      "by_year": {
+        "2023-24": "Annual allowance £60,000; MPAA £10,000; taper threshold income £200,000, adjusted income £260,000.",
+        "2024-25": "Same.",
+        "2025-26": "Same.",
+        "2026-27": "Same."
+      },
+      "sources": [
+        {
+          "title": "Tax on your private pension: pension tax relief (GOV.UK)",
+          "url": "https://www.gov.uk/tax-on-your-private-pension/pension-tax-relief"
+        },
+        {
+          "title": "Tax on your private pension: annual allowance (GOV.UK)",
+          "url": "https://www.gov.uk/tax-on-your-private-pension/annual-allowance"
+        },
+        {
+          "title": "Rates and allowances: pension schemes (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/rates-and-allowances-pension-schemes/pension-schemes-rates"
+        },
+        {
+          "title": "HMRC Pensions Tax Manual PTM044220: relief at source and higher rate relief",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/pensions-tax-manual/ptm044220"
+        },
+        {
+          "title": "HMRC Pensions Tax Manual PTM056120: basic and higher rate limits extended by RAS contributions and Gift Aid",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/pensions-tax-manual/ptm056120"
+        },
+        {
+          "title": "Adjusted net income (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/adjusted-net-income"
+        }
+      ]
+    },
+    "gift_aid": {
+      "title": "Gift Aid",
+      "summary": "When you give to charity with Gift Aid, the charity claims 25p for every £1. If you pay higher-rate tax you can claim extra relief on your tax return. Gift Aid also reduces adjusted net income for the £100,000 taper.",
+      "rules": [
+        "Sign a Gift Aid declaration with each charity.",
+        "Your donations must not be more than 4 times the tax you paid that year.",
+        "Higher-rate relief: example, give £100, charity gets £125, a 40% taxpayer can claim back £25.",
+        "How: your basic and higher rate limits are increased by the gross donation.",
+        "You can ask to treat donations as made in the previous tax year (carry back), within the rules.",
+        "Charity donations are not a business expense."
+      ],
+      "sources": [
+        {
+          "title": "Tax relief when you donate to a charity: Gift Aid (GOV.UK)",
+          "url": "https://www.gov.uk/donating-to-charity/gift-aid"
+        },
+        {
+          "title": "HMRC Pensions Tax Manual PTM056120: basic and higher rate limits extended by RAS contributions and Gift Aid",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/pensions-tax-manual/ptm056120"
+        },
+        {
+          "title": "Adjusted net income (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/adjusted-net-income"
+        },
+        {
+          "title": "Expenses if you're self-employed: subscriptions (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/subscriptions"
+        }
+      ]
+    },
+    "marriage_allowance": {
+      "title": "Marriage Allowance",
+      "summary": "If you're married or in a civil partnership and one of you earns less than the Personal Allowance, they can transfer £1,260 of it to the other, who must be a basic rate taxpayer. This saves up to £252 a year.",
+      "rules": [
+        "Must be married or in a civil partnership; living together isn't enough.",
+        "The transferring partner's income must be below the Personal Allowance (usually £12,570).",
+        "The receiving partner must pay basic rate tax (usually income £12,571 to £50,270; in Scotland starter, basic or intermediate rate).",
+        "Transfer £1,260; saving up to £252 a year.",
+        "Can be backdated to 6 April 2022 for eligible years.",
+        "Not available if the receiving partner pays higher rate tax."
+      ],
+      "by_year": {
+        "2023-24": "£1,260 transfer.",
+        "2024-25": "£1,260 transfer.",
+        "2025-26": "£1,260 transfer.",
+        "2026-27": "£1,260 transfer."
+      },
+      "sources": [
+        {
+          "title": "Marriage Allowance (GOV.UK)",
+          "url": "https://www.gov.uk/marriage-allowance"
+        },
+        {
+          "title": "Budget 2026 OOTLAR Annex A: rates and allowances (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/annex-a-rates-and-allowances"
+        }
+      ]
+    },
+    "vat_registration": {
+      "title": "VAT registration",
+      "summary": "You must register for VAT if your taxable turnover over the last 12 months goes over £90,000, or you expect it to in the next 30 days. You can register voluntarily below that. For a freelancer working mostly for VAT-registered production companies, voluntary registration can let you reclaim VAT on kit and costs without costing clients more.",
+      "rules": [
+        "Threshold: £90,000 from 1 April 2024 (£85,000 before). Deregistration threshold £88,000 (£83,000 before).",
+        "Rolling test: register within 30 days of the end of the month you went over.",
+        "Future test: register if you expect to go over £90,000 in the next 30 days alone.",
+        "Voluntary registration is allowed below the threshold.",
+        "Pros: reclaim VAT on business purchases; VAT-registered clients can usually reclaim the VAT you charge.",
+        "Cons: you must charge VAT on your sales, file VAT returns and keep VAT records; it raises prices for clients who aren't VAT-registered.",
+        "After registering you can reclaim VAT on goods bought up to 4 years before (if you still have them) and services up to 6 months before.",
+        "No VAT reclaim on business entertainment; partial reclaim for mixed-use items.",
+        "Flat Rate Scheme: join if expected taxable turnover is £150,000 or less (excluding VAT); leave above £230,000 (including VAT).",
+        "Flat Rate Scheme: limited cost businesses (goods under 2% of turnover, or under £1,000 a year) pay 16.5%, which often makes it poor value for labour-only crew.",
+        "Flat Rate Scheme sector examples: entertainment or journalism 12.5%; any other activity not listed 12%; film, radio, TV or video production 13%. 1% off in your first year of VAT registration.",
+        "Ask an accountant: whether voluntary registration or the Flat Rate Scheme suits your mix of clients and purchases, and which flat rate sector fits your work."
+      ],
+      "by_year": {
+        "2023-24": "£85,000 until 31 March 2024; £90,000 from 1 April 2024.",
+        "2024-25": "£90,000 (deregistration £88,000).",
+        "2025-26": "£90,000 (deregistration £88,000).",
+        "2026-27": "£90,000 (deregistration £88,000). Budget 2026 Annex A shows no change for April 2027."
+      },
+      "sources": [
+        {
+          "title": "VAT registration: when to register (GOV.UK)",
+          "url": "https://www.gov.uk/vat-registration/when-to-register"
+        },
+        {
+          "title": "How VAT works: VAT thresholds (GOV.UK)",
+          "url": "https://www.gov.uk/how-vat-works/vat-thresholds"
+        },
+        {
+          "title": "Increasing the VAT registration threshold: policy paper (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/vat-increasing-the-registration-and-deregistration-thresholds/increasing-the-vat-registration-threshold"
+        },
+        {
+          "title": "VAT Flat Rate Scheme (GOV.UK, printable guide)",
+          "url": "https://www.gov.uk/vat-flat-rate-scheme/print"
+        },
+        {
+          "title": "Reclaim VAT on business expenses (GOV.UK)",
+          "url": "https://www.gov.uk/charge-reclaim-record-vat/reclaim-vat-business-expenses"
+        },
+        {
+          "title": "Budget 2026 OOTLAR Annex A: rates and allowances (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/annex-a-rates-and-allowances"
+        }
+      ]
+    },
+    "mtd_itsa": {
+      "title": "Making Tax Digital for Income Tax",
+      "summary": "MTD for Income Tax means keeping digital records and sending HMRC quarterly updates from compatible software, then a tax return at year end. It started on 6 April 2026 for sole traders and landlords with qualifying income over £50,000, and widens to over £30,000 from April 2027 and over £20,000 from April 2028.",
+      "rules": [
+        "Qualifying income is your total gross self-employment and property income before expenses (turnover).",
+        "Employment, partnership profit shares, dividends and pensions don't count.",
+        "The threshold is tested on an earlier year's tax return; HMRC writes to you, but it's your responsibility to check.",
+        "Quarterly updates cover the tax year to date: periods to 5 July, 5 October, 5 January and 5 April; deadlines 7 August, 7 November, 7 February and 7 May.",
+        "Updates are category totals, not individual receipts. No tax is calculated or paid with an update.",
+        "Corrections flow into the next update because each update is cumulative.",
+        "You still submit a tax return, and payment dates stay 31 January and 31 July.",
+        "Use HMRC-recognised software (bridging software if you use spreadsheets).",
+        "Late submission: 1 point per missed deadline; £200 penalty at 4 points.",
+        "No penalty points for late quarterly updates in your first MTD tax year.",
+        "You can opt out if qualifying income stays below the threshold for 3 tax years in a row.",
+        "Digital records must include amounts and dates of each transaction."
+      ],
+      "by_year": {
+        "2025-26": "Not in MTD yet. Your 2025-26 qualifying income decides whether you join from 6 April 2027 (over £30,000).",
+        "2026-27": "Mandatory if 2024-25 qualifying income was over £50,000. First year: no points for late quarterly updates. Your 2026-27 income decides whether you join from April 2028 (over £20,000).",
+        "2027-28": "Mandatory if 2025-26 qualifying income over £30,000. Budget 2026: no penalty points for late quarterly updates in 2027-28 for April 2027 joiners. MTD late payment penalties rise to 4% at day 15 and 4% at day 30, plus 10% a year from day 31.",
+        "2028-29": "Mandatory if 2026-27 qualifying income over £20,000."
+      },
+      "sources": [
+        {
+          "title": "Check if you're eligible for Making Tax Digital for Income Tax (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/check-if-youre-eligible-for-making-tax-digital-for-income-tax"
+        },
+        {
+          "title": "Work out your qualifying income for MTD for Income Tax (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/work-out-your-qualifying-income-for-making-tax-digital-for-income-tax"
+        },
+        {
+          "title": "Use MTD for Income Tax: send quarterly updates (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/use-making-tax-digital-for-income-tax/send-quarterly-updates"
+        },
+        {
+          "title": "Penalties for Making Tax Digital for Income Tax (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/penalties-for-making-tax-digital-for-income-tax"
+        },
+        {
+          "title": "Five things you need to know ahead of the MTD for Income Tax quarterly deadline (GOV.UK news)",
+          "url": "https://www.gov.uk/government/news/five-things-you-need-to-know-ahead-of-making-tax-digital-for-income-tax-quarterly-deadline"
+        },
+        {
+          "title": "HMRC Self Assessment Legal Framework SALF1200: MTD obligation to keep digital records",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/self-assessment-legal-framework/salf1200"
+        },
+        {
+          "title": "Understand your Self Assessment bill: payments on account (GOV.UK)",
+          "url": "https://www.gov.uk/understand-self-assessment-bill/payments-on-account"
+        },
+        {
+          "title": "Budget 2026: overview of tax legislation and rates (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/budget-2026-overview-of-tax-legislation-and-rates-ootlar/budget-2026-overview-of-tax-legislation-and-rates-ootlar"
+        }
+      ]
+    },
+    "record_keeping": {
+      "title": "Record keeping",
+      "summary": "Keep records of all business income and expenses, and the evidence behind them, for at least 5 years after the 31 January filing deadline. Digital copies are acceptable if they're complete. Under MTD you must keep the records digitally in compatible software.",
+      "rules": [
+        "Keep records of sales and income, business expenses, VAT and PAYE records if relevant, and personal income.",
+        "Evidence includes receipts, invoices, bank statements, and sales invoices or till records.",
+        "Keep them for at least 5 years after the 31 January submission deadline for that tax year.",
+        "If you file more than 4 years late, keep them for 15 months after you send the return.",
+        "Electronic copies (scans, photos) are fine if they are complete and full copies of the originals.",
+        "Some originals must be kept, such as certificates of tax deducted.",
+        "Penalty of up to £3,000 for failing to keep adequate records (normally only in serious cases).",
+        "If records are lost, use best estimates and tell HMRC the figures are estimated or provisional.",
+        "MTD: record each transaction's amount and date digitally, by the time the quarterly update is due.",
+        "Mileage logs, call sheets and POs help prove travel and subsistence claims."
+      ],
+      "sources": [
+        {
+          "title": "Business records if you're self-employed (GOV.UK, printable guide)",
+          "url": "https://www.gov.uk/self-employed-records/print"
+        },
+        {
+          "title": "HMRC Self Assessment Legal Framework SALF211: requirement to keep records",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/self-assessment-legal-framework/salf211"
+        },
+        {
+          "title": "HMRC Self Assessment Legal Framework SALF1200: MTD obligation to keep digital records",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/self-assessment-legal-framework/salf1200"
+        }
+      ]
+    },
+    "hmrc_payments": {
+      "title": "Paying HMRC (not an expense)",
+      "summary": "Income tax, Class 4 NI, payments on account and balancing payments are tax on your profits. They are not business expenses and never reduce your profit. Record them as personal payments or drawings, not as costs.",
+      "rules": [
+        "Balancing payment: due 31 January after the tax year.",
+        "Payments on account: due 31 January and 31 July.",
+        "Tax is paid out of profits, so it isn't a cost of earning them.",
+        "Your own National Insurance is not an allowable expense.",
+        "Interest HMRC charges on late tax isn't deductible either.",
+        "VAT-registered on the cash basis with VAT-inclusive figures: net VAT paid to HMRC is the exception and is an expense (box 30)."
+      ],
+      "sources": [
+        {
+          "title": "Understand your Self Assessment bill: payments on account (GOV.UK)",
+          "url": "https://www.gov.uk/understand-self-assessment-bill/payments-on-account"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37800: expense of earning or application of profits",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37800"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45740: interest on late paid tax and NIC",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45740"
+        }
+      ]
+    },
+    "drawings": {
+      "title": "Drawings (not an expense)",
+      "summary": "Drawings are money you take out of the business for yourself. They are not an expense and don't reduce your taxable profit. As a sole trader you're taxed on the profit, whatever you draw.",
+      "rules": [
+        "Allowable expenses don't include money taken from the business for personal use.",
+        "Your own salary, wages, drawings and NI are not allowable.",
+        "Personal bills paid from the business account are drawings, not expenses.",
+        "Tag personal spending on a shared account as drawings so it's excluded."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: overview (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        },
+        {
+          "title": "SA103S Self-employment (short) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69ce15395cf899414a0bc69f/SA103S_Notes_2026.pdf"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37800: expense of earning or application of profits",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37800"
+        }
+      ]
+    },
+    "client_rebilled_expenses": {
+      "title": "Recharging expenses to clients (recharges and disbursements)",
+      "summary": "If you pay a cost and bill it to your client, the cost is usually your expense and the amount billed is your income. Don't leave the income out and still claim the cost. For VAT, most recharged costs such as travel and hotels are part of your service and need VAT if you're registered.",
+      "rules": [
+        "Income tax: include recharges in turnover and claim the allowable cost, or reduce the expense by the reimbursement. Don't do both or neither.",
+        "If the client pays a supplier directly (for example books your hotel), it's not your income or your expense.",
+        "Per diems or buyouts paid to you are income; claim only your real allowable costs.",
+        "VAT disbursement: only when you pay as the client's agent, the client received the goods or services, the client was responsible for paying, agreed you could pay, knew of the supplier, it's shown separately at exact cost, and it's extra to your own services.",
+        "Your own travel, hotels and postage passed on to a client are recharges, not disbursements; charge VAT on them if you're VAT-registered.",
+        "Mark rechargeable costs against the PO so nothing is missed on the invoice."
+      ],
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM40130: reimbursement of trading expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim40130"
+        },
+        {
+          "title": "VAT: costs or disbursements passed to customers (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/vat-costs-or-disbursements-passed-to-customers"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    },
+    "foreign_currency": {
+      "title": "Foreign currency",
+      "summary": "Income and costs in other currencies must be converted into pounds for your records and tax return. HMRC accepts the rate in your accounts, a bank's rate, or HMRC's published monthly average rates. Use one sensible method consistently.",
+      "rules": [
+        "Rates you can use include a bank's quoted rate, London closing rates, or HMRC's monthly average rates (published for VAT and customs).",
+        "HMRC's monthly rates are now published on the Trade Tariff exchange rates service (trade-tariff.service.gov.uk/exchange_rates).",
+        "HMRC only questions a rate that is markedly different from reputable sources.",
+        "Convert each amount using your chosen rate for the date (or month) it was received or paid, and use the same method every time.",
+        "Bank currency conversion fees are allowable finance costs.",
+        "Ask an accountant: exchange gains or losses on money held in foreign currency, and any foreign tax deducted from fees, need specialist treatment."
+      ],
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM39515: exchange rate for tax purposes",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim39515"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM39500: foreign exchange: contents",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim39500"
+        },
+        {
+          "title": "Exchange rates for customs and VAT collection (GOV.UK, points to the Trade Tariff exchange rates service)",
+          "url": "https://www.gov.uk/government/collections/exchange-rates-for-customs-and-vat"
+        }
+      ]
+    },
+    "entertainment_and_gifts": {
+      "title": "Entertainment and gifts",
+      "summary": "Entertaining clients and suppliers is not allowable. Gifts are not allowable either, except small branded gifts costing no more than £50 per person per tax year that aren't food, drink, tobacco or vouchers.",
+      "rules": [
+        "Business entertainment and gifts are disallowed by law (ITTOIA s45), even if they help win work.",
+        "Entertaining employees, where they are the main attendees, is an exception.",
+        "Gift exception: carries a conspicuous advert for your business (on the item, not just the wrapping).",
+        "Gift exception: total gifts to the same person no more than £50 in the tax year.",
+        "Gift exception: not food, drink, tobacco or vouchers.",
+        "Free samples of what you sell and competition prizes open to the public can be allowable.",
+        "No VAT reclaim on entertaining."
+      ],
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM45000: business entertainment and gifts: contents",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45000"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45065: gifts: overview",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45065"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45070: gifts: small gifts exception (£50)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45070"
+        },
+        {
+          "title": "Expenses if you're self-employed: marketing, entertainment and subscriptions (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/marketing-entertainment-subscriptions"
+        },
+        {
+          "title": "Reclaim VAT on business expenses (GOV.UK)",
+          "url": "https://www.gov.uk/charge-reclaim-record-vat/reclaim-vat-business-expenses"
+        }
+      ]
+    },
+    "clothing": {
+      "title": "Clothing",
+      "summary": "Everyday clothes aren't allowable, even if you only wear them for work or a client insists. Protective gear, uniforms and costumes are allowable, including cleaning and repairing them.",
+      "rules": [
+        "Allowable: safety boots, hard hats, hi-vis, protective gloves and overalls used only for work.",
+        "Allowable: specialist clothing or uniforms that aren't everyday clothing, and costumes.",
+        "Not allowable: suits, shirts, dresses, ordinary shoes, plain black work clothes.",
+        "Mallalieu v Drummond: clothes you could wear every day always have a private purpose (warmth and decency).",
+        "Dress codes set by clients or professional bodies don't change this."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: clothing (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/clothing"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37910: intrinsic duality: clothing",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37910"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37900: expenditure having an intrinsic duality of purpose",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37900"
+        }
+      ]
+    },
+    "phone_and_broadband": {
+      "title": "Phone and broadband",
+      "summary": "Claim the business share of phone and broadband. Business calls are allowable in full, and a fair share of line rental and broadband. If private use is not significant, the full cost can be claimed.",
+      "rules": [
+        "Work out the business percentage from a typical period, then keep using it until things change.",
+        "Phone and internet aren't part of the working-from-home flat rate; claim them separately.",
+        "A separate business phone or SIM makes the claim simple.",
+        "If VAT-registered, reclaim only the business share of the VAT."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47820: use of home: specific expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47820"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37007: wholly and exclusively: overview (apportionment)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37007"
+        },
+        {
+          "title": "Simplified expenses: working from home (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/working-from-home"
+        },
+        {
+          "title": "Reclaim VAT on business expenses (GOV.UK)",
+          "url": "https://www.gov.uk/charge-reclaim-record-vat/reclaim-vat-business-expenses"
+        }
+      ]
+    },
+    "training": {
+      "title": "Training",
+      "summary": "Training is allowable if it relates to your existing business, including updating skills, keeping up with new technology and learning related new skills. Training to start a new business or move into unrelated work is not.",
+      "rules": [
+        "Allowable: improving skills you use now, keeping up with industry technology, new skills linked to changes in your industry, and admin skills like bookkeeping.",
+        "Not allowable: starting a new business, or expanding into areas not directly related to your industry.",
+        "The line can be hard to draw; it depends on the facts and your purpose.",
+        "HMRC's BIM35660 was last updated on 4 August 2026."
+      ],
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: training courses (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/training-courses"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM35660: training expenditure (updated 4 August 2026)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim35660"
+        },
+        {
+          "title": "HS222 How to calculate your taxable profits (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/how-to-calculate-your-taxable-profits-hs222-self-assessment-helpsheet/hs222-how-to-calculate-your-taxable-profits-2026"
+        }
+      ]
+    },
+    "late_filing_penalties_and_interest": {
+      "title": "Late filing penalties and interest (not allowable)",
+      "summary": "Penalties and interest from HMRC are never allowable expenses. Filing and paying on time is the only way to avoid them.",
+      "rules": [
+        "Late return: £100 at once; after 3 months £10 a day (up to £900); after 6 and 12 months a further 5% of the tax due or £300, whichever is more.",
+        "Late payment (Self Assessment): 5% of unpaid tax at 30 days, 6 months and 12 months.",
+        "MTD for Income Tax users: points-based late submission penalties and new late payment penalties (2026-27: 3% of tax owed at day 15, another 3% at day 30, then 10% a year; in your first year you get 30 days before penalties start).",
+        "Late payment interest: Bank of England base rate plus 4% (from 6 April 2025; was plus 2.5%).",
+        "HMRC late payment interest: 8.00% from 24 November 2026 (was 7.75% from 9 January 2026).",
+        "Interest and penalties on tax are not deductible in working out profits.",
+        "You can appeal a penalty if you have a reasonable excuse."
+      ],
+      "by_year": {
+        "2025-26": "Late payment interest 7.75% from 9 January 2026.",
+        "2026-27": "Late payment interest 8.00% from 24 November 2026. MTD late payment penalties 3%/3% plus 10% a year.",
+        "2027-28": "MTD late payment penalties 4%/4% plus 10% a year."
+      },
+      "sources": [
+        {
+          "title": "Self Assessment tax returns: penalties (GOV.UK)",
+          "url": "https://www.gov.uk/self-assessment-tax-returns/penalties"
+        },
+        {
+          "title": "Penalties for Making Tax Digital for Income Tax (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/penalties-for-making-tax-digital-for-income-tax"
+        },
+        {
+          "title": "HMRC interest rates for late and early payments (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/rates-and-allowances-hmrc-interest-rates-for-late-and-early-payments/rates-and-allowances-hmrc-interest-rates"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM42520: interest and penalties on tax not deductible",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim42520"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM45740: interest on late paid tax and NIC",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim45740"
+        }
+      ]
+    },
+    "basis_period_reform": {
+      "title": "Basis period reform (tax year basis)",
+      "summary": "From 2024-25 you are taxed on the profits of the tax year itself (6 April to 5 April), whatever your accounting date. 2023-24 was the transition year. If your year end isn't 31 March or 5 April you must apportion your accounts to the tax year.",
+      "rules": [
+        "Accounting periods ending 31 March to 5 April are treated as matching the tax year.",
+        "Other year ends: apportion profits by days (or another reasonable, consistent method).",
+        "If final figures aren't ready by the deadline you may need to file provisional figures.",
+        "Transition profit from 2023-24 is spread over 5 years by default (2023-24 to 2027-28), or you can accelerate it.",
+        "Overlap relief was all used in 2023-24.",
+        "Transition profits count for Class 4 NI."
+      ],
+      "by_year": {
+        "2023-24": "Transition year: basis period aligned to 5 April 2024; overlap relief given; extra transition profit spread over 5 years by default.",
+        "2024-25": "Tax year basis applies.",
+        "2025-26": "Tax year basis; enter 33.3% of remaining transition profit (SA103F box 73.3) unless accelerated.",
+        "2026-27": "Tax year basis; remaining transition profit continues to be spread.",
+        "2027-28": "Last year of the default 5-year spread."
+      },
+      "sources": [
+        {
+          "title": "Basis period reform: policy paper (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/basis-period-reform/basis-period-reform"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM81201: tax year basis from 2024-25",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim81201"
+        },
+        {
+          "title": "SA103F Self-employment (full) notes 2026, tax year 2025-26 (HMRC)",
+          "url": "https://assets.publishing.service.gov.uk/media/69c26565cfa346b9d4704b35/SA103F_Notes_2026.pdf"
+        }
+      ]
+    }
+  },
+  "ways_to_reduce_tax_legally": [
+    {
+      "title": "Claim every allowable expense, with evidence",
+      "how": "Record each business cost as it happens, attach the receipt, and tag it with the job or PO. Check categories you might miss: PPE, kit insurance, parking, phone share, software, trade memberships.",
+      "who_it_suits": "Everyone. Most freelancers under-claim small, frequent costs.",
+      "limits": "Only costs wholly and exclusively for the business; private shares must be removed. Keep evidence for at least 5 years after the 31 January deadline.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: overview (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37007: wholly and exclusively: overview (apportionment)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37007"
+        },
+        {
+          "title": "Business records if you're self-employed (GOV.UK, printable guide)",
+          "url": "https://www.gov.uk/self-employed-records/print"
+        }
+      ]
+    },
+    {
+      "title": "Keep a proper mileage log",
+      "how": "Log every business journey at the time: date, from, to, purpose or PO, miles. Note odometer readings at 6 April and 5 April.",
+      "who_it_suits": "Anyone driving their own car or van to venues.",
+      "limits": "Only business journeys, not commuting to a regular base. 2026-27: 55p a mile for the first 10,000, 25p after.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Simplified expenses: vehicles (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/vehicles"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM75005: simplified expenses: motor vehicles",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim75005"
+        }
+      ]
+    },
+    {
+      "title": "Choose mileage rate or actual costs for each vehicle",
+      "how": "When a vehicle first goes into the business, compare the flat rate (55p/25p in 2026-27) with the business share of actual costs plus capital allowances. Pick the better long-term option for that vehicle.",
+      "who_it_suits": "High-mileage drivers often do well on the flat rate; expensive or electric vehicles may do better on actual costs with capital allowances.",
+      "limits": "Once you pick the flat rate for a vehicle you must keep it while you have that vehicle. You can't use it after claiming capital allowances on it.",
+      "needs_accountant": true,
+      "sources": [
+        {
+          "title": "Simplified expenses: vehicles (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/vehicles"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM75005: simplified expenses: motor vehicles",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim75005"
+        },
+        {
+          "title": "Capital allowances: business cars (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/business-cars"
+        }
+      ]
+    },
+    {
+      "title": "Claim travel, hotels and meals on qualifying trips",
+      "how": "Claim travel from home to temporary venues, hotels when a job needs a night away (including the night before an early call or after a late finish far from home), and reasonable meals while travelling or staying away.",
+      "who_it_suits": "Itinerant crew working at changing venues with home as their base.",
+      "limits": "Not for commuting to a regular base, not for holidays, only reasonable costs. Day subsistence depends on the facts.",
+      "needs_accountant": true,
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM37620: travel costs: to and between sites",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37620"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47705: travel and subsistence: meals and accommodation",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47705"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM37670: meals and subsistence",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim37670"
+        },
+        {
+          "title": "Expenses if you're self-employed: car, van and travel (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/travel"
+        }
+      ]
+    },
+    {
+      "title": "Time equipment purchases sensibly",
+      "how": "On the cash basis, kit is deducted in the tax year you pay for it; on traditional accounting, AIA gives full relief in the year of purchase. If you need kit anyway, buying it before 5 April brings the relief into the earlier year.",
+      "who_it_suits": "Someone whose profit is unusually high this year, or near a tax band edge like £50,270 or £100,000.",
+      "limits": "Only buy what the business needs. Cars don't get AIA or the cash basis deduction. Private use reduces the claim. Selling the kit later can be taxable.",
+      "needs_accountant": true,
+      "sources": [
+        {
+          "title": "Cash basis (GOV.UK, printable guide)",
+          "url": "https://www.gov.uk/simpler-income-tax-cash-basis/print"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM72035: cash basis: capital expenditure",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim72035"
+        },
+        {
+          "title": "Capital allowances: Annual Investment Allowance (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/annual-investment-allowance"
+        },
+        {
+          "title": "HMRC Capital Allowances Manual CA27005: private use of assets by sole traders",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/capital-allowances-manual/ca27005"
+        }
+      ]
+    },
+    {
+      "title": "Pay into a personal pension",
+      "how": "Pay into a relief-at-source personal pension: you pay £80, the provider adds £20. Higher-rate taxpayers claim extra relief on the return through an extended basic rate band.",
+      "who_it_suits": "Anyone with profits, especially higher-rate taxpayers or those in the £100,000-£125,140 band.",
+      "limits": "Relief up to 100% of UK taxable earnings (or £3,600 gross), and the £60,000 annual allowance (less if tapered). Money is locked in until pension age.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Tax on your private pension: pension tax relief (GOV.UK)",
+          "url": "https://www.gov.uk/tax-on-your-private-pension/pension-tax-relief"
+        },
+        {
+          "title": "HMRC Pensions Tax Manual PTM056120: basic and higher rate limits extended by RAS contributions and Gift Aid",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/pensions-tax-manual/ptm056120"
+        },
+        {
+          "title": "Rates and allowances: pension schemes (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/rates-and-allowances-pension-schemes/pension-schemes-rates"
+        }
+      ]
+    },
+    {
+      "title": "Avoid the £100,000 Personal Allowance trap",
+      "how": "If adjusted net income is heading over £100,000, pension contributions or Gift Aid bring it back down and restore the Personal Allowance. In the £100,000-£125,140 band, relief is effectively about 60%.",
+      "who_it_suits": "Higher earners with profits around £100,000 to £125,140.",
+      "limits": "Pension annual allowance and earnings limits apply; donations must be genuine gifts.",
+      "needs_accountant": true,
+      "sources": [
+        {
+          "title": "Income Tax rates: income over £100,000 (GOV.UK)",
+          "url": "https://www.gov.uk/income-tax-rates/income-over-100000"
+        },
+        {
+          "title": "Adjusted net income (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/adjusted-net-income"
+        },
+        {
+          "title": "HMRC Pensions Tax Manual PTM056120: basic and higher rate limits extended by RAS contributions and Gift Aid",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/pensions-tax-manual/ptm056120"
+        }
+      ]
+    },
+    {
+      "title": "Reduce payments on account when profits fall",
+      "how": "If this year's profit will be lower than last year's, reduce your payments on account online or with form SA303 so you don't overpay in advance.",
+      "who_it_suits": "Anyone with a quieter year, a big kit purchase, or a loss.",
+      "limits": "If you reduce too far, HMRC charges interest on the shortfall. Base the reduction on a realistic estimate.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Understand your Self Assessment bill: payments on account (GOV.UK)",
+          "url": "https://www.gov.uk/understand-self-assessment-bill/payments-on-account"
+        }
+      ]
+    },
+    {
+      "title": "Claim use of home",
+      "how": "If you do 25+ hours a month of admin at home, claim the flat rate (£10/£18/£26 a month) or work out a fair share of actual bills if that's higher.",
+      "who_it_suits": "Anyone who does quotes, invoicing, prep or design work at home.",
+      "limits": "Flat rate or actual share, not both. Phone and internet are claimed separately. Fixed costs need part of the home used only for business.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Simplified expenses: working from home (GOV.UK)",
+          "url": "https://www.gov.uk/simpler-income-tax-simplified-expenses/working-from-home"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47820: use of home: specific expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47820"
+        }
+      ]
+    },
+    {
+      "title": "Claim the business share of phone and broadband",
+      "how": "Work out the business percentage from a typical month of bills and claim that share of your phone and broadband all year.",
+      "who_it_suits": "Everyone using their phone for bookings, calls and show files.",
+      "limits": "Business share only, unless private use is insignificant.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: office, property and equipment (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/office-property"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM47820: use of home: specific expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim47820"
+        }
+      ]
+    },
+    {
+      "title": "Use Marriage Allowance",
+      "how": "If your spouse or civil partner earns under £12,570 and you're a basic rate taxpayer (or the other way round), the lower earner transfers £1,260 of allowance.",
+      "who_it_suits": "Married couples or civil partners where one has low income and the other pays basic rate.",
+      "limits": "Saves up to £252 a year. Not if the receiver pays higher rate. Backdating to 6 April 2022.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Marriage Allowance (GOV.UK)",
+          "url": "https://www.gov.uk/marriage-allowance"
+        }
+      ]
+    },
+    {
+      "title": "Claim higher-rate relief on Gift Aid",
+      "how": "Make charity donations with Gift Aid and enter them on your return. Higher-rate taxpayers get extra relief, and donations reduce adjusted net income.",
+      "who_it_suits": "Higher-rate taxpayers who already give to charity.",
+      "limits": "Donations must not exceed 4 times the tax you paid. Not a business expense.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Tax relief when you donate to a charity: Gift Aid (GOV.UK)",
+          "url": "https://www.gov.uk/donating-to-charity/gift-aid"
+        },
+        {
+          "title": "HMRC Pensions Tax Manual PTM056120: basic and higher rate limits extended by RAS contributions and Gift Aid",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/pensions-tax-manual/ptm056120"
+        }
+      ]
+    },
+    {
+      "title": "Use trading losses",
+      "how": "If you make a loss (for example a quiet year with big kit costs), set it against other income this year or last year, carry it back in the first 4 years of trading, or carry it forward.",
+      "who_it_suits": "Anyone with a loss-making year, especially with other income such as PAYE work.",
+      "limits": "Sideways relief capped at the greater of £50,000 or 25% of adjusted total income. Claim within 12 months of the 31 January after the loss year. The trade must be commercial.",
+      "needs_accountant": true,
+      "sources": [
+        {
+          "title": "HS227 Losses (2026) (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/losses-hs227-self-assessment-helpsheet/hs227-losses-2026"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM85075: loss relief: time limits",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim85075"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM85045: early years loss relief",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim85045"
+        }
+      ]
+    },
+    {
+      "title": "Check whether VAT registration helps",
+      "how": "If you're near £90,000, monitor rolling 12-month turnover monthly. If most clients are VAT-registered and you buy a lot of kit, compare voluntary registration (reclaiming VAT) with staying unregistered.",
+      "who_it_suits": "Freelancers working mainly for VAT-registered production companies and spending heavily on kit or vans.",
+      "limits": "More admin and returns. Prices rise for non-registered clients. The Flat Rate Scheme's 16.5% limited cost rate often makes it poor value for labour-only work.",
+      "needs_accountant": true,
+      "sources": [
+        {
+          "title": "VAT registration: when to register (GOV.UK)",
+          "url": "https://www.gov.uk/vat-registration/when-to-register"
+        },
+        {
+          "title": "VAT Flat Rate Scheme (GOV.UK, printable guide)",
+          "url": "https://www.gov.uk/vat-flat-rate-scheme/print"
+        },
+        {
+          "title": "Reclaim VAT on business expenses (GOV.UK)",
+          "url": "https://www.gov.uk/charge-reclaim-record-vat/reclaim-vat-business-expenses"
+        }
+      ]
+    },
+    {
+      "title": "Recharge client expenses properly",
+      "how": "Record rechargeable costs against each PO, bill them on your invoice, and treat them consistently: income in turnover and the cost as an expense.",
+      "who_it_suits": "Crew whose clients reimburse travel, hotels or consumables.",
+      "limits": "Don't claim costs the client paid directly. If VAT-registered, recharges usually need VAT.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "HMRC Business Income Manual BIM40130: reimbursement of trading expenses",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim40130"
+        },
+        {
+          "title": "VAT: costs or disbursements passed to customers (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/vat-costs-or-disbursements-passed-to-customers"
+        }
+      ]
+    },
+    {
+      "title": "Claim protective gear and relevant training",
+      "how": "Claim PPE such as boots, gloves, hard hats and harnesses, plus courses that update the skills you use (for example access equipment refreshers or new console training).",
+      "who_it_suits": "Crew who buy their own safety gear and keep tickets current.",
+      "limits": "Everyday clothing (including plain blacks) isn't allowable. Training for a new, unrelated business isn't allowable.",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Expenses if you're self-employed: clothing (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/clothing"
+        },
+        {
+          "title": "Expenses if you're self-employed: training courses (GOV.UK)",
+          "url": "https://www.gov.uk/expenses-if-youre-self-employed/training-courses"
+        },
+        {
+          "title": "HMRC Business Income Manual BIM35660: training expenditure (updated 4 August 2026)",
+          "url": "https://www.gov.uk/hmrc-internal-manuals/business-income-manual/bim35660"
+        }
+      ]
+    },
+    {
+      "title": "Consider a zero-emission car for business",
+      "how": "A new, unused electric car can get a 100% first-year allowance (business share) if bought before April 2027, on actual costs rather than the mileage rate.",
+      "who_it_suits": "Someone replacing their car who drives a lot for work.",
+      "limits": "Reduced by private use. You then can't use the mileage rate for that car. Any extension after April 2027 is not confirmed.",
+      "needs_accountant": true,
+      "sources": [
+        {
+          "title": "Capital allowances: business cars (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/business-cars"
+        },
+        {
+          "title": "Capital allowances: first year allowances (GOV.UK)",
+          "url": "https://www.gov.uk/capital-allowances/first-year-allowances"
+        }
+      ]
+    },
+    {
+      "title": "File and pay on time",
+      "how": "Diary 31 January and 31 July, and the MTD quarterly deadlines if you're in MTD. Penalties and interest are never deductible.",
+      "who_it_suits": "Everyone.",
+      "limits": "Late payment interest is base rate plus 4% (8.00% from 24 November 2026).",
+      "needs_accountant": false,
+      "sources": [
+        {
+          "title": "Self Assessment tax returns: penalties (GOV.UK)",
+          "url": "https://www.gov.uk/self-assessment-tax-returns/penalties"
+        },
+        {
+          "title": "HMRC interest rates for late and early payments (GOV.UK)",
+          "url": "https://www.gov.uk/government/publications/rates-and-allowances-hmrc-interest-rates-for-late-and-early-payments/rates-and-allowances-hmrc-interest-rates"
+        },
+        {
+          "title": "Penalties for Making Tax Digital for Income Tax (GOV.UK)",
+          "url": "https://www.gov.uk/guidance/penalties-for-making-tax-digital-for-income-tax"
+        }
+      ]
+    }
+  ]
+}

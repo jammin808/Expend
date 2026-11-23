@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class JobCandidate extends Model
 {
     protected $fillable = [
-        'status', 'title', 'client_name', 'starts_on', 'ends_on', 'start_time', 'end_time', 'location', 'postcode', 'po_number',
+        'status', 'fingerprint', 'title', 'client_name', 'starts_on', 'ends_on', 'start_time', 'end_time', 'location', 'postcode', 'po_number',
         'sources', 'reasons', 'score', 'found_by', 'work_job_id', 'edited_at', 'decided_at', 'note',
     ];
 

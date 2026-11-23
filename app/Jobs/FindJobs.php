@@ -22,11 +22,17 @@ class FindJobs implements ShouldBeUnique, ShouldQueue
 
     public int $uniqueFor = 600;
 
-    public function __construct(public ?string $taxYear = null) {}
+    /** @param bool $asked you pressed "Find jobs now": runs even when automatic runs are switched off */
+    public function __construct(public ?string $taxYear = null, public bool $asked = false) {}
+
+    public function uniqueId(): string
+    {
+        return ($this->taxYear ?? 'recent').($this->asked ? '-asked' : '');
+    }
 
     public function handle(JobFinder $finder, Verifier $verifier): void
     {
-        if (! Setting::get('job_finder_auto')) {
+        if (! $this->asked && ! Setting::get('job_finder_auto')) {
             return;
         }
         try {

@@ -32,7 +32,11 @@ class ReadTravelEmail implements ShouldQueue
                 ? ['status' => 'needs_ai', 'error' => 'This email has no booking data, so it needs AI to read. Switch on reading documents in Settings › Integrations.']
                 : ['status' => $items ? 'read' : 'no_booking', 'error' => null]);
             foreach ($items ?? [] as $item) {
-                $verifier->travelItem($item->fresh(), false); // just fetched from Gmail; the scheduled re-check fetches it again
+                try {
+                    $verifier->travelItem($item->fresh(), false); // just fetched from Gmail; the scheduled re-check fetches it again
+                } catch (Throwable $e) {
+                    report($e);
+                }
             }
             if ($items) {
                 FindJobs::dispatch();

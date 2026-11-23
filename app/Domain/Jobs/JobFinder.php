@@ -8,6 +8,7 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\Grounding;
 use App\Domain\Travel\TravelMatcher;
+use App\Domain\Verification\Verifier;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
 use App\Models\Client;
@@ -16,6 +17,7 @@ use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\Setting;
 use App\Models\TravelItem;
+use App\Models\Verification;
 use App\Models\WorkJob;
 use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
@@ -80,7 +82,7 @@ final class JobFinder
         $stats = ['linked' => 0, 'proposed' => 0, 'ai_checked' => 0, 'ai_rejected' => 0, 'considered' => 0];
 
         $jobs = WorkJob::query()->with('client')->where('status', '!=', 'cancelled')
-            ->whereDate('ends_on', '>=', $from->subDays(3))->whereDate('starts_on', '<=', $to->addDays(3))->get();
+            ->whereDate('ends_on', '>=', $from->subDays(3)->format('Y-m-d'))->whereDate('starts_on', '<=', $to->addDays(3)->format('Y-m-d'))->get();
         $jobPos = $this->jobPoNumbers($jobs);
 
         $taken = JobCandidate::query()->where(fn ($q) => $q->where('status', '!=', 'open')->orWhereNotNull('edited_at'))
@@ -90,11 +92,11 @@ final class JobFinder
             ->reject(fn ($s) => isset($taken[$s['key']]));
 
         if ($useAi && self::aiAllowed()) {
-            $signals = $this->askAiAboutCalendar($signals, $jobs, $stats);
+            $signals = $this->askAiAboutCalendar($signals, $stats);
         }
         $stats['considered'] = $signals->count();
 
-        // 1. Link to existing jobs where it's clear.
+        // 1. Link to existing jobs where it's clear (and, for documents, backed by the document itself).
         $left = collect();
         foreach ($signals as $signal) {
             if ($signal['type'] === 'travel' || ($signal['type'] === 'calendar' && $signal['work'] < 1)) {
@@ -103,8 +105,7 @@ final class JobFinder
                 continue;
             }
             $match = $this->bestJob($signal, $jobs, $jobPos);
-            if ($match['job'] && ! $match['ambiguous']) {
-                $this->linkSignal($signal, $match['job'], $signal['ai'] ?? false ? 'ai' : 'rules', implode('; ', $match['reasons']));
+            if ($match['job'] && ! $match['ambiguous'] && $this->linkSignal($signal, $match['job'], ($signal['ai'] ?? false) ? 'ai' : 'rules', implode('; ', $match['reasons']))) {
                 $stats['linked']++;
 
                 continue;
@@ -112,14 +113,29 @@ final class JobFinder
             $left->push($signal + ['options' => $match['options']]);
         }
 
-        // 2. Group the rest into possible jobs. Unedited open proposals are rebuilt each run.
-        DB::transaction(function () use ($left, &$stats) {
-            JobCandidate::query()->where('status', 'open')->whereNull('edited_at')->delete();
+        // 2. Group the rest into possible jobs. Each keeps its id between runs (keyed by its sources); only unedited
+        // proposals within this run's dates are replaced, so runs for different periods don't undo each other.
+        DB::transaction(function () use ($left, $from, $to, &$stats) {
+            $old = JobCandidate::query()->where('status', 'open')->whereNull('edited_at')
+                ->whereDate('ends_on', '>=', $from->format('Y-m-d'))->whereDate('starts_on', '<=', $to->format('Y-m-d'))->get();
+            $byPrint = $old->keyBy('fingerprint');
+            $kept = [];
             foreach ($this->cluster($left) as $cluster) {
-                if ($candidate = $this->candidateFrom($cluster)) {
-                    JobCandidate::query()->create($candidate);
-                    $stats['proposed']++;
+                if (! $candidate = $this->candidateFrom($cluster)) {
+                    continue;
                 }
+                if ($existing = $byPrint[$candidate['fingerprint']] ?? null) {
+                    $existing->update($candidate);
+                    $kept[] = $existing->id;
+                } else {
+                    JobCandidate::query()->create($candidate);
+                }
+                $stats['proposed']++;
+            }
+            $gone = $old->reject(fn (JobCandidate $c) => in_array($c->id, $kept, true))->pluck('id');
+            if ($gone->isNotEmpty()) {
+                Verification::query()->where('subject_type', 'job_candidate')->whereIn('subject_id', $gone)->delete();
+                JobCandidate::query()->whereIn('id', $gone)->delete();
             }
         });
 
@@ -172,67 +188,115 @@ final class JobFinder
         });
     }
 
-    /** Not a job: none of its sources is proposed again, and its calendar entries are marked "not a job". */
+    /**
+     * Not a job: none of its sources is proposed again, and its calendar entries are marked "not a job" (except any
+     * you've linked to a job yourself since).
+     */
     public function dismiss(JobCandidate $candidate, ?string $note = null): void
     {
         DB::transaction(function () use ($candidate, $note) {
             foreach ($candidate->sources ?? [] as $source) {
-                if ($source['type'] === 'calendar' && ($event = self::event($source['id'], $source['date'] ?? null))) {
-                    $this->linkCalendar($event, null, 'you', 'Not a job');
+                if ($source['type'] !== 'calendar' || ! ($event = self::event($source['id'], $source['date'] ?? null))) {
+                    continue;
                 }
+                $link = CalendarJobLink::query()->where('event_key', $event->key())->first();
+                if ($link?->work_job_id && $link->linked_by === 'you') {
+                    continue;
+                }
+                $this->markNotJob($event);
             }
             $candidate->update(['status' => 'dismissed', 'decided_at' => now(), 'note' => $note ? mb_substr($note, 0, 250) : null]);
             AuditLog::record('jobs.candidate_dismissed', $candidate, null, ['title' => $candidate->title, 'sources' => $candidate->sourceKeys()], $note);
         });
     }
 
+    /** Link a possible job's sources to the job, skipping any you've since linked to a different job yourself. */
     public function linkSources(JobCandidate $candidate, WorkJob $job): void
     {
         foreach ($candidate->sources ?? [] as $source) {
-            match ($source['type']) {
-                'calendar' => ($event = self::event($source['id'], $source['date'] ?? null)) ? $this->linkCalendar($event, $job, 'you', 'Added from the job finder') : null,
-                'document' => ($doc = Document::query()->find($source['id'])) ? $this->linkDocument($doc, $job, 'you') : null,
-                'travel' => ($item = TravelItem::query()->find($source['id'])) ? $this->linkTravel($item, $job, 'you') : null,
-                default => null,
-            };
+            if ($source['type'] === 'calendar' && ($event = self::event($source['id'], $source['date'] ?? null))) {
+                $link = CalendarJobLink::query()->where('event_key', $event->key())->first();
+                if (! ($link?->linked_by === 'you' && $link->work_job_id && $link->work_job_id !== $job->id)) {
+                    $this->linkCalendar($event, $job, 'you', 'Added from the job finder');
+                }
+            } elseif ($source['type'] === 'document' && ($doc = Document::query()->find($source['id']))) {
+                $doc = $doc->parent ?? $doc;
+                if (! ($doc->job_linked_by === 'you' && $doc->work_job_id && $doc->work_job_id !== $job->id)) {
+                    $this->linkDocument($doc, $job, 'you');
+                }
+            } elseif ($source['type'] === 'travel' && ($item = TravelItem::query()->find($source['id']))) {
+                if (! ($item->job_linked_by === 'you' && $item->work_job_id && $item->work_job_id !== $job->id)) {
+                    $this->linkTravel($item, $job, 'you');
+                }
+            }
         }
     }
 
-    public function linkCalendar(CalendarEvent $event, ?WorkJob $job, string $by, ?string $reason = null): CalendarJobLink
+    /**
+     * Link a calendar entry to a job. Automation never changes a link you made, an entry you marked "not a job", or
+     * link it to a job you unlinked it from.
+     */
+    public function linkCalendar(CalendarEvent $event, WorkJob $job, string $by, ?string $reason = null): CalendarJobLink
     {
         $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
-        if ($link->exists && $link->linked_by === 'you' && $by !== 'you') {
-            return $link; // your link stays
+        if ($by !== 'you' && $link->exists && (($link->linked_by === 'you' && ($link->work_job_id || $link->not_job)) || in_array($job->id, $link->rejected ?? [], true))) {
+            return $link;
         }
-        $before = $link->exists ? $link->only(['work_job_id', 'linked_by']) : null;
-        $link->fill([
-            'event_uid' => $event->uid, 'event_starts_at' => $event->starts_at, 'summary' => mb_substr((string) $event->summary, 0, 250),
-            'work_job_id' => $job?->id, 'linked_by' => $by, 'reason' => $reason ? mb_substr($reason, 0, 300) : null,
-        ])->save();
-        AuditLog::record('calendar.linked', $link, $before, $link->only(['work_job_id', 'linked_by', 'summary']), $reason, $by === 'you' ? 'you' : $by);
 
-        return $link;
+        return $this->saveCalendarLink($link, $event, ['work_job_id' => $job->id, 'linked_by' => $by, 'not_job' => false,
+            'rejected' => array_values(array_diff($link->rejected ?? [], [$job->id])) ?: null, 'reason' => $reason], $by);
     }
 
-    public function unlinkCalendar(CalendarEvent $event): void
+    /** "Not this job": unlinked by you, and never linked to that job automatically again. Other jobs are still possible. */
+    public function unlinkCalendar(CalendarEvent $event, ?int $fromJobId = null): CalendarJobLink
+    {
+        $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
+        $reject = $fromJobId ?? $link->work_job_id;
+
+        return $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false,
+            'rejected' => array_values(array_unique([...($link->rejected ?? []), ...($reject ? [$reject] : [])])) ?: null, 'reason' => 'Not this job'], 'you');
+    }
+
+    /** "Not a job": never proposed or linked automatically. */
+    public function markNotJob(CalendarEvent $event): CalendarJobLink
+    {
+        $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
+
+        return $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => true, 'reason' => 'Not a job'], 'you');
+    }
+
+    /** Undo "not a job" (and any "not this job"): the entry is treated as new again. */
+    public function forgetCalendar(CalendarEvent $event): void
     {
         $link = CalendarJobLink::query()->where('event_key', $event->key())->first();
         if ($link) {
-            AuditLog::record('calendar.unlinked', $link, $link->only(['work_job_id', 'linked_by']), null);
+            AuditLog::record('calendar.link_removed', $link, $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected']), null);
             $link->delete();
         }
     }
 
+    private function saveCalendarLink(CalendarJobLink $link, CalendarEvent $event, array $fields, string $by): CalendarJobLink
+    {
+        $before = $link->exists ? $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected']) : null;
+        $fields['reason'] = isset($fields['reason']) ? mb_substr((string) $fields['reason'], 0, 300) : null;
+        $link->fill($fields + ['event_uid' => $event->uid, 'event_starts_at' => $event->starts_at, 'summary' => mb_substr((string) $event->summary, 0, 250)])->save();
+        AuditLog::record('calendar.linked', $link, $before, $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected', 'summary']), $fields['reason'], $by);
+
+        return $link;
+    }
+
+    /**
+     * Link (or, with no job, unlink) a document and the attachments that go with it. Automation never changes a link
+     * you made, or links to a job you unlinked it from; unlinking it yourself records "not this job".
+     */
     public function linkDocument(Document $document, ?WorkJob $job, string $by): void
     {
-        if ($document->job_linked_by === 'you' && $by !== 'you') {
+        if ($by !== 'you' && ($document->job_linked_by === 'you' || ($job && in_array($job->id, $document->job_rejected ?? [], true)))) {
             return;
         }
         $before = ['work_job_id' => $document->work_job_id, 'job_linked_by' => $document->job_linked_by];
-        DocumentReader::relink($document, $job?->id);
-        $document->update(['job_linked_by' => $job ? $by : ($by === 'you' ? 'you' : null)]);
-        $document->children()->update(['job_linked_by' => $job ? $by : null]);
-        AuditLog::record('document.job_linked', $document, $before, ['work_job_id' => $job?->id, 'job_linked_by' => $by], null, $by);
+        DocumentReader::relink($document, $job?->id, $by);
+        AuditLog::record('document.job_linked', $document, $before, ['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : null], null, $by);
     }
 
     public function linkTravel(TravelItem $item, ?WorkJob $job, string $by): void
@@ -246,6 +310,14 @@ final class JobFinder
         if (! $item->decided_at) {
             $this->matcher->suggest($item->fresh());
         }
+    }
+
+    /** All the text of a document: an email's body with its attachments' text, for checking a link against. */
+    public static function documentText(Document $document): string
+    {
+        $top = $document->parent ?? $document;
+
+        return trim($top->text."\n".$top->children()->pluck('text')->filter()->implode("\n"));
     }
 
     /**
@@ -303,10 +375,13 @@ final class JobFinder
     {
         $links = CalendarJobLink::query()->get()->keyBy('event_key');
         $out = [];
-        foreach (CalendarEvent::query()->whereBetween('starts_at', [$from->format('Y-m-d 00:00:00'), $to->format('Y-m-d 23:59:59')])->orderBy('starts_at')->get() as $event) {
+        foreach (CalendarEvent::query()->whereBetween('starts_at', [$from->subDay()->format('Y-m-d 00:00:00'), $to->addDay()->format('Y-m-d 23:59:59')])->orderBy('starts_at')->get() as $event) {
             $link = $links[$event->key()] ?? null;
-            if ($link && ($link->linked_by === 'you' || $link->work_job_id)) {
-                continue; // decided by you, or already linked automatically
+            if ($link && ($link->not_job || $link->work_job_id)) {
+                continue; // "not a job", or already linked (by you or automatically)
+            }
+            if ($event->day() < $from->format('Y-m-d') || $event->day() > $to->format('Y-m-d')) {
+                continue;
             }
             $text = $event->text();
             if (trim($text) === '') {
@@ -314,11 +389,11 @@ final class JobFinder
             }
             $out[] = [
                 'key' => 'cal:'.$event->key(), 'type' => 'calendar', 'id' => $event->key(), 'label' => (string) $event->summary,
-                'from' => $event->starts_at->format('Y-m-d'), 'to' => $event->lastDay()->format('Y-m-d'),
+                'from' => $event->day(), 'to' => $event->lastDay()->format('Y-m-d'), 'rejected' => $link?->rejected ?? [],
                 'title' => $event->summary, 'client' => $this->clientIn($text), 'location' => self::isLink((string) $event->location) ? null : $event->location,
                 'postcode' => self::postcodeIn((string) $event->location), 'po' => null,
-                'start_time' => $event->all_day ? null : $event->starts_at->format('H:i'),
-                'end_time' => $event->all_day || ! $event->ends_at ? null : $event->ends_at->format('H:i'),
+                'start_time' => $event->all_day ? null : $event->localStart()->format('H:i'),
+                'end_time' => $event->all_day || ! $event->ends_at ? null : $event->localEnd()->format('H:i'),
                 'text' => $text, 'quote' => $text, 'verified' => true, 'note' => 'From your calendar',
                 'work' => $this->workScore($event),
             ];
@@ -330,9 +405,17 @@ final class JobFinder
     private function documentSignals(CarbonImmutable $from, CarbonImmutable $to): array
     {
         $out = [];
-        $docs = Document::query()->where('status', 'extracted')->whereNull('work_job_id')
+        $docs = collect();
+        Document::query()->where('status', 'extracted')->whereNull('work_job_id')->whereNotNull('extraction')
             ->where(fn ($q) => $q->whereNull('job_linked_by')->orWhere('job_linked_by', '!=', 'you'))
-            ->with('facts')->orderBy('id')->get();
+            ->whereNotIn('kind', ['receipt', 'invoice'])
+            // Received from 18 months before the period on: paperwork for past jobs often arrives (or is added) later.
+            ->where(fn ($q) => $q->whereNull('received_at')->orWhere('received_at', '>=', $from->subMonths(18)->format('Y-m-d 00:00:00')))
+            ->select(['id', 'parent_id', 'kind', 'email_subject', 'original_name', 'summary', 'extraction', 'work_job_id', 'job_linked_by', 'job_rejected', 'received_at'])
+            ->with(['facts:id,document_id,field,value,on_date,at_time,quote,verified', 'parent:id,work_job_id,job_linked_by'])
+            ->chunkById(200, function ($chunk) use (&$docs) {
+                $docs = $docs->concat($chunk->reject(fn (Document $d) => $d->parent && ($d->parent->work_job_id || $d->parent->job_linked_by === 'you')));
+            });
         foreach ($docs as $doc) {
             $x = $doc->extraction ?? [];
             $new = $x['new_job'] ?? null;
@@ -353,7 +436,7 @@ final class JobFinder
             $out[] = [
                 'key' => 'doc:'.$doc->id, 'type' => 'document', 'id' => $doc->id, 'label' => $doc->email_subject ?: $doc->original_name,
                 'from' => $start, 'to' => $end && $end >= (string) $start ? $end : $start,
-                'title' => $new['title'] ?? null, 'client' => $new['client'] ?? $this->clientIn((string) $doc->text),
+                'title' => $new['title'] ?? null, 'client' => $new['client'] ?? $this->clientIn($doc->email_subject.' '.$doc->summary), 'rejected' => $doc->job_rejected ?? [],
                 'location' => $new['venue'] ?? $doc->facts->firstWhere('field', 'venue')?->value,
                 'postcode' => $new['postcode'] ?? $doc->facts->firstWhere('field', 'postcode')?->value,
                 'po' => $po ? mb_substr((string) $po, 0, 100) : null,
@@ -375,14 +458,14 @@ final class JobFinder
         $items = TravelItem::query()->whereNull('work_job_id')->where('status', '!=', 'cancelled')
             ->whereIn('kind', ['hotel', 'flight', 'rail', 'car_hire'])
             ->where(fn ($q) => $q->whereNull('decided_at')->orWhereIn('decision', ['business', 'mixed', 'recharge', 'client_booked']))
-            ->whereBetween('starts_on', [$from->format('Y-m-d'), $to->format('Y-m-d')])->get();
+            ->whereDate('starts_on', '>=', $from->format('Y-m-d'))->whereDate('starts_on', '<=', $to->format('Y-m-d'))->get();
         foreach ($items as $item) {
             $place = $item->kind === 'hotel' ? $item->place : ($item->destination ?: $item->place);
             $out[] = [
                 'key' => 'travel:'.$item->id, 'type' => 'travel', 'id' => $item->id,
                 'label' => TravelItem::KINDS[$item->kind].': '.$item->provider.($place ? ', '.$place : ''),
                 'from' => $item->starts_on->format('Y-m-d'), 'to' => ($item->ends_on ?? $item->starts_on)->format('Y-m-d'),
-                'title' => null, 'client' => null, 'location' => $place, 'postcode' => $item->kind === 'hotel' ? $item->postcode : null, 'po' => null,
+                'title' => null, 'client' => null, 'location' => $place, 'postcode' => $item->kind === 'hotel' ? $item->postcode : null, 'po' => null, 'rejected' => [],
                 'start_time' => null, 'end_time' => null, 'text' => (string) $place, 'quote' => null,
                 'verified' => $item->unverified_count === 0, 'note' => $item->unverified_count ? 'Some details couldn’t be checked against the email' : 'Read from the booking email',
                 'work' => 0,
@@ -433,6 +516,9 @@ final class JobFinder
         $sameDay = $from ? $jobs->filter(fn (WorkJob $j) => $j->starts_on->lte($to) && $j->ends_on->gte($from))->count() : 0;
 
         foreach ($jobs as $job) {
+            if (in_array($job->id, $s['rejected'] ?? [], true)) {
+                continue; // you said it isn't this job
+            }
             $score = 0;
             $why = [];
             if ($po && in_array($po, $jobPos[$job->id] ?? [], true)) {
@@ -493,13 +579,33 @@ final class JobFinder
         return ['job' => $best['job'], 'ambiguous' => $best['score'] - $second < 3, 'reasons' => $best['why'], 'options' => $options];
     }
 
-    private function linkSignal(array $s, WorkJob $job, string $by, string $reason): void
+    /**
+     * Make an automatic link. A document is only linked when its own text backs the link (the job's PO number, or one
+     * of its dates with its client, venue or title): what the AI read from it can suggest a job, never link one.
+     * A PO attachment links its email, and with it the email's other attachments.
+     */
+    private function linkSignal(array $s, WorkJob $job, string $by, string $reason): bool
     {
-        match ($s['type']) {
-            'calendar' => ($event = self::event($s['id'], $s['from'])) ? $this->linkCalendar($event, $job, $by, ucfirst($reason)) : null,
-            'document' => ($doc = Document::query()->find($s['id'])) ? $this->linkDocument($doc, $job, $by) : null,
-            default => null,
-        };
+        if ($s['type'] === 'calendar') {
+            $event = self::event($s['id'], $s['from']);
+            if (! $event) {
+                return false;
+            }
+            $this->linkCalendar($event, $job, $by, ucfirst($reason));
+
+            return true;
+        }
+        if ($s['type'] === 'document' && ($doc = Document::query()->with('parent')->find($s['id']))) {
+            $top = $doc->parent ?? $doc;
+            if (! Verifier::jobEvidence(self::documentText($top), $job, $s['po'])['ok']) {
+                return false;
+            }
+            $this->linkDocument($top, $job, $by);
+
+            return true;
+        }
+
+        return false;
     }
 
     /** @return list<list<array>> */
@@ -581,8 +687,12 @@ final class JobFinder
 
         $title = $first('title', $docs, $cal);
         if (! $title) {
-            $t = $travel[0];
-            $title = 'Possible job: '.($t['location'] ? 'away at '.$t['location'] : $t['label']);
+            $t = $travel[0] ?? $docs[0] ?? $cal[0] ?? null;
+            $title = match (true) {
+                $t === null => 'Possible job',
+                $t['type'] === 'travel' => 'Possible job: '.($t['location'] ? 'away at '.$t['location'] : $t['label']),
+                default => 'Possible job: '.($t['label'] ?: 'untitled'),
+            };
         }
         $clientName = $first('client', $docs, $cal);
         $po = $first('po', $docs);
@@ -603,6 +713,7 @@ final class JobFinder
 
         return [
             'status' => 'open',
+            'fingerprint' => sha1(collect($cluster)->pluck('key')->sort()->implode('|')),
             'title' => mb_substr((string) $title, 0, 150),
             'client_name' => $clientName ? mb_substr($clientName, 0, 120) : null,
             'starts_on' => $from, 'ends_on' => $to,
@@ -625,10 +736,11 @@ final class JobFinder
     // ---------------------------------------------------------------- AI, double-checked
 
     /** Ask about calendar entries the rules can't call. Only answers whose quoted words are really in the entry count. */
-    private function askAiAboutCalendar(Collection $signals, Collection $jobs, array &$stats): Collection
+    private function askAiAboutCalendar(Collection $signals, array &$stats): Collection
     {
-        $unsure = $signals->filter(fn ($s) => $s['type'] === 'calendar' && $s['work'] >= 1 && $s['work'] <= 2)->take(120);
-        $ask = $unsure->reject(fn ($s) => Cache::has(self::verdictKey($s)));
+        // Newest first, and only what hasn't been asked about: older answers are remembered.
+        $ask = $signals->filter(fn ($s) => $s['type'] === 'calendar' && $s['work'] >= 1 && $s['work'] <= 2)
+            ->reject(fn ($s) => Cache::has(self::verdictKey($s)))->sortByDesc('from')->take(120);
         if ($ask->isNotEmpty()) {
             try {
                 $result = $this->ai->send([
@@ -649,6 +761,9 @@ final class JobFinder
                 $answers = collect(json_decode($result->text(), true)['entries'] ?? [])->keyBy('i');
                 foreach ($ask->values() as $i => $s) {
                     $a = $answers[$i] ?? null;
+                    if ($a === null) {
+                        continue; // left out of the answer: asked again next time
+                    }
                     $verdict = $this->checkAiAnswer($s, $a);
                     $stats['ai_checked']++;
                     $stats['ai_rejected'] += $verdict['rejected'] ? 1 : 0;
@@ -702,8 +817,11 @@ final class JobFinder
     /** A calendar entry by its stable key, looked up on the day it starts. */
     public static function event(string $key, ?string $date): ?CalendarEvent
     {
+        // Stored in UTC, so the UK date can be a day either side of the stored one.
+        $d = $date ? CarbonImmutable::parse($date) : null;
+
         return CalendarEvent::query()
-            ->when($date, fn ($q) => $q->whereBetween('starts_at', [$date.' 00:00:00', $date.' 23:59:59']))
+            ->when($d, fn ($q) => $q->whereBetween('starts_at', [$d->subDay()->format('Y-m-d 00:00:00'), $d->addDay()->format('Y-m-d 23:59:59')]))
             ->get()->first(fn (CalendarEvent $e) => $e->key() === $key);
     }
 

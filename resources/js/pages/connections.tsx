@@ -99,6 +99,16 @@ const FLAG: Record<string, { short: string; text: string; tone: string }> = {
     stay_no_job: { short: 'No job', text: 'A stay or journey that isn’t linked to a job.', tone: 'bg-amber-500 text-white' },
     doc_no_job: { short: 'No job', text: 'A PO or job document that isn’t linked to a job.', tone: 'bg-amber-500 text-white' },
     check: { short: 'Check', text: 'An AI finding here didn’t pass the double-check against its source.', tone: 'bg-rose-600 text-white' },
+    income_missing: {
+        short: 'Unpaid',
+        text: 'Invoice past its due date and no payment from the client is linked: chase it, or link the payment if it arrived.',
+        tone: 'bg-rose-600 text-white',
+    },
+    payment_missing: {
+        short: 'No payment',
+        text: 'The booking says it was paid, but no matching payment is in your statements. Import the card or account it was paid with, or add it as a manual expense.',
+        tone: 'bg-amber-500 text-white',
+    },
     possible_job: { short: 'Possible', text: 'A possible job from the job finder.', tone: 'bg-violet-600 text-white' },
     po: { short: 'PO', text: 'A purchase order.', tone: 'bg-indigo-600 text-white' },
     not_job: { short: 'Not a job', text: 'You marked this “not a job”.', tone: 'bg-slate-400 text-white' },

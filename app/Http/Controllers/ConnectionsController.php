@@ -75,11 +75,14 @@ class ConnectionsController extends Controller
         }
         $jobIds = $jobs->pluck('id')->all();
         $jobNode = fn (?int $jobId) => $jobId && isset($nodes['job:'.$jobId]) ? 'job:'.$jobId : null;
-        $jobOn = function (string $date) use ($jobs): ?WorkJob {
-            $d = CarbonImmutable::parse($date);
-
-            return $jobs->first(fn (WorkJob $j) => $j->status !== 'cancelled' && $j->starts_on->copy()->subDay()->lte($d) && $j->ends_on->copy()->addDay()->gte($d));
-        };
+        // Which job is on (or the day either side of) each date, worked out once.
+        $onDay = [];
+        foreach ($jobs->where('status', '!=', 'cancelled') as $j) {
+            for ($d = CarbonImmutable::parse($j->starts_on->format('Y-m-d'))->subDay(), $n = 0; $d->format('Y-m-d') <= $j->ends_on->copy()->addDay()->format('Y-m-d') && $n < 60; $d = $d->addDay(), $n++) {
+                $onDay[$d->format('Y-m-d')] ??= $j;
+            }
+        }
+        $jobOn = fn (string $date): ?WorkJob => $onDay[$date] ?? null;
 
         // Possible jobs from the job finder.
         foreach (JobCandidate::query()->where('status', 'open')->whereDate('ends_on', '>=', $f)->whereDate('starts_on', '<=', $t)->get() as $c) {
@@ -91,19 +94,22 @@ class ConnectionsController extends Controller
         // Calendar entries: linked ones, and any that look like work but aren't set up as a job.
         $links = CalendarJobLink::query()->get()->keyBy('event_key');
         $candidateKeys = JobCandidate::query()->where('status', 'open')->get()->flatMap(fn ($c) => collect($c->sourceKeys())->mapWithKeys(fn ($k) => [$k => $c->id]));
-        foreach (CalendarEvent::query()->whereBetween('starts_at', [$f.' 00:00:00', $t.' 23:59:59'])->orderBy('starts_at')->limit(1500)->get() as $e) {
+        foreach (CalendarEvent::query()->whereBetween('starts_at', [$from->subDay()->format('Y-m-d 00:00:00'), $to->addDay()->format('Y-m-d 23:59:59')])->orderBy('starts_at')->limit(1500)->get() as $e) {
+            if ($e->day() < $f || $e->day() > $t) {
+                continue;
+            }
             $key = $e->key();
             $link = $links[$key] ?? null;
             $score = $finder->workScore($e);
             $linked = $link?->work_job_id && in_array($link->work_job_id, $jobIds, true);
-            $notJob = $link && ! $link->work_job_id;
+            $notJob = (bool) $link?->not_job;
             if (! $linked && ! $showAll && ($notJob || $score < 1) && ! isset($candidateKeys['cal:'.$key])) {
                 continue; // personal entries stay off the map unless you ask for everything
             }
             $id = 'cal:'.$key;
-            $nodes[$id] = ['id' => $id, 'type' => 'calendar', 'label' => (string) $e->summary ?: '(no title)', 'sub' => trim(($e->all_day ? 'All day' : $e->starts_at->format('H:i')).' · '.$e->location, ' ·'),
-                'date' => $e->starts_at->format('Y-m-d'), 'end' => $e->lastDay()->format('Y-m-d'), 'flags' => [],
-                'data' => ['key' => $key, 'location' => $e->location, 'time' => $e->all_day ? null : $e->starts_at->format('H:i'), 'end_time' => $e->all_day || ! $e->ends_at ? null : $e->ends_at->format('H:i'),
+            $nodes[$id] = ['id' => $id, 'type' => 'calendar', 'label' => (string) $e->summary ?: '(no title)', 'sub' => trim(($e->all_day ? 'All day' : $e->localStart()->format('H:i')).' · '.$e->location, ' ·'),
+                'date' => $e->day(), 'end' => $e->lastDay()->format('Y-m-d'), 'flags' => [],
+                'data' => ['key' => $key, 'location' => $e->location, 'time' => $e->all_day ? null : $e->localStart()->format('H:i'), 'end_time' => $e->all_day || ! $e->ends_at ? null : $e->localEnd()->format('H:i'),
                     'linked_by' => $link?->linked_by, 'not_job' => $notJob, 'work' => $score]];
             if ($linked) {
                 $edge($id, 'job:'.$link->work_job_id, $link->linked_by === 'you' ? 'confirmed' : 'auto', $link->reason);
@@ -112,7 +118,7 @@ class ConnectionsController extends Controller
                 $flag($id, 'calendar_unallocated');
             } elseif (! $notJob && $score >= 3) {
                 $flag($id, 'calendar_unallocated');
-                if ($j = $jobOn($e->starts_at->format('Y-m-d'))) {
+                if (($j = $jobOn($e->day())) && ! in_array($j->id, $link?->rejected ?? [], true)) {
                     $edge($id, 'job:'.$j->id, 'possible', 'Same day as this job');
                 }
             } elseif ($notJob) {
@@ -147,7 +153,7 @@ class ConnectionsController extends Controller
         }
 
         // Stays and journeys.
-        $travel = TravelItem::query()->where('status', '!=', 'cancelled')->whereBetween('starts_on', [$f, $t])->orderBy('starts_on')->get();
+        $travel = TravelItem::query()->where('status', '!=', 'cancelled')->whereDate('starts_on', '>=', $f)->whereDate('starts_on', '<=', $t)->orderBy('starts_on')->get();
         $travelChecks = Verification::forMany('travel_item', $travel->pluck('id'));
         foreach ($travel as $item) {
             $id = 'travel:'.$item->id;
@@ -157,6 +163,11 @@ class ConnectionsController extends Controller
                 'flags' => [], 'data' => ['job_id' => $item->work_job_id, 'linked_by' => $item->job_linked_by, 'check' => $travelChecks[$item->id] ?? null, 'kind' => $item->kind]];
             if ($travelChecks[$item->id]['warn'] ?? false) {
                 $flag($id, 'check');
+            }
+            // Missing expense: the booking says it was paid, but no payment has turned up in your statements.
+            if (! $item->bank_transaction_id && $item->amount_minor && in_array($item->payment, ['paid', 'pay_at_property'], true)
+                && ! in_array($item->decision, ['client_booked', 'personal'], true) && ($item->ends_on ?? $item->starts_on)->lt(now()->subDays(10))) {
+                $flag($id, 'payment_missing');
             }
             if ($jn = $jobNode($item->work_job_id)) {
                 $edge($id, $jn, $item->job_linked_by === 'you' || $item->decided_at ? 'confirmed' : 'auto');
@@ -206,11 +217,17 @@ class ConnectionsController extends Controller
             $edge($id, 'job:'.$a->work_job_id, $a->confirmed_at ? 'confirmed' : 'auto');
         }
 
+        $paidJobs = Allocation::query()->whereIn('work_job_id', $jobIds)->where('kind', 'business_income')->distinct()->pluck('work_job_id')->flip();
         foreach (Invoice::query()->whereIn('work_job_id', $jobIds)->where('status', '!=', 'void')->get() as $inv) {
             $id = 'invoice:'.$inv->id;
             $nodes[$id] = ['id' => $id, 'type' => 'invoice', 'label' => $inv->number ?? 'Draft invoice', 'sub' => ucfirst($inv->status), 'date' => ($inv->issue_date ?? $inv->created_at)->format('Y-m-d'),
                 'amount' => $inv->total_minor, 'href' => '/invoices/'.$inv->id, 'flags' => [], 'data' => []];
             $edge($id, 'job:'.$inv->work_job_id, 'confirmed');
+            // Missing income: issued, past its due date, and no payment from the client linked to the job.
+            if ($inv->status === 'issued' && $inv->due_date && $inv->due_date->lt(today()) && ! isset($paidJobs[$inv->work_job_id])) {
+                $flag($id, 'income_missing');
+                $flag('job:'.$inv->work_job_id, 'income_missing');
+            }
         }
         foreach (MileageTrip::query()->whereIn('work_job_id', $jobIds)->get() as $trip) {
             $id = 'mileage:'.$trip->id;
@@ -245,6 +262,8 @@ class ConnectionsController extends Controller
         'no_po' => 'Jobs with no PO',
         'calendar_unallocated' => 'Calendar entries that look like jobs but aren’t set up',
         'not_invoiced' => 'Jobs not invoiced',
+        'income_missing' => 'Invoices overdue with no payment received',
+        'payment_missing' => 'Paid bookings with no payment in your statements',
         'cost_no_job' => 'Business costs on a job’s days, not linked to it',
         'undecided_on_job_day' => 'Undecided payments on a job’s days',
         'stay_no_job' => 'Stays and journeys with no job',

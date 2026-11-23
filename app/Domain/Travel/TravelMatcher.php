@@ -55,6 +55,9 @@ final class TravelMatcher
         $jobCounts = array_count_values(array_filter(array_map(fn ($v) => $v['job']?->id, $verdicts)));
         arsort($jobCounts);
         $jobId = array_key_first($jobCounts);
+        if ($item->job_linked_by === 'you') {
+            $jobId = $item->work_job_id; // the job you linked it to (or none, if you unlinked it) is the one used
+        }
         $decision = match (true) {
             $review > 0 => 'review',
             $business === count($verdicts) => 'business',

@@ -26,7 +26,18 @@ const tone = (c: Check) =>
  * How an AI finding stood up to being checked again against its source. Click to see each check; "Re-check" runs
  * it again now (a scan or photo gets a second, independent read).
  */
-export function CheckBadge({ check, subject, className }: { check: Check | null; subject?: { type: string; id: number }; className?: string }) {
+export function CheckBadge({
+    check,
+    subject,
+    className,
+    full = false,
+}: {
+    check: Check | null;
+    subject?: { type: string; id: number };
+    className?: string;
+    /** Show passed checks too (on a document's own page). Elsewhere only what needs a look is shown. */
+    full?: boolean;
+}) {
     const [open, setOpen] = useState(false);
     const [busy, setBusy] = useState(false);
     const recheck = () =>
@@ -37,6 +48,7 @@ export function CheckBadge({ check, subject, className }: { check: Check | null;
             { preserveScroll: true, onStart: () => setBusy(true), onFinish: () => setBusy(false) },
         );
 
+    if (!full && (!check || !check.warn)) return null;
     if (!check) {
         return subject ? (
             <button

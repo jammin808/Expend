@@ -258,7 +258,8 @@ export default function JobFinder({
 }
 
 function CandidateCard({ c, jobs, onAdd }: { c: Candidate; jobs: JobOption[]; onAdd: () => void }) {
-    const [target, setTarget] = useState(c.options[0] ? String(c.options[0]) : '');
+    const first = c.options.find((id) => jobs.some((j) => j.id === id));
+    const [target, setTarget] = useState(first ? String(first) : '');
     const near = jobs.filter((j) => c.options.includes(j.id));
     const others = jobs.filter((j) => !c.options.includes(j.id));
 

@@ -76,7 +76,7 @@ class JobFinderTest extends TestCase
         $work = $this->event('Acme load in', '2025-05-14 07:00:00', '2025-05-14 19:00:00', 'Leeds Arena');
         $dentist = $this->event('Dentist', '2025-05-14 08:30:00', '2025-05-14 09:00:00');
         $mine = $this->event('Acme rehearsal', '2025-05-14 15:00:00', '2025-05-14 17:00:00');
-        app(JobFinder::class)->linkCalendar($mine, null, 'you', 'Not a job');
+        app(JobFinder::class)->markNotJob($mine);
 
         $result = $this->finder()->run('2025-26', false);
 
@@ -166,8 +166,9 @@ class JobFinderTest extends TestCase
         $a = $this->event('Maria @ Unit 3', '2025-08-04 09:00:00', '2025-08-04 11:00:00', 'Salford');
         $b = $this->event('Catch up with Sam', '2025-08-05 09:00:00', '2025-08-05 10:00:00', 'Media City');
         $this->ai->responses = [FakeAiClient::json(['entries' => [
-            ['i' => 0, 'work' => true, 'quote' => 'Unit 3', 'client' => 'Northern Lights'],
-            ['i' => 1, 'work' => true, 'quote' => 'camera rehearsal', 'client' => 'Someone Else'], // not in the entry: rejected
+            // Asked newest first: the 5 August entry, then the 4 August one.
+            ['i' => 0, 'work' => true, 'quote' => 'camera rehearsal', 'client' => 'Someone Else'], // not in the entry: rejected
+            ['i' => 1, 'work' => true, 'quote' => 'Unit 3', 'client' => 'Northern Lights'],
         ]])];
 
         $result = $this->finder()->run('2025-26');
@@ -335,5 +336,81 @@ class JobFinderTest extends TestCase
         $this->post('/calendar/not-job', ['key' => $other->key(), 'date' => '2025-07-01'])->assertSessionHas('success');
         $this->assertNull(CalendarJobLink::query()->where('event_key', $other->key())->value('work_job_id'));
         $this->get('/connections?job='.$expo->id)->assertOk();
+    }
+
+    public function test_review_fixes_keep_your_decisions_and_need_evidence(): void
+    {
+        $client = Client::query()->create(['name' => 'Acme Events Ltd']);
+        $gala = WorkJob::query()->create(['title' => 'Spring Gala', 'client_id' => $client->id, 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14']);
+        $other = WorkJob::query()->create(['title' => 'Other show', 'client_id' => $client->id, 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-15']);
+
+        // A re-read never undoes your unlink.
+        $doc = app(DocumentIntake::class)->store("From: a@acme.example\r\nSubject: Crew\r\n\r\nAcme Events crew for the Spring Gala on 14 May 2025.\r\n", 'c.eml', 'message/rfc822', 'upload', ['work_job_id' => $gala->id]);
+        app(JobFinder::class)->linkDocument($doc, null, 'you');
+        $this->assertSame([null, [$gala->id]], [$doc->fresh()->work_job_id, $doc->fresh()->job_rejected]);
+        $doc = app(DocumentReader::class)->save($doc->fresh(), ['kind' => 'job_invite', 'summary' => 'x', 'job_link' => ['job_id' => $gala->id, 'reason' => 'r'], 'new_job' => null, 'facts' => [], 'po' => null, 'receipt' => null],
+            [['id' => $gala->id]], 'm');
+        $this->assertNull($doc->work_job_id);
+
+        // The finder doesn't link a document on what the AI read alone: the document has to back it.
+        $thin = app(DocumentIntake::class)->store("From: a@acme.example\r\nSubject: Hello\r\n\r\nHi, details to follow.\r\n", 't.eml', 'message/rfc822', 'upload');
+        $thin->update(['status' => 'extracted', 'kind' => 'job_invite', 'extraction' => ['new_job' => ['title' => 'Spring Gala', 'client' => 'Acme Events Ltd', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14', 'verified' => false]]]);
+        $this->finder()->run('2025-26', false);
+        $this->assertNull($thin->fresh()->work_job_id);
+
+        // An untitled group doesn't stop the run; calendar times are UK time.
+        $this->event('', '2025-08-01 06:30:00', '2025-08-01 18:00:00', 'NEC Hall 5, B40 1NT');
+        $po = app(DocumentIntake::class)->store("From: x@y.example\r\nSubject: PO\r\n\r\nPO 99881 for 9 September 2025\r\n", 'p.eml', 'message/rfc822', 'upload');
+        $po->update(['status' => 'extracted', 'kind' => 'po', 'extraction' => ['po' => ['po_number' => '99881', 'lines' => []]]]);
+        $po->facts()->create(['field' => 'start_date', 'label' => 'Date', 'value' => '9 Sep', 'on_date' => '2025-09-09', 'quote' => '9 September 2025', 'verified' => true]);
+        $this->event('Load in: Autumn expo', '2025-09-08 06:30:00', '2025-09-08 18:00:00', 'ExCeL London');
+        $this->finder()->run('2025-26', false);
+        $untitled = JobCandidate::query()->where('title', 'like', 'Possible job%')->first();
+        $this->assertNotNull($untitled);
+        $expo = JobCandidate::query()->where('title', 'Load in: Autumn expo')->sole();
+        $this->assertSame('07:30', $expo->start_time, '06:30 UTC is 07:30 in a UK summer');
+
+        // Ids are stable between runs, and a run for another year doesn't remove them.
+        $id = $expo->id;
+        $this->finder()->run('2024-25', false);
+        $this->finder()->run('2025-26', false);
+        $this->assertSame($id, JobCandidate::query()->where('title', 'Load in: Autumn expo')->value('id'));
+
+        // A moved one-off entry keeps its key, so "not a job" holds.
+        $dismissed = $this->event('Tech day maybe', '2025-10-01 09:00:00', '2025-10-01 17:00:00', 'Studio 2');
+        app(JobFinder::class)->markNotJob($dismissed);
+        $dismissed->update(['starts_at' => '2025-10-01 09:30:00']);
+        $this->finder()->run('2025-26', false);
+        $this->assertFalse(collect(JobCandidate::query()->pluck('sources')->flatten(1))->contains('key', 'cal:'.$dismissed->key()));
+
+        // "Not this job": unlinked from one job, it can still go to another, never back.
+        $entry = $this->event('Acme crew call', '2025-05-14 08:00:00', '2025-05-14 20:00:00', 'Leeds');
+        app(JobFinder::class)->linkCalendar($entry, $gala, 'rules');
+        $this->actingAs(User::factory()->create())->post("/jobs/{$gala->id}/links", ['type' => 'calendar', 'key' => $entry->key(), 'date' => '2025-05-14', 'action' => 'unlink']);
+        $link = CalendarJobLink::query()->where('event_key', $entry->key())->sole();
+        $this->assertSame([null, false, [$gala->id]], [$link->work_job_id, $link->not_job, $link->rejected]);
+        app(JobFinder::class)->linkCalendar($entry, $gala, 'rules');
+        $this->assertNull($link->fresh()->work_job_id, 'Never back to the job you unlinked it from');
+        app(JobFinder::class)->linkCalendar($entry, $other, 'rules');
+        $this->assertSame($other->id, $link->fresh()->work_job_id, 'but another job is still possible');
+    }
+
+    public function test_po_numbers_only_count_as_whole_references(): void
+    {
+        $this->assertTrue(Verifier::poInText('Purchase order PO-4500123 attached', '4500123'));
+        $this->assertFalse(Verifier::poInText('Call 0161 450 0123', '4500123'));
+        $this->assertFalse(Verifier::poInText('Total £1,512.00', '512'));
+        $this->assertTrue(Verifier::poInText('ref PO 7781.', 'PO7781'));
+        $job = WorkJob::query()->create(['title' => 'Show', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14', 'po_number' => '4500123']);
+        $this->assertFalse(Verifier::jobEvidence('Call 0161 450 0123', $job, '4500123')['ok'], 'An AI-read PO number only counts if it is in the text');
+    }
+
+    public function test_your_link_on_a_stay_is_the_job_its_payment_is_split_to(): void
+    {
+        $a = WorkJob::query()->create(['title' => 'Job A', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14']);
+        WorkJob::query()->create(['title' => 'Job B', 'starts_on' => '2025-05-15', 'ends_on' => '2025-05-15']);
+        $stay = TravelItem::query()->create(['kind' => 'hotel', 'provider' => 'Premier Inn', 'status' => 'booked', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-15', 'source' => 'manual', 'evidence' => []]);
+        app(JobFinder::class)->linkTravel($stay, $a, 'you');
+        $this->assertSame($a->id, $stay->fresh()->suggestion['job_id']);
     }
 }
