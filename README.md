@@ -92,6 +92,7 @@ One-time setup:
    `APP_ENV=production`, `APP_DEBUG=false`, `APP_URL=https://expenses.rohleder.tech`,
    `APP_KEY=` (from `php artisan key:generate --show`), `DB_CONNECTION=mysql`, `DB_HOST=127.0.0.1`,
    `DB_DATABASE`/`DB_USERNAME`/`DB_PASSWORD`, `SESSION_SECURE_COOKIE=true`, `SESSION_SAME_SITE=strict`,
+   `SETUP_CODE=` (a long random code; the sign-up page only opens with it, at `/register?code=…`),
    and optionally `HEARTBEAT_URL`. Then `chmod 600` it. Never commit it.
 5. **Backup key.** On *your own computer*:
    ```bash
@@ -108,6 +109,14 @@ One-time setup:
    ```
    Each deploy goes into a new release folder, backs up the database, runs migrations, then switches over
    and checks `/up`. If the check fails it switches back.
+
+   **Without SSH** (for example through Hostinger's file upload API): upload into one new folder inside
+   `public_html` a `.htaccess` containing `Require all denied` (first, and check the folder answers 403),
+   then `RELEASE` (the release name), `release.tar.gz` (the built app), `deploy/install-uploaded.sh` and, on
+   the first install only, the `.env` as `env`. Run the script once with a temporary cron job
+   (`/bin/bash ~/domains/expenses.rohleder.tech/public_html/<folder>/install-uploaded.sh`), read the cron
+   output, then delete the cron job. It does the same steps as `deploy.sh` and also sets up the document
+   root below.
 7. **Document root.** So that only `public/` is reachable:
    ```bash
    cd ~/domains/expenses.rohleder.tech
@@ -125,8 +134,8 @@ One-time setup:
    mailbox in hPanel (for example `ledger@rohleder.tech`), enter its IMAP details and your own sending
    addresses, and optionally add a Gmail filter that forwards POs, call sheets and production packs to it.
    For Telegram, create a bot with @BotFather, paste its token, then send the bot the pairing code shown.
-10. **First visit.** Open the site, create your account (sign-up then closes for good), complete Setup,
-   and turn on two-factor sign-in under Settings › Security.
+10. **First visit.** Open `https://expenses.rohleder.tech/register?code=<SETUP_CODE>`, create your account
+   (sign-up then closes for good), complete Setup, and turn on two-factor sign-in under Settings › Security.
 
 ## Getting your statements
 
