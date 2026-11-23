@@ -11,6 +11,8 @@ use App\Models\Invoice;
 use App\Models\Setting;
 use App\Models\WorkJob;
 use App\Support\Money;
+use Brick\Math\BigDecimal;
+use Brick\Math\RoundingMode;
 use Carbon\CarbonImmutable;
 use Dompdf\Dompdf;
 use Dompdf\Options;
@@ -90,13 +92,13 @@ final class InvoiceService
             $invoice->lines()->delete();
             foreach (array_values($lines) as $i => $line) {
                 $unit = Money::parse((string) $line['unit_price']);
-                $qty = round((float) $line['quantity'], 2);
-                if ($unit === null || $qty <= 0 || trim($line['description']) === '') {
-                    throw new InvalidArgumentException('Line '.($i + 1).' needs a description, a quantity and a price.');
+                $qty = self::quantity($line['quantity'] ?? null);
+                if ($unit === null || $qty === null || trim($line['description']) === '') {
+                    throw new InvalidArgumentException('Line '.($i + 1).' needs a description, a quantity (up to 2 decimals) and a price.');
                 }
                 $invoice->lines()->create([
-                    'description' => $line['description'], 'quantity' => $qty, 'unit_price_minor' => $unit,
-                    'amount_minor' => (int) round($qty * $unit), 'source_quote' => $line['source_quote'] ?? null, 'sort' => $i,
+                    'description' => $line['description'], 'quantity' => (string) $qty, 'unit_price_minor' => $unit,
+                    'amount_minor' => self::lineAmount($qty, $unit), 'source_quote' => $line['source_quote'] ?? null, 'sort' => $i,
                 ]);
             }
             $this->recalculate($invoice);
@@ -195,5 +197,23 @@ final class InvoiceService
         if ($invoice->status !== 'draft') {
             throw new InvalidArgumentException('This invoice has been issued and can’t be changed. Void it and issue a new one.');
         }
+    }
+
+    /** A quantity as an exact decimal with at most 2 places, or null if it isn't a positive number. */
+    public static function quantity(mixed $value): ?BigDecimal
+    {
+        $text = trim((string) $value);
+        if (! preg_match('/^\d{1,7}(\.\d{1,2})?$/', $text)) {
+            return null;
+        }
+        $qty = BigDecimal::of($text)->toScale(2);
+
+        return $qty->isPositive() ? $qty : null;
+    }
+
+    /** Quantity × unit price in exact decimal arithmetic, rounded half up to whole pence: no floating point. */
+    public static function lineAmount(BigDecimal|string|int $quantity, int $unitMinor): int
+    {
+        return BigDecimal::of((string) $quantity)->multipliedBy($unitMinor)->toScale(0, RoundingMode::HALF_UP)->toInt();
     }
 }

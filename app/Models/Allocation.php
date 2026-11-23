@@ -28,7 +28,14 @@ class Allocation extends Model
 
     protected $casts = [
         'amount_pence' => 'integer', 'business_use_pct' => 'integer', 'is_manual' => 'boolean', 'confirmed_at' => 'datetime',
+        'voided_at' => 'datetime',
     ];
+
+    protected static function booted(): void
+    {
+        // Decisions on undone transactions are voided, not deleted: kept for the record, counted nowhere.
+        static::addGlobalScope('not_voided', fn ($query) => $query->whereNull('allocations.voided_at'));
+    }
 
     public function transaction(): BelongsTo
     {

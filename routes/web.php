@@ -74,6 +74,9 @@ Route::middleware(['auth'])->group(function () {
     Route::post('imports/commit', [ImportController::class, 'commit'])->name('imports.commit');
     Route::post('imports/cancel', [ImportController::class, 'cancel'])->name('imports.cancel');
     Route::post('imports/{batch}/revert', [ImportController::class, 'revert'])->name('imports.revert');
+    Route::post('imports/{batch}/accept', [ImportController::class, 'accept'])->name('imports.accept');
+    Route::post('imports/{batch}/discard', [ImportController::class, 'discard'])->name('imports.discard');
+    Route::post('imports/{batch}/restore', [ImportController::class, 'restore'])->name('imports.restore');
 
     Route::get('accounts', [AccountController::class, 'index'])->name('accounts.index');
     Route::post('accounts', [AccountController::class, 'store'])->name('accounts.store');

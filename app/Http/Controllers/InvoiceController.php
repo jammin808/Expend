@@ -6,6 +6,7 @@ use App\Domain\Invoices\InvoiceService;
 use App\Models\Client;
 use App\Models\Invoice;
 use App\Models\WorkJob;
+use Brick\Math\BigDecimal;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -35,7 +36,7 @@ class InvoiceController extends Controller
                 'po_total_minor' => $invoice->po_total_minor, 'document' => $invoice->document ? ['id' => $invoice->document->id, 'name' => $invoice->document->original_name] : null,
                 'void_reason' => $invoice->void_reason,
                 'lines' => $invoice->lines->map(fn ($l) => [
-                    'description' => $l->description, 'quantity' => (string) $l->quantity, 'unit_price' => number_format($l->unit_price_minor / 100, 2, '.', ''),
+                    'description' => $l->description, 'quantity' => (string) $l->quantity, 'unit_price' => (string) BigDecimal::ofUnscaledValue($l->unit_price_minor, 2),
                     'amount_minor' => $l->amount_minor, 'source_quote' => $l->source_quote,
                 ]),
             ],

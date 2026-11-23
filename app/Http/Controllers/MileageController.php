@@ -10,6 +10,8 @@ use App\Models\TaxYear;
 use App\Models\Vehicle;
 use App\Models\WorkJob;
 use App\Support\UkTaxYear;
+use Brick\Math\BigDecimal;
+use Brick\Math\RoundingMode;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -92,7 +94,7 @@ class MileageController extends Controller
             $data['purpose'] = trim(($data['purpose'] ?? '').' (return trip)');
         }
         unset($data['return_trip']);
-        $data['miles'] = number_format((float) $data['miles'], 1, '.', '');
+        $data['miles'] = (string) BigDecimal::of(trim((string) $data['miles']))->toScale(1, RoundingMode::HALF_UP);
         $data['tax_year'] = UkTaxYear::fromDate($data['trip_on'])->label();
         $this->guardLocked($data['tax_year']);
 

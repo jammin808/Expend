@@ -31,8 +31,14 @@ class BankTransaction extends Model
         'original_amount_minor' => 'integer',
     ];
 
+    public const STATES = ['active', 'quarantined', 'reversed'];
+
     protected static function booted(): void
     {
+        // Only active rows count anywhere in the app. Quarantined and reversed rows are kept, and reached
+        // deliberately with withoutGlobalScope('active') (import review, undo and restore).
+        static::addGlobalScope('active', fn ($query) => $query->where('bank_transactions.state', 'active'));
+
         static::updating(function (BankTransaction $tx) {
             foreach (self::IMMUTABLE as $field) {
                 if ($tx->isDirty($field)) {

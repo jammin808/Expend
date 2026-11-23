@@ -7,6 +7,7 @@ use App\Domain\Import\Importer;
 use App\Domain\Import\ImportProfile;
 use App\Domain\Import\ProfileDetector;
 use App\Models\Account;
+use App\Models\BankTransaction;
 use App\Models\ImportBatch;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -47,7 +48,13 @@ class ImportController extends Controller
                 'id' => $b->id, 'account' => $b->account->name, 'file' => $b->original_filename, 'imported' => $b->imported_count,
                 'duplicates' => $b->duplicate_count, 'first' => $b->first_date?->format('Y-m-d'), 'last' => $b->last_date?->format('Y-m-d'),
                 'balance_check' => $b->balance_check, 'balance_notes' => $b->balance_check_notes, 'status' => $b->status,
-                'at' => $b->created_at->format('Y-m-d H:i'),
+                'review_note' => $b->review_note, 'at' => $b->created_at->format('Y-m-d H:i'),
+                // The first rows of a held statement, so you can see what you'd be accepting.
+                'held_rows' => $b->status === 'quarantined'
+                    ? BankTransaction::withoutGlobalScope('active')->where('import_batch_id', $b->id)->orderBy('id')->limit(15)
+                        ->get(['posted_on', 'description', 'amount_pence', 'balance_after_pence'])
+                        ->map(fn ($t) => ['date' => $t->posted_on->format('Y-m-d'), 'description' => $t->description, 'amount_pence' => $t->amount_pence, 'balance_pence' => $t->balance_after_pence])
+                    : [],
             ]),
             'preview' => $preview,
             'dateFormats' => ImportProfile::DATE_FORMATS,
@@ -104,10 +111,10 @@ class ImportController extends Controller
         @unlink($pending['path']);
         $request->session()->forget('import');
 
-        $message = "Imported {$batch->imported_count} transactions".($batch->duplicate_count ? ", skipped {$batch->duplicate_count} already imported" : '').'.';
-        if ($batch->balance_check === 'failed') {
-            return to_route('imports.index')->with('error', $message.' '.$batch->balance_check_notes);
+        if ($batch->status === 'quarantined') {
+            return to_route('imports.index')->with('error', "Held for review, not imported: {$batch->balance_check_notes} Check the statement below, then accept it with a reason or discard it.");
         }
+        $message = "Imported {$batch->imported_count} transactions".($batch->duplicate_count ? ", skipped {$batch->duplicate_count} already imported" : '').'.';
 
         return to_route('imports.index')->with('success', $message);
     }
@@ -124,15 +131,48 @@ class ImportController extends Controller
     public function revert(Request $request, ImportBatch $batch): RedirectResponse
     {
         $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
-        if ($batch->status === 'reverted') {
-            return back();
-        }
         try {
             $this->importer->revert($batch, $data['reason']);
         } catch (\RuntimeException $e) {
             return back()->with('error', $e->getMessage());
         }
 
-        return back()->with('success', "Removed the {$batch->imported_count} transactions from {$batch->original_filename}.");
+        return back()->with('success', "Undone: the {$batch->imported_count} transactions from {$batch->original_filename} no longer count. They're kept, and the import can be restored.");
+    }
+
+    public function accept(Request $request, ImportBatch $batch): RedirectResponse
+    {
+        $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
+        try {
+            $count = $this->importer->accept($batch, $data['reason']);
+        } catch (\RuntimeException $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
+        return back()->with('success', "Accepted: {$count} transactions imported.");
+    }
+
+    public function discard(Request $request, ImportBatch $batch): RedirectResponse
+    {
+        $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
+        try {
+            $this->importer->discard($batch, $data['reason']);
+        } catch (\RuntimeException $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
+        return back()->with('success', 'Discarded. Nothing from it counts; the rows are kept for the record.');
+    }
+
+    public function restore(Request $request, ImportBatch $batch): RedirectResponse
+    {
+        $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
+        try {
+            $count = $this->importer->restore($batch, $data['reason']);
+        } catch (\RuntimeException $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
+        return back()->with('success', "Restored {$count} transactions, with your decisions on them.");
     }
 }

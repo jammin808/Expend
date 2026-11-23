@@ -66,6 +66,8 @@ interface Props {
         balance_check: string;
         balance_notes: string | null;
         status: string;
+        review_note: string | null;
+        held_rows: { date: string; description: string; amount_pence: number; balance_pence: number | null }[];
         at: string;
     }[];
     preview: Preview | null;
@@ -397,42 +399,115 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                         <p className="text-muted-foreground text-sm">None yet.</p>
                     ) : (
                         <ul className="divide-y rounded-xl border text-sm">
-                            {batches.map((b) => (
-                                <li
-                                    key={b.id}
-                                    className={cn('flex flex-wrap items-center justify-between gap-3 p-3', b.status === 'reverted' && 'opacity-50')}
-                                >
-                                    <span className="min-w-0">
-                                        <span className="block truncate font-medium">{b.file}</span>
-                                        <span className="text-muted-foreground text-xs">
-                                            {b.account} · {day(b.first)} – {day(b.last)} · {b.imported} imported, {b.duplicates} skipped · {b.at}
-                                            {b.status === 'reverted' ? ' · removed' : ''}
-                                        </span>
-                                    </span>
-                                    <span className="flex items-center gap-3">
-                                        {b.balance_check === 'passed' && (
-                                            <CheckCircle2 className="size-4 text-emerald-600" aria-label="Balances added up" />
+                            {batches.map((b) => {
+                                const ask = (action: string, question: string) => {
+                                    const reason = window.prompt(question);
+                                    if (reason) router.post(`/imports/${b.id}/${action}`, { reason }, { preserveScroll: true });
+                                };
+                                const off = b.status === 'reverted' || b.status === 'discarded';
+                                return (
+                                    <li
+                                        key={b.id}
+                                        className={cn(
+                                            'space-y-2 p-3',
+                                            off && 'opacity-60',
+                                            b.status === 'quarantined' && 'border-l-4 border-l-amber-400 bg-amber-50/60 dark:bg-amber-950/20',
                                         )}
-                                        {b.balance_check === 'failed' && (
-                                            <AlertTriangle className="size-4 text-rose-600" aria-label={b.balance_notes ?? 'Balance mismatch'} />
+                                    >
+                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                            <span className="min-w-0">
+                                                <span className="block truncate font-medium">{b.file}</span>
+                                                <span className="text-muted-foreground text-xs">
+                                                    {b.account} · {day(b.first)} – {day(b.last)} · {b.imported}{' '}
+                                                    {b.status === 'quarantined' ? 'held' : 'imported'}, {b.duplicates} skipped · {b.at}
+                                                    {b.status === 'reverted' ? ' · undone (kept for the record)' : ''}
+                                                    {b.status === 'discarded' ? ' · discarded (kept for the record)' : ''}
+                                                </span>
+                                            </span>
+                                            <span className="flex flex-wrap items-center gap-2">
+                                                {b.balance_check === 'passed' && (
+                                                    <CheckCircle2 className="size-4 text-emerald-600" aria-label="Balances added up" />
+                                                )}
+                                                {b.balance_check === 'failed' && (
+                                                    <AlertTriangle
+                                                        className="size-4 text-rose-600"
+                                                        aria-label={b.balance_notes ?? 'Balance mismatch'}
+                                                    />
+                                                )}
+                                                {b.status === 'committed' && (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="ghost"
+                                                        onClick={() =>
+                                                            ask(
+                                                                'revert',
+                                                                `Undo this import? Its ${b.imported} transactions will stop counting but are kept, and can be restored. Say why (kept in the audit log).`,
+                                                            )
+                                                        }
+                                                    >
+                                                        <Undo2 /> Undo import
+                                                    </Button>
+                                                )}
+                                                {b.status === 'reverted' && (
+                                                    <Button
+                                                        size="sm"
+                                                        variant="ghost"
+                                                        onClick={() => ask('restore', 'Restore this import? Say why (kept in the audit log).')}
+                                                    >
+                                                        Restore
+                                                    </Button>
+                                                )}
+                                            </span>
+                                        </div>
+                                        {b.status === 'quarantined' && (
+                                            <div className="space-y-2 text-sm">
+                                                <p className="text-amber-800 dark:text-amber-300">
+                                                    Held for review, nothing counted yet: {b.balance_notes} A row may be missing, or the file may have
+                                                    been edited. Usually it's best to download the statement again and import that instead.
+                                                </p>
+                                                <table className="w-full text-xs">
+                                                    <tbody>
+                                                        {b.held_rows.map((r, i) => (
+                                                            <tr key={i} className="border-t">
+                                                                <td className="py-1 pr-2 whitespace-nowrap">{r.date}</td>
+                                                                <td className="py-1 pr-2">{r.description}</td>
+                                                                <td className="py-1 pr-2 text-right tabular-nums">{money(r.amount_pence)}</td>
+                                                                <td className="text-muted-foreground py-1 text-right tabular-nums">
+                                                                    {r.balance_pence !== null ? money(r.balance_pence) : ''}
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                                <div className="flex flex-wrap gap-2">
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() =>
+                                                            ask(
+                                                                'accept',
+                                                                'Accept this statement even though its balance doesn’t add up? Say why (kept in the audit log).',
+                                                            )
+                                                        }
+                                                    >
+                                                        Accept anyway
+                                                    </Button>
+                                                    <Button
+                                                        size="sm"
+                                                        variant="ghost"
+                                                        onClick={() => ask('discard', 'Discard this statement? Say why (kept in the audit log).')}
+                                                    >
+                                                        Discard
+                                                    </Button>
+                                                </div>
+                                            </div>
                                         )}
-                                        {b.status !== 'reverted' && (
-                                            <Button
-                                                size="sm"
-                                                variant="ghost"
-                                                onClick={() => {
-                                                    const reason = window.prompt(
-                                                        `Remove all ${b.imported} transactions from ${b.file}? Say why (kept in the audit log).`,
-                                                    );
-                                                    if (reason) router.post(`/imports/${b.id}/revert`, { reason });
-                                                }}
-                                            >
-                                                <Undo2 /> Undo import
-                                            </Button>
+                                        {b.review_note && b.status !== 'quarantined' && (
+                                            <p className="text-muted-foreground text-xs">{b.review_note}</p>
                                         )}
-                                    </span>
-                                </li>
-                            ))}
+                                    </li>
+                                );
+                            })}
                         </ul>
                     )}
                 </section>

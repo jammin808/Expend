@@ -5,6 +5,7 @@ namespace App\Domain\Ai;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\Grounding;
+use App\Domain\Invoices\InvoiceService;
 use App\Models\Document;
 use App\Models\DocumentFact;
 use App\Models\WorkJob;
@@ -93,7 +94,7 @@ final class DocumentReader
                 $check = Grounding::check($text, $status, (string) ($line['quote'] ?? ''), $line['amount_minor']);
                 $lines[] = [
                     'description' => mb_substr($line['description'], 0, 500),
-                    'quantity' => is_numeric($line['quantity'] ?? null) ? (float) $line['quantity'] : 1.0,
+                    'quantity' => (string) (InvoiceService::quantity(is_numeric($line['quantity'] ?? null) ? (string) $line['quantity'] : '1') ?? '1.00'),
                     'unit_price_minor' => is_int($line['unit_price_minor'] ?? null) ? $line['unit_price_minor'] : $line['amount_minor'],
                     'amount_minor' => $line['amount_minor'],
                     'quote' => (string) ($line['quote'] ?? ''),

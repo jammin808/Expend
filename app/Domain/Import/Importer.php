@@ -12,6 +12,7 @@ use App\Models\BankTransaction;
 use App\Models\ImportBatch;
 use App\Models\TaxYear;
 use App\Support\UkTaxYear;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
@@ -71,7 +72,11 @@ final class Importer
         $stored = 'imports/'.$sha.'.csv';
         Storage::disk('local')->put($stored, file_get_contents($path));
 
-        $batch = DB::transaction(function () use ($account, $preview, $sha, $stored, $originalName, $profile) {
+        // A statement whose running balance doesn't add up is held back: its rows are kept but count nowhere
+        // until you accept it (with a reason) or discard it.
+        $quarantine = $preview['balance']['status'] === 'failed';
+
+        $batch = DB::transaction(function () use ($account, $preview, $sha, $stored, $originalName, $profile, $quarantine) {
             $plan = $this->plan($account, $preview['rows']);
 
             $batch = ImportBatch::create([
@@ -86,6 +91,7 @@ final class Importer
                 'last_date' => $preview['last'],
                 'balance_check' => $preview['balance']['status'],
                 'balance_check_notes' => $preview['balance']['notes'],
+                'status' => $quarantine ? 'quarantined' : 'committed',
             ]);
 
             foreach ($plan['new'] as $index => $row) {
@@ -107,12 +113,14 @@ final class Importer
                     'raw' => $row->raw,
                     'fingerprint' => $row->fingerprint($account->id),
                     'occurrence' => $plan['occurrences'][$index],
+                    'state' => $quarantine ? 'quarantined' : 'active',
+                    'live' => $quarantine ? null : true,
                 ]);
             }
 
             $account->forceFill(['import_profile' => $profile->toArray()])->save();
 
-            AuditLog::record('import.committed', $batch, null, [
+            AuditLog::record($quarantine ? 'import.quarantined' : 'import.committed', $batch, null, [
                 'account' => $account->name, 'file' => $originalName, 'imported' => count($plan['new']),
                 'duplicates' => $plan['duplicates'], 'balance_check' => $preview['balance']['status'],
             ]);
@@ -120,16 +128,112 @@ final class Importer
             return $batch;
         });
 
-        // Your rules first, then transfer pairing for whatever is still undecided.
-        $this->suggester->suggestFor(BankTransaction::query()->where('import_batch_id', $batch->id)->get());
-        $this->pairer->pairAll();
+        if (! $quarantine) {
+            $this->afterImport($batch);
+        }
 
         return $batch;
     }
 
-    /** Undo an import: removes its transactions and their allocations, with an audit record. */
+    /** Your rules first, then transfer pairing for whatever is still undecided. */
+    private function afterImport(ImportBatch $batch): void
+    {
+        $this->suggester->suggestFor(BankTransaction::query()->where('import_batch_id', $batch->id)->get());
+        $this->pairer->pairAll();
+    }
+
+    /**
+     * Accept a held statement anyway, with your reason. Rows that have since been imported from another
+     * statement are left reversed rather than duplicated.
+     */
+    public function accept(ImportBatch $batch, string $reason): int
+    {
+        $this->assertStatus($batch, 'quarantined');
+        $rows = $this->rows($batch, 'quarantined');
+        $this->assertUnlocked($rows);
+
+        $activated = DB::transaction(function () use ($batch, $rows, $reason) {
+            $activated = 0;
+            foreach ($rows as $tx) {
+                $taken = BankTransaction::query()->where('account_id', $tx->account_id)->where('fingerprint', $tx->fingerprint)->where('occurrence', $tx->occurrence)->exists();
+                $tx->forceFill($taken ? ['state' => 'reversed', 'live' => null] : ['state' => 'active', 'live' => true])->saveQuietly();
+                $activated += $taken ? 0 : 1;
+            }
+            $batch->update(['status' => 'committed', 'imported_count' => $activated, 'review_note' => 'Accepted despite the balance check: '.$reason]);
+            AuditLog::record('import.accepted', $batch, ['status' => 'quarantined'], ['status' => 'committed', 'activated' => $activated], $reason);
+
+            return $activated;
+        });
+        $this->afterImport($batch);
+
+        return $activated;
+    }
+
+    /** Discard a held statement. Its rows are kept, reversed, for the record. */
+    public function discard(ImportBatch $batch, string $reason): void
+    {
+        $this->assertStatus($batch, 'quarantined');
+        DB::transaction(function () use ($batch, $reason) {
+            $count = BankTransaction::withoutGlobalScope('active')->where('import_batch_id', $batch->id)->where('state', 'quarantined')
+                ->update(['state' => 'reversed', 'live' => null]);
+            $batch->update(['status' => 'discarded', 'review_note' => $reason]);
+            AuditLog::record('import.discarded', $batch, ['status' => 'quarantined'], ['status' => 'discarded', 'rows_kept_reversed' => $count], $reason);
+        });
+    }
+
+    /** Bring an undone import back: its rows and your decisions on them, except rows imported again since. */
+    public function restore(ImportBatch $batch, string $reason): int
+    {
+        $this->assertStatus($batch, 'reverted');
+        $rows = $this->rows($batch, 'reversed');
+        $this->assertUnlocked($rows);
+
+        return DB::transaction(function () use ($batch, $rows, $reason) {
+            $restored = 0;
+            foreach ($rows as $tx) {
+                if (BankTransaction::query()->where('account_id', $tx->account_id)->where('fingerprint', $tx->fingerprint)->where('occurrence', $tx->occurrence)->exists()) {
+                    continue; // imported again from another statement since: that copy stays
+                }
+                $tx->forceFill(['state' => 'active', 'live' => true])->saveQuietly();
+                Allocation::withoutGlobalScope('not_voided')->where('bank_transaction_id', $tx->id)->whereNotNull('voided_at')->update(['voided_at' => null]);
+                $restored++;
+            }
+            $batch->update(['status' => 'committed', 'review_note' => 'Restored: '.$reason]);
+            AuditLog::record('import.restored', $batch, ['status' => 'reverted'], ['status' => 'committed', 'restored' => $restored], $reason);
+
+            return $restored;
+        });
+    }
+
+    /** @return Collection<int, BankTransaction> */
+    private function rows(ImportBatch $batch, string $state)
+    {
+        return BankTransaction::withoutGlobalScope('active')->where('import_batch_id', $batch->id)->where('state', $state)->orderBy('id')->get();
+    }
+
+    private function assertStatus(ImportBatch $batch, string $status): void
+    {
+        if ($batch->status !== $status) {
+            throw new RuntimeException("This import is {$batch->status}, so that can't be done.");
+        }
+    }
+
+    private function assertUnlocked($rows): void
+    {
+        $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
+        $touched = $rows->pluck('tax_year')->unique()->intersect($locked);
+        if ($touched->isNotEmpty()) {
+            throw new RuntimeException('This import includes transactions in a locked tax year ('.$touched->implode(', ').'). Unlock it first.');
+        }
+    }
+
+    /**
+     * Undo an import. Nothing is deleted: its transactions are reversed and your decisions on them voided, so
+     * they count nowhere but stay on record, and the import can be restored.
+     */
     public function revert(ImportBatch $batch, string $reason): void
     {
+        $this->assertStatus($batch, 'committed');
         $lockedYears = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
         $touched = $batch->transactions()->whereIn('tax_year', $lockedYears)->distinct()->pluck('tax_year');
         if ($touched->isNotEmpty()) {
@@ -139,12 +243,11 @@ final class Importer
         DB::transaction(function () use ($batch, $reason) {
             $ids = $batch->transactions()->pluck('id');
             $confirmed = Allocation::query()->whereIn('bank_transaction_id', $ids)->whereNotNull('confirmed_at')->count();
-            BankTransaction::query()->whereIn('transfer_pair_id', $ids)->update(['transfer_pair_id' => null]);
-            Allocation::query()->whereIn('bank_transaction_id', $ids)->delete();
-            BankTransaction::query()->whereIn('id', $ids)->update(['transfer_pair_id' => null]);
-            BankTransaction::query()->whereIn('id', $ids)->delete();
-            $batch->update(['status' => 'reverted']);
-            AuditLog::record('import.reverted', $batch, ['transactions' => $ids->count(), 'confirmed_decisions_removed' => $confirmed], null, $reason);
+            BankTransaction::withoutGlobalScope('active')->whereIn('transfer_pair_id', $ids)->update(['transfer_pair_id' => null]);
+            Allocation::query()->whereIn('bank_transaction_id', $ids)->update(['voided_at' => now()]);
+            BankTransaction::withoutGlobalScope('active')->whereIn('id', $ids)->update(['transfer_pair_id' => null, 'state' => 'reversed', 'live' => null]);
+            $batch->update(['status' => 'reverted', 'review_note' => $reason]);
+            AuditLog::record('import.reverted', $batch, ['transactions' => $ids->count(), 'confirmed_decisions_voided' => $confirmed], null, $reason);
         });
     }
 

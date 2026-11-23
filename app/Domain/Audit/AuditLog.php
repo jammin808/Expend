@@ -5,6 +5,7 @@ namespace App\Domain\Audit;
 use App\Models\AuditEvent;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Tamper-evident, append-only record of every change: who, what, when, why, before and after.
@@ -21,7 +22,25 @@ final class AuditLog
     ): AuditEvent {
         $type = $subject instanceof Model ? class_basename($subject) : $subject;
         $id = $subject instanceof Model ? $subject->getKey() : null;
-        $prev = AuditEvent::query()->orderByDesc('id')->value('hash');
+
+        // One writer at a time: the chain head row is locked until this write (and any surrounding
+        // transaction) commits, so two processes can never both chain onto the same previous event.
+        return DB::transaction(function () use ($action, $type, $id, $before, $after, $reason, $actor) {
+            $head = DB::table('audit_heads')->where('id', 1)->lockForUpdate()->first();
+            if (! $head) {
+                DB::table('audit_heads')->insertOrIgnore(['id' => 1, 'hash' => null, 'event_id' => null, 'created_at' => now(), 'updated_at' => now()]);
+                $head = DB::table('audit_heads')->where('id', 1)->lockForUpdate()->first();
+            }
+            $event = self::make($action, $type, $id, $before, $after, $reason, $actor, $head->hash);
+            $event->save();
+            DB::table('audit_heads')->where('id', 1)->update(['hash' => $event->hash, 'event_id' => $event->id, 'updated_at' => now()]);
+
+            return $event;
+        });
+    }
+
+    private static function make(string $action, string $type, mixed $id, ?array $before, ?array $after, ?string $reason, string $actor, ?string $prev): AuditEvent
+    {
         $at = Carbon::now()->utc()->format('Y-m-d H:i:s');
 
         $event = new AuditEvent([
@@ -37,7 +56,6 @@ final class AuditLog
             'prev_hash' => $prev,
         ]);
         $event->hash = self::hashFor($event);
-        $event->save();
 
         return $event;
     }
@@ -65,13 +83,20 @@ final class AuditLog
     public static function verify(): array
     {
         $prev = null;
+        $last = null;
         $checked = 0;
         foreach (AuditEvent::query()->orderBy('id')->cursor() as $event) {
             if ($event->prev_hash !== $prev || self::hashFor($event) !== $event->hash) {
                 return ['ok' => false, 'checked' => $checked, 'broken_at' => $event->id];
             }
             $prev = $event->hash;
+            $last = $event->id;
             $checked++;
+        }
+        // The head must point at the last event: a deleted tail would otherwise go unnoticed.
+        $head = DB::table('audit_heads')->where('id', 1)->first();
+        if ($head && $head->hash !== $prev) {
+            return ['ok' => false, 'checked' => $checked, 'broken_at' => (int) ($head->event_id ?? ($last ?? 0))];
         }
 
         return ['ok' => true, 'checked' => $checked, 'broken_at' => null];

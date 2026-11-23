@@ -192,8 +192,8 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | Table | Purpose |
 |---|---|
 | `accounts` | Bank and card accounts: type, last four digits only |
-| `import_batches` | File hash, import profile, period covered, opening/closing balance, balance-check result, status. "Undo this import" reverses a whole batch |
-| `bank_transactions` | Raw, immutable rows: account, batch, posting date, `amount_pence`, raw description, balance after, fingerprint, occurrence |
+| `import_batches` | File hash, import profile, period covered, opening/closing balance, balance-check result, status (committed, quarantined, reverted, discarded), review note. A failed balance check quarantines the batch until accepted with a reason or discarded. "Undo this import" marks the batch's rows reversed and voids their allocations (nothing is deleted) and can be restored |
+| `bank_transactions` | Raw, immutable rows: account, batch, posting date, `amount_pence`, raw description, balance after, fingerprint, occurrence, state (active, quarantined, reversed). Only active rows count anywhere; the duplicate check applies to active rows only, so a reversed statement can be imported again |
 | `allocations` | Explains a transaction: type (`business_expense`, `business_income`, `personal`, `transfer`, `drawings`, `capital_introduced`, `refund`, `loan`, `tax_payment`), HMRC category, job, `amount_pence`, business-use %, `vat_pence`, status (`suggested`/`confirmed`), decided by (`you`, `rule`, `matcher`, `ai`), `manual` flag (you set or changed it), confirmed at, reason, rule |
 | `suggestions` | Every suggestion ever made, from any source (rule, matcher, AI), with its confidence and reasons, and whether you accepted, changed or rejected it. Feeds the accuracy figures and rule learning |
 | `documents` | Receipts, statements, invoice PDFs: SHA-256, MIME type, size, private path; linked to transactions, allocations or jobs |

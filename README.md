@@ -21,7 +21,11 @@ in [`docs/PLAN.md`](docs/PLAN.md).
 - **Imports**: Starling, Amex and Capital One CSVs recognised automatically; any other bank by mapping its
   columns once. Re-importing or overlapping statements never duplicates. Running balances are checked.
   Card-bill payments are paired as transfers so nothing is counted twice; HMRC payments are suggested as
-  tax payments, never expenses.
+  tax payments, never expenses. A statement whose running balance doesn't add up is **held for review**: its
+  rows are kept but count nowhere (no Inbox, totals or tax) until you accept it with a reason or discard it.
+  Undoing an import never deletes anything: its rows and your decisions are kept, marked reversed, and the
+  import can be restored. Invoice lines use exact decimal arithmetic (no floating point), and every history
+  entry is chained through a locked head so simultaneous writes can't fork it and a removed entry is caught.
 - **Jobs** with income, costs, mileage and profit; purchases such as equipment need no job.
 - **Mileage** at each year's HMRC rate (45p a mile before 6 April 2026, 55p from 2026-27, 25p after
   10,000 miles), counted as a travel expense for the job.
@@ -94,7 +98,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 128 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 134 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint

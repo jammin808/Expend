@@ -10,7 +10,7 @@ class ImportBatch extends Model
 {
     protected $fillable = [
         'account_id', 'original_filename', 'file_sha256', 'stored_path', 'row_count', 'imported_count',
-        'duplicate_count', 'first_date', 'last_date', 'balance_check', 'balance_check_notes', 'status',
+        'duplicate_count', 'first_date', 'last_date', 'balance_check', 'balance_check_notes', 'status', 'review_note',
     ];
 
     protected $casts = ['first_date' => 'date', 'last_date' => 'date'];
