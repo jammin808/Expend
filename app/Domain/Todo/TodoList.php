@@ -5,6 +5,7 @@ namespace App\Domain\Todo;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\RuleLearner;
+use App\Domain\Matching\OwnAccounts;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Document;
@@ -30,7 +31,7 @@ final class TodoList
 {
     public const GROUPS = [
         'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'checks' => 'Failed checks', 'deadline' => 'Tax return',
-        'invoice' => 'Invoices to send', 'jobs' => 'Possible jobs', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
+        'invoice' => 'Invoices to send', 'jobs' => 'Possible jobs', 'transfers' => 'Transfers between your accounts', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
         'no_po' => 'Jobs with no PO', 'missing' => 'Payments missing from statements', 'documents' => 'Documents held',
     ];
 
@@ -122,8 +123,18 @@ final class TodoList
                 '/connections?year='.UkTaxYear::fromDate($c->starts_on)->label(), [self::action('cand_add', $c->id, 'Add as a job'), self::action('cand_dismiss', $c->id, 'Not a job', 'ghost')]);
         }
 
+        // Money moving between your own accounts, suggested by the matcher: confirm them all in one go.
+        $moves = self::suggestedTransfers();
+        if ($moves['count'] > 0) {
+            $add('transfers', 2, 'transfers', 'Confirm '.$moves['count'].' '.($moves['count'] === 1 ? 'transfer' : 'transfers').' between your accounts',
+                Money::format($moves['pence']).' moved between your own accounts (card bills, top-ups, savings, your own name). They aren’t spending or income, so they don’t change your tax.',
+                '/transactions?kind=transfer&status=suggested', [self::action('transfers_ok', 0, 'Confirm all')]);
+            $counts['transfers'] = $moves['count'];
+        }
+
         // Payments to decide: suggestions first (one tap to accept), then the rest.
         $txs = BankTransaction::query()->with(['allocations.category', 'allocations.job'])->whereIn('review_status', ['suggested', 'unreviewed'])
+            ->whereDoesntHave('allocations', fn ($a) => $a->where('kind', 'transfer')->whereNull('confirmed_at')->where('decided_by', 'matcher'))
             ->orderByRaw("CASE WHEN review_status = 'suggested' THEN 0 ELSE 1 END")->orderByDesc('posted_on')->limit($perGroup)->get();
         foreach ($txs as $t) {
             $s = $t->allocations->first();
@@ -131,10 +142,11 @@ final class TodoList
             $add('payments', 2, 'tx:'.$t->id, ($t->counterparty ?: $t->description), $t->effectiveDate()->format('j M Y').($suggestion ? ' · suggested: '.$suggestion : ''), '/inbox',
                 array_values(array_filter([$suggestion ? self::action('tx_accept', $t->id, 'Accept') : null, self::action('tx_personal', $t->id, 'Personal', 'ghost')])), ['amount' => $t->amount_pence]);
         }
-        $counts['payments'] = BankTransaction::query()->whereIn('review_status', ['suggested', 'unreviewed'])->count();
+        $counts['payments'] = BankTransaction::query()->whereIn('review_status', ['suggested', 'unreviewed'])
+            ->whereDoesntHave('allocations', fn ($a) => $a->where('kind', 'transfer')->whereNull('confirmed_at')->where('decided_by', 'matcher'))->count();
 
         // The same amount to the same merchant twice in a day (£20 or more): charged twice?
-        $dupes = BankTransaction::query()->where('amount_pence', '<=', -2000)->whereNull('transfer_pair_id')
+        $dupes = OwnAccounts::scopeNotTransfers(BankTransaction::query())->where('amount_pence', '<=', -2000)->whereNull('transfer_pair_id')
             ->select('account_id', 'merchant_key', 'amount_pence', 'posted_on')->selectRaw('COUNT(*) as n, MIN(id) as first_id')
             ->groupBy('account_id', 'merchant_key', 'amount_pence', 'posted_on')->havingRaw('COUNT(*) > 1')->orderByDesc('posted_on')->limit(50)->get();
         foreach ($dupes as $d) {
@@ -222,5 +234,17 @@ final class TodoList
             'calendar_link' => ['Check a calendar link', '/jobs/finder'],
             default => [null, null],
         };
+    }
+
+    /** Transfers the matcher suggested and you haven't confirmed. @return array{count:int, pence:int, ids:list<int>} */
+    public static function suggestedTransfers(): array
+    {
+        $txs = BankTransaction::query()->where('review_status', 'suggested')
+            ->whereHas('allocations', fn ($a) => $a->where('kind', 'transfer')->whereNull('confirmed_at')->where('decided_by', 'matcher'))
+            ->whereDoesntHave('allocations', fn ($a) => $a->where('kind', '!=', 'transfer'))
+            ->whereNotIn('tax_year', TaxYear::query()->whereNotNull('locked_at')->pluck('label'))
+            ->get(['id', 'amount_pence']);
+
+        return ['count' => $txs->count(), 'pence' => (int) $txs->where('amount_pence', '<', 0)->sum(fn ($t) => -$t->amount_pence), 'ids' => $txs->pluck('id')->all()];
     }
 }

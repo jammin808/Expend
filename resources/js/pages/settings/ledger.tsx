@@ -11,9 +11,10 @@ import { Head, Link, router, useForm } from '@inertiajs/react';
 interface Props {
     settings: Record<string, unknown>;
     calendar: { events: number; synced: string | null };
+    own: { names: string[]; saved_names: string[]; other_accounts: string[] };
 }
 
-export default function LedgerSettings({ settings, calendar }: Props) {
+export default function LedgerSettings({ settings, calendar, own }: Props) {
     const form = useForm({
         home_postcode: (settings.home_postcode as string) ?? '',
         scottish_taxpayer: !!settings.scottish_taxpayer,
@@ -24,6 +25,8 @@ export default function LedgerSettings({ settings, calendar }: Props) {
         mileage_threshold_scope: (settings.mileage_threshold_scope as string) ?? 'all_vehicles',
         calendar_ics_url: '',
         clear_calendar: false as boolean,
+        own_names: (own.saved_names.length ? own.saved_names : own.names).join('\n'),
+        own_other_accounts: own.other_accounts.join('\n'),
     });
 
     return (
@@ -48,6 +51,40 @@ export default function LedgerSettings({ settings, calendar }: Props) {
                                 <Checkbox checked={form.data.scottish_taxpayer} onCheckedChange={(v) => form.setData('scottish_taxpayer', !!v)} />
                                 Scottish taxpayer (turns off the estimate)
                             </label>
+                        </div>
+                    </section>
+
+                    <section className="space-y-4">
+                        <HeadingSmall
+                            title="Your names and accounts"
+                            description="Money moving between your own accounts isn’t spending or income. Payments to or from these names, and lines naming these accounts, are treated as transfers and left out of every total. Your imported accounts are recognised already."
+                        />
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="space-y-1.5">
+                                <Label htmlFor="own_names">Names you go by on statements</Label>
+                                <textarea
+                                    id="own_names"
+                                    rows={3}
+                                    className="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
+                                    placeholder={'One per line, e.g.\nAlex Smith'}
+                                    value={form.data.own_names}
+                                    onChange={(e) => form.setData('own_names', e.target.value)}
+                                />
+                                <p className="text-muted-foreground text-xs">
+                                    Initials and titles are matched too (“A Smith”, “Mr A J Smith”); someone else with your surname isn’t.
+                                </p>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="own_other_accounts">Other accounts of yours that aren’t imported</Label>
+                                <textarea
+                                    id="own_other_accounts"
+                                    rows={3}
+                                    className="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
+                                    placeholder={'One per line, as it appears on statements, e.g.\nNationwide savings\nMonzo'}
+                                    value={form.data.own_other_accounts}
+                                    onChange={(e) => form.setData('own_other_accounts', e.target.value)}
+                                />
+                            </div>
                         </div>
                     </section>
 

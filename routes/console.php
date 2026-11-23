@@ -7,6 +7,7 @@ use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Mail\MailboxFetcher;
+use App\Domain\Matching\TransferPairer;
 use App\Domain\Telegram\Telegram;
 use App\Domain\Verification\Verifier;
 use App\Jobs\FindJobs;
@@ -132,6 +133,12 @@ Artisan::command('ledger:reset-link', function () {
 })->purpose('Print a one-time password reset link for the owner (for when email can’t be sent)');
 
 // One cron entry on the server runs all of these: * * * * * php artisan schedule:run
+Artisan::command('ledger:transfers', function (TransferPairer $pairer) {
+    $pairs = $pairer->pairAll();
+    $one = $pairer->suggestOneSided();
+    $this->info("Paired {$pairs} transfers; suggested {$one} more from your names and accounts.");
+})->purpose('Find money moving between your own accounts, so it is never counted as spending or income');
+
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();
 Schedule::command('ledger:verify-audit')->dailyAt('03:10');
 Schedule::command('ledger:fetch-email')->everyFiveMinutes()->withoutOverlapping();
@@ -145,6 +152,7 @@ Schedule::call(function () {
 Schedule::command('ledger:telegram-digest')->weeklyOn(1, '08:47')->timezone('Europe/London');
 Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('Europe/London');
 // The job finder and the double-check of AI findings, every night; scans get a few second reads a night.
+Schedule::command('ledger:transfers')->dailyAt('04:07')->withoutOverlapping();
 Schedule::command('ledger:find-jobs')->dailyAt('04:17')->withoutOverlapping();
 Schedule::command('ledger:recheck')->dailyAt('04:47')->withoutOverlapping();
 // Re-run the Gmail searches weekly for this tax year (and last year until the 31 January deadline), so new,

@@ -3,6 +3,7 @@
 namespace App\Domain\Ledger;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Matching\TransferPairer;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
@@ -40,7 +41,7 @@ final class AllocationWriter
         $this->assertUnlocked($taxYear);
         $this->assertLines($lines, $amount);
 
-        return DB::transaction(function () use ($source, $lines, $decidedBy, $confirm, $reason, $ruleId, $taxYear) {
+        $done = DB::transaction(function () use ($source, $lines, $decidedBy, $confirm, $reason, $ruleId, $taxYear) {
             $existing = $source->allocations()->get();
 
             if ($decidedBy !== 'you' && $existing->contains(fn (Allocation $a) => $a->is_manual || $a->confirmed_at !== null)) {
@@ -83,6 +84,19 @@ final class AllocationWriter
 
             return true;
         });
+        if ($done && $decidedBy === 'you') {
+            $this->afterYou($source);
+        }
+
+        return $done;
+    }
+
+    /** One side of a transfer pair decided by you settles the other side (see TransferPairer::afterYourDecision). */
+    private function afterYou(BankTransaction|ManualExpense $source): void
+    {
+        if ($source instanceof BankTransaction && $source->transfer_pair_id) {
+            app(TransferPairer::class)->afterYourDecision($source);
+        }
     }
 
     /** Reasons and notes are shown in full in the history; the stored copy fits its column. */
@@ -105,6 +119,7 @@ final class AllocationWriter
             $source->forceFill(['review_status' => 'confirmed'])->saveQuietly();
             AuditLog::record('allocation.confirmed', $source, null, $allocations->map(fn ($a) => $this->snapshot($a))->all());
         });
+        $this->afterYou($source);
     }
 
     /** Remove the decision so the item goes back to the Inbox. */

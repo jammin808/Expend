@@ -19,7 +19,7 @@ import { useEffect, useState } from 'react';
 
 interface Props {
     page: { data: Item[]; current_page: number; last_page: number; total: number; links: { prev: string | null; next: string | null } };
-    totals: { count: number; out_pence: number; in_pence: number };
+    totals: { count: number; out_pence: number; in_pence: number; transfer_count: number; transfer_out_pence: number; transfer_in_pence: number };
     manual: Item[];
     filters: Record<string, string | undefined>;
     lookups: Lookups;
@@ -216,7 +216,14 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                     <div>
                         <h1 className="text-2xl font-semibold tracking-tight">Transactions</h1>
                         <p className="text-muted-foreground text-sm">
-                            {totals.count.toLocaleString()} matching · out {money(totals.out_pence)} · in {money(totals.in_pence)}
+                            {totals.count.toLocaleString()} matching · spent {money(totals.out_pence)} · received {money(totals.in_pence)}
+                            {totals.transfer_count > 0 && (
+                                <span title="Card bills, top-ups, savings and money moved between your own accounts. Not spending or income, so not in the totals.">
+                                    {' '}
+                                    · moved between your accounts {money(Math.abs(totals.transfer_out_pence))} (
+                                    {totals.transfer_count.toLocaleString()}, not counted)
+                                </span>
+                            )}
                         </p>
                     </div>
                     <Button variant="outline" onClick={() => setAdding(true)}>

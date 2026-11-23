@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\PoStatus;
+use App\Domain\Matching\OwnAccounts;
 use App\Http\Presenters\Present;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -187,7 +188,10 @@ class ConnectionsController extends Controller
             $date = $tx->effectiveDate()->format('Y-m-d');
             $jobAllocs = $tx->allocations->whereNotNull('work_job_id');
             $business = $tx->allocations->firstWhere('kind', 'business_expense');
-            $undecided = $tx->allocations->isEmpty() && $tx->amount_pence < 0;
+            if (OwnAccounts::isTransfer($tx)) {
+                continue; // money moving between your accounts is never a job's cost
+            }
+            $undecided = $tx->allocations->isEmpty() && $tx->amount_pence < 0 && ! OwnAccounts::reason($tx);
             $near = $tx->amount_pence < 0 && $jobAllocs->isEmpty() && ($business || $undecided) ? $jobOn($date) : null;
             if ($jobAllocs->isEmpty() && ! $near) {
                 continue;

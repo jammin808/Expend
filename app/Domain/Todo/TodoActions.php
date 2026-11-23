@@ -30,7 +30,7 @@ use InvalidArgumentException;
  */
 final class TodoActions
 {
-    public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send'];
+    public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok'];
 
     public function __construct(
         private AllocationWriter $writer, private DecisionService $decisions, private JobFinder $finder, private InvoiceService $invoices,
@@ -55,8 +55,25 @@ final class TodoActions
             'recheck' => $this->recheck($id),
             'inv_chase' => $this->mailer->send(Invoice::query()->findOrFail((int) $id), null, true),
             'inv_send' => $this->mailer->send(Invoice::query()->findOrFail((int) $id)),
+            'transfers_ok' => $this->transfersOk(),
             default => throw new InvalidArgumentException('Unknown action.'),
         };
+    }
+
+    /** Confirm every transfer the matcher suggested: your decision, recorded as yours. */
+    private function transfersOk(): string
+    {
+        $done = 0;
+        foreach (BankTransaction::query()->whereIn('id', TodoList::suggestedTransfers()['ids'])->get() as $tx) {
+            try {
+                $this->writer->confirm($tx);
+                $done++;
+            } catch (InvalidArgumentException) {
+                // a locked year or nothing to confirm any more
+            }
+        }
+
+        return $done ? "Confirmed {$done} ".($done === 1 ? 'transfer' : 'transfers').' between your accounts.' : 'Nothing left to confirm.';
     }
 
     private function ruleMake(int $txId): string

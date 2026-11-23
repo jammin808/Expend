@@ -135,11 +135,15 @@ final class Importer
         return $batch;
     }
 
-    /** Your rules first, then transfer pairing for whatever is still undecided. */
+    /**
+     * Money moving between your accounts first (both sides imported), then your rules and the matchers, then lines
+     * that are your own money moving even though the other side isn't imported.
+     */
     private function afterImport(ImportBatch $batch): void
     {
-        $this->suggester->suggestFor(BankTransaction::query()->where('import_batch_id', $batch->id)->get());
         $this->pairer->pairAll();
+        $this->suggester->suggestFor(BankTransaction::query()->where('import_batch_id', $batch->id)->get());
+        $this->pairer->suggestOneSided();
     }
 
     /**

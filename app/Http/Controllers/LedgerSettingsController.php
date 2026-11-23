@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Calendar\CalendarSync;
+use App\Domain\Matching\OwnAccounts;
+use App\Domain\Matching\TransferPairer;
 use App\Models\Allocation;
 use App\Models\CalendarEvent;
 use App\Models\MerchantRule;
@@ -20,6 +22,7 @@ class LedgerSettingsController extends Controller
     {
         return Inertia::render('settings/ledger', [
             'settings' => Setting::publicAll(),
+            'own' => ['names' => OwnAccounts::names(), 'saved_names' => (array) Setting::get('own_names'), 'other_accounts' => (array) Setting::get('own_other_accounts')],
             'calendar' => ['events' => CalendarEvent::query()->count(), 'synced' => Setting::get('calendar_synced_at')],
         ]);
     }
@@ -36,7 +39,16 @@ class LedgerSettingsController extends Controller
             'mileage_threshold_scope' => 'required|in:all_vehicles,per_vehicle',
             'calendar_ics_url' => 'nullable|url|max:1000',
             'clear_calendar' => 'boolean',
+            'own_names' => 'nullable|string|max:1000',
+            'own_other_accounts' => 'nullable|string|max:2000',
         ]);
+        $lines = fn (?string $text) => array_values(array_unique(array_filter(array_map(fn ($l) => mb_substr(trim($l), 0, 80), preg_split('/\r?\n|,/', (string) $text) ?: []))));
+        $own = ['own_names' => $lines($data['own_names'] ?? null), 'own_other_accounts' => $lines($data['own_other_accounts'] ?? null)];
+        $ownChanged = $own['own_names'] !== (array) Setting::get('own_names') || $own['own_other_accounts'] !== (array) Setting::get('own_other_accounts');
+        foreach ($own as $key => $value) {
+            Setting::put($key, $value);
+        }
+        unset($data['own_names'], $data['own_other_accounts']);
 
         foreach (['home_postcode', 'scottish_taxpayer', 'overnight_near_miles', 'overnight_far_miles', 'early_start', 'late_finish', 'mileage_threshold_scope'] as $key) {
             Setting::put($key, $key === 'home_postcode' && $data[$key] ? strtoupper(trim($data[$key])) : $data[$key] ?? null);
@@ -47,9 +59,15 @@ class LedgerSettingsController extends Controller
         if ($data['clear_calendar'] ?? false) {
             Setting::put('calendar_ics_url', null);
         }
-        AuditLog::record('settings.updated', 'Settings', null, collect($data)->except('calendar_ics_url')->all());
+        AuditLog::record('settings.updated', 'Settings', null, collect($data)->except('calendar_ics_url')->all() + $own);
 
-        return back()->with('success', 'Settings saved.');
+        $found = 0;
+        if ($ownChanged) {
+            $pairer = app(TransferPairer::class);
+            $found = $pairer->pairAll() + $pairer->suggestOneSided();
+        }
+
+        return back()->with('success', 'Settings saved.'.($found ? " Found {$found} more transfers between your accounts to confirm." : ''));
     }
 
     public function syncCalendar(CalendarSync $sync): RedirectResponse

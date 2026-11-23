@@ -27,6 +27,8 @@ class Setting extends Model
         'ai_model' => 'claude-opus-5-5',
         'ai_effort' => 'medium',
         'ai_monthly_cap_usd' => 40,
+        'own_names' => [],
+        'own_other_accounts' => [],
         'business_name' => null,
         'business_address' => null,
         'business_email' => null,

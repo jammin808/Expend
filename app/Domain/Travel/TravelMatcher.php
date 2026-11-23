@@ -4,6 +4,7 @@ namespace App\Domain\Travel;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Matching\OwnAccounts;
 use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\TaxYear;
@@ -169,7 +170,7 @@ final class TravelMatcher
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
         $taken = TravelItem::query()->whereNotNull('bank_transaction_id')->where('id', '!=', $item->id)->pluck('bank_transaction_id');
 
-        $base = fn () => BankTransaction::query()->where('amount_pence', '<', 0)
+        $base = fn () => OwnAccounts::scopeNotTransfers(BankTransaction::query())->where('amount_pence', '<', 0)
             ->whereBetween('posted_on', [$from->format('Y-m-d'), $to->format('Y-m-d')])
             ->whereNotIn('id', $taken)->whereNotIn('tax_year', $locked)
             ->where('description', 'not like', '%UBER%EATS%');

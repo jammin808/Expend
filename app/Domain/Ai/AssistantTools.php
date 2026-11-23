@@ -4,6 +4,7 @@ namespace App\Domain\Ai;
 
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Matching\OwnAccounts;
 use App\Domain\Tax\BillPreview;
 use App\Domain\Tax\Explainer;
 use App\Domain\Tax\MileageCalculator;
@@ -139,13 +140,18 @@ final class AssistantTools
             ->when($f['job_id'] ?? null, fn ($q, $v) => $q->whereHas('allocations', fn ($a) => $a->where('work_job_id', $v)))
             ->when($f['category_code'] ?? null, fn ($q, $v) => $q->whereHas('allocations.category', fn ($c) => $c->where('code', $v)));
 
-        $totals = (clone $q)->selectRaw('COUNT(*) n, COALESCE(SUM(CASE WHEN amount_pence > 0 THEN amount_pence END),0) i, COALESCE(SUM(CASE WHEN amount_pence < 0 THEN amount_pence END),0) o')->first();
+        $sums = 'COUNT(*) n, COALESCE(SUM(CASE WHEN amount_pence > 0 THEN amount_pence END),0) i, COALESCE(SUM(CASE WHEN amount_pence < 0 THEN amount_pence END),0) o';
+        $count = (clone $q)->count();
+        $totals = OwnAccounts::scopeNotTransfers(clone $q)->selectRaw($sums)->first();
+        $moved = OwnAccounts::scopeTransfers(clone $q)->selectRaw($sums)->first();
         $items = $q->orderByDesc('posted_on')->limit(min(50, max(1, (int) ($f['limit'] ?? 25))))->get();
 
         return [
-            'count' => (int) $totals->n,
+            'count' => $count,
             'total_in' => self::money((int) $totals->i),
             'total_out' => self::money((int) $totals->o),
+            'between_your_own_accounts' => ['count' => (int) $moved->n, 'in' => self::money((int) $moved->i), 'out' => self::money((int) $moved->o),
+                'note' => 'Transfers between your own accounts (card bills, top-ups, savings) are not spending or income and are left out of total_in and total_out.'],
             'items' => $items->map(fn (BankTransaction $t) => [
                 'transaction_id' => $t->id, 'date' => $t->effectiveDate()->format('Y-m-d'), 'description' => $t->description,
                 'account' => $t->account->name, 'amount' => self::money($t->amount_pence), 'status' => $t->review_status,
@@ -337,7 +343,7 @@ final class AssistantTools
     private function merchants(array $f): array
     {
         $label = UkTaxYear::fromLabel($f['tax_year'] ?? '')->label();
-        $rows = BankTransaction::query()->where('tax_year', $label)
+        $rows = OwnAccounts::scopeNotTransfers(BankTransaction::query())->where('tax_year', $label)
             ->when(($f['direction'] ?? 'out') === 'in', fn ($q) => $q->where('amount_pence', '>', 0), fn ($q) => $q->where('amount_pence', '<', 0))
             ->selectRaw("merchant_key, COUNT(*) n, SUM(amount_pence) total, SUM(CASE WHEN review_status = 'confirmed' THEN 1 ELSE 0 END) confirmed")
             ->groupBy('merchant_key')->orderByRaw('ABS(SUM(amount_pence)) DESC')->limit(40)->get();
