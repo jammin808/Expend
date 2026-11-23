@@ -94,7 +94,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 127 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 128 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint
@@ -156,8 +156,10 @@ One-time setup:
    addresses, and optionally add a Gmail filter that forwards POs, call sheets and production packs to it.
    For Telegram, create a bot with @BotFather, paste its token, then send the bot the pairing code shown.
    For Gmail, follow the steps shown in that section: create your own Google Cloud project with the Gmail API, an
-   OAuth client of type Web application with the redirect URI shown, publish the consent screen to production
-   (Testing ends access after 7 days), then Connect Gmail. The gmail.modify scope is requested so the app can add its ✓ Invoiced label; the
+   OAuth client of type Web application with the redirect URI shown. Keep the consent screen in Testing and add
+   the Gmail address you'll connect as a test user (Google blocks Gmail access for published apps that haven't had its
+   paid security review). In Testing, Google ends the access after 7 days: the app says so on Telegram and you press
+   Connect Gmail again. Then Connect Gmail. The gmail.modify scope is requested so the app can add its ✓ Invoiced label; the
    code only ever reads, and adds or removes that one label (it never sends, moves or deletes). Then use
    **Stays & travel › Search Gmail** for each tax year. Add your home postcode (Settings › Ledger) and postcodes on
    your jobs so distances can be used.

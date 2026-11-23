@@ -344,9 +344,11 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                     Library, enable the <strong>Gmail API</strong>.
                                 </li>
                                 <li>
-                                    Under Google Auth Platform, set up the consent screen: External, your own email as the contact, and add yourself
-                                    under Audience as a test user. Then choose <strong>Publish app</strong> so it's "In production" (otherwise Google
-                                    ends access after 7 days).
+                                    Under Google Auth Platform, set up the consent screen: External, your own email as the contact. Under{' '}
+                                    <strong>Audience</strong>, leave it in <strong>Testing</strong> and add the Gmail address you'll connect as a{' '}
+                                    <strong>test user</strong>. Don't publish it: Google blocks Gmail access for published apps that haven't been
+                                    through its paid security review. In Testing, Google ends the access after 7 days; the app tells you on Telegram,
+                                    and reconnecting is one click here.
                                 </li>
                                 <li>
                                     Under Clients, create an OAuth client of type <strong>Web application</strong> with this authorised redirect URI:
@@ -354,8 +356,9 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                 </li>
                                 <li>Paste the client ID and secret below, save, then press Connect Gmail.</li>
                                 <li>
-                                    Google warns that the app isn't verified, because it's your own private app: choose Advanced, then continue. Allow
-                                    it to view and change your email: the app uses that only to read, and to add or remove its {gmail.label} label.
+                                    Sign in with that same Gmail address. Google says the app isn't verified (it's your own private app): choose
+                                    Continue. Allow it to view and change your email: the app uses that only to read, and to add or remove its{' '}
+                                    {gmail.label} label. “Access blocked” means the address you signed in with isn't on the test-user list.
                                 </li>
                             </ol>
                         )}

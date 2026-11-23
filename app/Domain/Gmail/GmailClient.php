@@ -3,6 +3,7 @@
 namespace App\Domain\Gmail;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Telegram\Telegram;
 use App\Models\Setting;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -213,7 +214,12 @@ final class GmailClient
 
         if (($response['error'] ?? null) === 'invalid_grant') {
             Setting::put('gmail_refresh_token', null);
-            throw new RuntimeException('Google withdrew the app’s Gmail access (it was revoked, or the Google sign-in client is still in Testing, which expires access after 7 days). Connect again in Settings › Integrations.');
+            Setting::put('gmail_last_result', ['ok' => false, 'message' => 'Google ended the Gmail connection (in Testing it lasts 7 days). Press Connect Gmail to carry on.', 'at' => now()->toIso8601String()]);
+            // Say so on Telegram, so searches and labels don't quietly stop.
+            if (Setting::get('telegram_chat_id') && Telegram::token()) {
+                Telegram::reply(Setting::get('telegram_chat_id'), 'Gmail needs reconnecting: Google ends the connection every 7 days while your Google app is in Testing. Open Settings › Integrations › Gmail and press Connect Gmail. '.url('/settings/integrations#gmail'));
+            }
+            throw new RuntimeException('Google ended the app’s Gmail access (it was revoked, or the Google sign-in client is in Testing, which ends access after 7 days). Connect again in Settings › Integrations.');
         }
         if (empty($response['access_token'])) {
             throw new RuntimeException('Couldn’t refresh Gmail access: '.($response['error_description'] ?? $response['error'] ?? 'no answer').'.');

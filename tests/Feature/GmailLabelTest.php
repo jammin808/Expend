@@ -166,4 +166,26 @@ class GmailLabelTest extends TestCase
         $this->assertTrue(GmailClient::canModify());
         $this->assertInstanceOf(Document::class, new Document);
     }
+
+    public function test_when_google_ends_the_connection_you_are_told_on_telegram(): void
+    {
+        Setting::put('gmail_access_expires', now()->subMinute()->timestamp);
+        Setting::put('telegram_bot_token', '123456:abc');
+        Setting::put('telegram_chat_id', '42');
+        Http::fake([
+            'oauth2.googleapis.com/token' => Http::response(['error' => 'invalid_grant'], 400),
+            'api.telegram.org/*' => Http::response(['ok' => true]),
+        ]);
+
+        try {
+            GmailClient::search('from:x');
+            $this->fail('Should have stopped');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('Connect again', $e->getMessage());
+        }
+
+        $this->assertFalse(GmailClient::connected());
+        $this->assertFalse(Setting::get('gmail_last_result')['ok']);
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), 'sendMessage') && $r['chat_id'] === '42' && str_contains($r['text'], 'Gmail needs reconnecting'));
+    }
 }
