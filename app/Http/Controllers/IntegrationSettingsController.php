@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Domain\Ai\AiUsage;
 use App\Domain\Audit\AuditLog;
+use App\Domain\Banks\StarlingSync;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailLabeller;
@@ -13,6 +14,7 @@ use App\Domain\Mail\OutgoingMail;
 use App\Domain\Telegram\Telegram;
 use App\Jobs\SyncGmailLabels;
 use App\Mail\TestEmail;
+use App\Models\Account;
 use App\Models\GmailLabel;
 use App\Models\Setting;
 use Illuminate\Http\RedirectResponse;
@@ -59,11 +61,60 @@ class IntegrationSettingsController extends Controller
                 'from_address' => Setting::get('mail_from_address'), 'default_from' => OutgoingMail::from(),
                 'to' => request()->user()->email,
             ],
+            'starling' => [
+                'connected' => StarlingSync::connected(),
+                'accounts' => collect((array) Setting::get('starling_accounts'))->map(fn ($a, $uid) => $a + ['uid' => $uid])->values(),
+                'last' => Setting::get('starling_last_result'),
+                'app_accounts' => Account::query()->orderBy('name')->get(['id', 'name']),
+            ],
             'telegram' => [
                 'token_set' => Telegram::token() !== null, 'paired' => Setting::get('telegram_chat_id') !== null,
                 'pairing_code' => Setting::get('telegram_pairing_code'), 'webhook' => url('/hooks/telegram'),
             ],
         ]);
+    }
+
+    public function connectStarling(Request $request, StarlingSync $starling): RedirectResponse
+    {
+        $token = trim($request->validate(['token' => 'required|string|min:20|max:4000'])['token']);
+        try {
+            $map = $starling->connect($token);
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
+        return back()->with('success', 'Starling connected: '.count($map).' '.(count($map) === 1 ? 'account' : 'accounts').'. Press Import now, or wait for tomorrow morning.');
+    }
+
+    public function linkStarling(Request $request): RedirectResponse
+    {
+        $data = $request->validate(['uid' => 'required|string|max:64', 'account_id' => 'required|integer|exists:accounts,id']);
+        $map = (array) Setting::get('starling_accounts');
+        abort_unless(isset($map[$data['uid']]), 404);
+        $map[$data['uid']]['account_id'] = $data['account_id'];
+        Setting::put('starling_accounts', $map);
+
+        return back()->with('success', 'Saved.');
+    }
+
+    public function syncStarling(Request $request, StarlingSync $starling): RedirectResponse
+    {
+        $from = $request->validate(['from' => 'nullable|date|before:today|after:2015-01-01'])['from'] ?? null;
+        try {
+            $results = $starling->sync($from);
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage());
+        }
+        $text = collect($results)->map(fn ($r) => $r['account'].': '.$r['result'])->implode(' ');
+
+        return back()->with(collect($results)->every('ok') ? 'success' : 'error', $text ?: 'Nothing to import.');
+    }
+
+    public function disconnectStarling(StarlingSync $starling): RedirectResponse
+    {
+        $starling->disconnect();
+
+        return back()->with('success', 'Starling disconnected. Delete the token in Starling’s developer portal too.');
     }
 
     public function updateAi(Request $request): RedirectResponse

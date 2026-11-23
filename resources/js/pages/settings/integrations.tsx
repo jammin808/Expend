@@ -24,6 +24,12 @@ interface Props {
     business: { name: string | null; address: string | null; email: string | null; bank: string | null; prefix: string; terms: number };
     email: { host: string | null; port: number; username: string | null; password_set: boolean; allowed: string };
     telegram: { token_set: boolean; paired: boolean; pairing_code: string | null; webhook: string };
+    starling: {
+        connected: boolean;
+        accounts: { uid: string; name: string; account_id: number; synced_to: string | null }[];
+        last: { at: string; results: { account: string; result: string; ok: boolean }[] } | null;
+        app_accounts: { id: number; name: string }[];
+    };
     mail: {
         method: string;
         chosen: string | null;
@@ -51,7 +57,8 @@ interface Props {
     };
 }
 
-export default function Integrations({ ai, business, email, telegram, gmail, mail: out }: Props) {
+export default function Integrations({ ai, business, email, telegram, gmail, mail: out, starling }: Props) {
+    const starlingForm = useForm({ token: '' });
     const aiForm = useForm({
         api_key: '',
         model: ai.model,
@@ -290,6 +297,99 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                         </div>
                     </form>
 
+                    <section id="starling" className="space-y-4">
+                        <HeadingSmall
+                            title="Starling: import statements automatically"
+                            description="Every morning the app downloads Starling’s statement for the days since the last import and imports it like a file you upload: the running balance is checked (anything that doesn’t add up is held for you) and overlapping days never duplicate. It uses your own read-only token: it can’t move money or change anything."
+                        />
+                        {starling.connected ? (
+                            <div className="space-y-3 text-sm">
+                                <ul className="divide-y rounded-lg border">
+                                    {starling.accounts.map((a) => (
+                                        <li key={a.uid} className="flex flex-wrap items-center justify-between gap-2 p-2">
+                                            <span>
+                                                Starling “{a.name}”{a.synced_to ? `, imported up to ${a.synced_to}` : ', not imported yet'}
+                                            </span>
+                                            <NativeSelect
+                                                className="h-8 w-56"
+                                                value={a.account_id}
+                                                aria-label={`Account for Starling ${a.name}`}
+                                                onChange={(e) =>
+                                                    router.patch(
+                                                        '/settings/starling',
+                                                        { uid: a.uid, account_id: Number(e.target.value) },
+                                                        { preserveScroll: true },
+                                                    )
+                                                }
+                                            >
+                                                {starling.app_accounts.map((acc) => (
+                                                    <option key={acc.id} value={acc.id}>
+                                                        into {acc.name}
+                                                    </option>
+                                                ))}
+                                            </NativeSelect>
+                                        </li>
+                                    ))}
+                                </ul>
+                                {starling.last && (
+                                    <div className="text-muted-foreground text-xs">
+                                        Last import {new Date(starling.last.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}:
+                                        {starling.last.results.map((r) => (
+                                            <p key={r.account} className={r.ok ? '' : 'text-rose-600'}>
+                                                {r.account}: {r.result}
+                                            </p>
+                                        ))}
+                                    </div>
+                                )}
+                                <div className="flex flex-wrap gap-2">
+                                    <Button onClick={() => router.post('/settings/starling/sync', {}, { preserveScroll: true })}>Import now</Button>
+                                    <Button
+                                        variant="outline"
+                                        onClick={() => {
+                                            const from = window.prompt('Import from which date? (YYYY-MM-DD, for catching up on earlier months)', '');
+                                            if (from) router.post('/settings/starling/sync', { from }, { preserveScroll: true });
+                                        }}
+                                    >
+                                        Import from a date…
+                                    </Button>
+                                    <Button variant="ghost" onClick={() => router.delete('/settings/starling', { preserveScroll: true })}>
+                                        Disconnect
+                                    </Button>
+                                </div>
+                            </div>
+                        ) : (
+                            <form
+                                className="space-y-2 text-sm"
+                                onSubmit={(e) => {
+                                    e.preventDefault();
+                                    starlingForm.post('/settings/starling', { preserveScroll: true, onSuccess: () => starlingForm.reset() });
+                                }}
+                            >
+                                <ol className="text-muted-foreground list-decimal space-y-1 pl-5">
+                                    <li>
+                                        Sign in at developer.starlingbank.com with your Starling details, open <strong>Personal Access</strong> and
+                                        create a token for your business account.
+                                    </li>
+                                    <li>
+                                        Tick only the read permissions for accounts, account lists and CSV statements (nothing that pays or changes).
+                                    </li>
+                                    <li>Paste the token here. It’s stored encrypted.</li>
+                                </ol>
+                                <div className="flex gap-2">
+                                    <Input
+                                        type="password"
+                                        autoComplete="off"
+                                        value={starlingForm.data.token}
+                                        onChange={(e) => starlingForm.setData('token', e.target.value)}
+                                        placeholder="Starling personal access token"
+                                        aria-label="Starling personal access token"
+                                    />
+                                    <Button disabled={starlingForm.processing || starlingForm.data.token.length < 20}>Connect</Button>
+                                </div>
+                            </form>
+                        )}
+                    </section>
+
                     <section id="gmail" className="space-y-4">
                         <HeadingSmall
                             title="Gmail"
@@ -475,6 +575,49 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                 Save and check now
                             </Button>
                         </div>
+                        <details className="rounded-lg border p-3 text-sm">
+                            <summary className="cursor-pointer font-medium">Forward from Gmail automatically (no weekly reconnecting)</summary>
+                            <div className="text-muted-foreground mt-2 space-y-2">
+                                <p>
+                                    Google ends the app’s Gmail connection every 7 days while your Google app is in Testing. Gmail filters that
+                                    forward job paperwork to this mailbox keep things flowing without that: set them up once.
+                                </p>
+                                <ol className="list-decimal space-y-1 pl-5">
+                                    <li>Save the mailbox above first, so the app is reading it.</li>
+                                    <li>
+                                        In Gmail on a computer: Settings (cog) › See all settings › <strong>Forwarding and POP/IMAP</strong> › Add a
+                                        forwarding address › enter this mailbox’s address.
+                                    </li>
+                                    <li>
+                                        Gmail emails a confirmation code to the mailbox. It arrives in <strong>Documents</strong>, held for approval
+                                        (it’s from Google, not you): open it to see the code, enter the code in Gmail, then delete it. Don’t turn on
+                                        forwarding of all mail.
+                                    </li>
+                                    <li>
+                                        Settings › <strong>Filters and Blocked Addresses</strong> › Create a new filter. Paste one of the searches
+                                        below into “Has the words”, press Create filter, tick “Forward it to” this mailbox, and Create filter. Repeat
+                                        for each.
+                                    </li>
+                                </ol>
+                                {gmail.searches.map((s) => (
+                                    <div key={s.key} className="space-y-1">
+                                        <p className="text-foreground font-medium">{s.label}</p>
+                                        <div className="flex items-start gap-2">
+                                            <code className="bg-muted block max-h-24 flex-1 overflow-auto rounded p-2 text-xs break-all">
+                                                {s.query}
+                                            </code>
+                                            <Button type="button" size="sm" variant="outline" onClick={() => navigator.clipboard?.writeText(s.query)}>
+                                                Copy
+                                            </Button>
+                                        </div>
+                                    </div>
+                                ))}
+                                <p>
+                                    Add your Gmail address to “Your sending addresses” above, so forwarded mail is taken in straight away. Forwarding
+                                    only applies to new mail; for older mail, use the Gmail searches in Stays & travel.
+                                </p>
+                            </div>
+                        </details>
                     </form>
 
                     <div className="space-y-4">

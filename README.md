@@ -76,6 +76,13 @@ in [`docs/PLAN.md`](docs/PLAN.md).
 - **Mileage from jobs**: one click per year adds a return trip from home to each venue you drove to (estimated from
   the postcodes, straight line × 1.25, clearly marked so you can correct it); a trip each day for multi-day jobs without
   a stay; jobs reached by train, plane or coach are left out.
+- **Starling automatic import**: with your own read-only personal access token (Settings › Integrations), Starling's
+  CSV statement is downloaded every morning for the days since the last import (a week's overlap) and imported exactly
+  like an upload: balance-checked, held if it doesn't add up, never duplicated. "Import from a date" catches up. Amex and
+  Capital One still need their CSVs (they'd need an open-banking provider).
+- **Gmail auto-forwarding** (Settings › Integrations › Forward by email): step-by-step Gmail filters, with the searches
+  ready to copy, that forward POs, call sheets and bookings to your forwarding mailbox, so documents keep arriving without
+  Google's 7-day reconnect.
 - **Search everything** from the top bar (press `/`): payments, jobs, documents, invoices and stays, by name, amount,
   PO number or reference.
 - **Job finder** (`Jobs › Find jobs`): looks through your calendar, the POs, job invites, production packs and call
@@ -136,7 +143,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 155 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 156 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint

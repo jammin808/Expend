@@ -1,6 +1,7 @@
 <?php
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Banks\StarlingSync;
 use App\Domain\Calendar\CalendarSync;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
@@ -134,6 +135,12 @@ Artisan::command('ledger:reset-link', function () {
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();
 Schedule::command('ledger:verify-audit')->dailyAt('03:10');
 Schedule::command('ledger:fetch-email')->everyFiveMinutes()->withoutOverlapping();
+// Starling statements, every morning (if connected).
+Schedule::call(function () {
+    if (StarlingSync::connected()) {
+        app(StarlingSync::class)->sync();
+    }
+})->dailyAt('06:41')->timezone('Europe/London')->name('starling-import')->withoutOverlapping();
 // What needs you, on Telegram every Monday morning; overdue invoices each weekday.
 Schedule::command('ledger:telegram-digest')->weeklyOn(1, '08:47')->timezone('Europe/London');
 Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('Europe/London');

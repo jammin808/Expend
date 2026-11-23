@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Domain\Ai\AiClient;
 use App\Domain\Ai\AiUsage;
+use App\Domain\Banks\StarlingSync;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Mail\MailboxFetcher;
@@ -136,6 +137,10 @@ class CheckIntegrations extends Command
             }
         }
         $this->line('Email forwarding mailbox: '.(MailboxFetcher::configured() ? 'set' : 'not set up yet'));
+        $starling = Setting::get('starling_last_result');
+        $this->line('Starling automatic import: '.(StarlingSync::connected()
+            ? 'connected'.($starling ? ', last run '.substr($starling['at'], 0, 16).': '.collect($starling['results'])->map(fn ($r) => $r['account'].' '.($r['ok'] ? 'OK' : 'FAILED').', '.self::clean($r['result']))->implode('; ') : ', not run yet')
+            : 'not connected'));
 
         $failed = DB::table('failed_jobs');
         $lastFailure = (clone $failed)->latest('failed_at')->first();

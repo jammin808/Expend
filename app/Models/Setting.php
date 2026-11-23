@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Crypt;
  */
 class Setting extends Model
 {
-    public const ENCRYPTED = ['calendar_ics_url', 'anthropic_api_key', 'imap_password', 'telegram_bot_token', 'telegram_webhook_secret', 'business_bank_details', 'google_client_secret', 'gmail_refresh_token', 'gmail_access_token', 'smtp_password'];
+    public const ENCRYPTED = ['calendar_ics_url', 'anthropic_api_key', 'imap_password', 'telegram_bot_token', 'telegram_webhook_secret', 'business_bank_details', 'google_client_secret', 'gmail_refresh_token', 'gmail_access_token', 'smtp_password', 'starling_token'];
 
     public const DEFAULTS = [
         'home_postcode' => null,

@@ -24,6 +24,10 @@ Route::middleware('auth')->group(function () {
     Route::put('settings/integrations/mail', [IntegrationSettingsController::class, 'updateMail'])->name('integrations.mail');
     Route::post('settings/integrations/mail/test', [IntegrationSettingsController::class, 'testMail'])->middleware('throttle:5,1')->name('integrations.mail.test');
     Route::put('settings/integrations/gmail', [IntegrationSettingsController::class, 'updateGmail'])->name('integrations.gmail');
+    Route::post('settings/starling', [IntegrationSettingsController::class, 'connectStarling'])->middleware('throttle:10,1')->name('starling.connect');
+    Route::patch('settings/starling', [IntegrationSettingsController::class, 'linkStarling'])->name('starling.link');
+    Route::post('settings/starling/sync', [IntegrationSettingsController::class, 'syncStarling'])->middleware('throttle:10,1')->name('starling.sync');
+    Route::delete('settings/starling', [IntegrationSettingsController::class, 'disconnectStarling'])->name('starling.disconnect');
     Route::post('settings/gmail/connect', [IntegrationSettingsController::class, 'connectGmail'])->name('gmail.connect');
     Route::delete('settings/gmail', [IntegrationSettingsController::class, 'disconnectGmail'])->name('gmail.disconnect');
     Route::post('settings/gmail/labels', [IntegrationSettingsController::class, 'syncGmailLabels'])->name('gmail.labels');
