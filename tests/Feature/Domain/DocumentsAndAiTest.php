@@ -239,4 +239,31 @@ class DocumentsAndAiTest extends TestCase
         $this->assertNotNull(MailboxFetcher::holdReason('someone@else.com', ''));
         $this->assertNotNull(MailboxFetcher::holdReason('me@example.com', "Authentication-Results: mx.example; spf=fail; dmarc=fail\r\n"));
     }
+
+    public function test_sender_checks_read_folded_headers_and_need_the_senders_own_domain(): void
+    {
+        Setting::put('allowed_senders', ['me@example.com', 'jo.bloggs@gmail.com']);
+        $folded = "Authentication-Results: mx.hostinger.com;\r\n\tdkim=pass header.d=example.com;\r\n\tspf=pass smtp.mailfrom=me@example.com\r\n";
+        $this->assertNull(MailboxFetcher::holdReason('me@example.com', $folded));
+
+        // Someone else's server can pass SPF and DKIM for its own domain while pretending to be you.
+        $spoof = "Authentication-Results: mx.hostinger.com; spf=pass smtp.mailfrom=bounce@attacker.net; dkim=pass header.d=attacker.net; dmarc=fail header.from=gmail.com\r\n";
+        $this->assertNotNull(MailboxFetcher::holdReason('jo.bloggs@gmail.com', $spoof));
+
+        // Gmail ignores dots in addresses.
+        $this->assertNull(MailboxFetcher::holdReason('jobloggs@gmail.com', "Authentication-Results: mx; dmarc=pass header.from=gmail.com\r\n"));
+    }
+
+    public function test_gmail_auto_forwarding_from_your_own_account_is_taken_in(): void
+    {
+        Setting::put('allowed_senders', ['jo.bloggs@gmail.com']);
+        $forwarded = "Return-Path: <jo.bloggs+caf_=ledger=example.com@gmail.com>\r\n"
+            ."Authentication-Results: mx.hostinger.com;\r\n spf=pass (sender is permitted) smtp.mailfrom=jo.bloggs+caf_=ledger=example.com@gmail.com;\r\n dkim=pass header.d=client.co.uk\r\n";
+        $this->assertNull(MailboxFetcher::holdReason('buyer@client.co.uk', $forwarded), 'A PO auto-forwarded by your own Gmail');
+
+        $this->assertNotNull(MailboxFetcher::holdReason('buyer@client.co.uk', str_replace('spf=pass', 'spf=fail', $forwarded)), 'SPF must pass');
+        $this->assertNotNull(MailboxFetcher::holdReason('buyer@client.co.uk', str_replace('jo.bloggs+caf_', 'someone.else+caf_', $forwarded)), 'Someone else\'s Gmail');
+        $this->assertNotNull(MailboxFetcher::holdReason('buyer@client.co.uk', str_replace('@gmail.com>', '@gmail.com.evil.net>', $forwarded)), 'Look-alike domain');
+        $this->assertNotNull(MailboxFetcher::holdReason('buyer@client.co.uk', "Authentication-Results: mx; dmarc=pass\r\n"), 'Not forwarded at all');
+    }
 }

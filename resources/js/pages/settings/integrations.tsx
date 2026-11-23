@@ -175,7 +175,7 @@ export default function Integrations({ ai, business, email, telegram }: Props) {
                     >
                         <HeadingSmall
                             title="Forward by email"
-                            description="Create a mailbox on Hostinger (for example ledger@your-domain), then forward POs, invites and bookings to it. Tip: a Gmail filter can forward emails whose subject has PO, purchase order, call sheet or production pack automatically."
+                            description="Use a mailbox just for this, not your everyday one: every new message in it is read and filed. Forward POs, invites, production packs and bookings to it. A Gmail filter can forward them automatically (Gmail first emails a confirmation code to the mailbox; open its webmail to see it)."
                         />
                         <div className="grid gap-3 sm:grid-cols-2">
                             <Input
@@ -204,7 +204,8 @@ export default function Integrations({ ai, business, email, telegram }: Props) {
                                     onChange={(e) => mail.setData('allowed', e.target.value)}
                                 />
                                 <p className="text-muted-foreground text-xs">
-                                    Mail from anyone else, or that fails sender checks, waits for your approval in Documents.
+                                    Mail you forward from these, including Gmail’s automatic forwarding, is taken in. Anything else, or anything that
+                                    fails the sender checks, waits for your approval in Documents.
                                 </p>
                             </div>
                         </div>

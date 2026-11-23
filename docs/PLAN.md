@@ -1106,8 +1106,8 @@ all can be changed later in Settings.
 - The AI can work with everything, including whole documents (receipts, POs, production packs, emails).
   Documents arrive by upload, email forwarding or Telegram. Every AI output is checked against real data;
   nothing is made up unless it's labelled an estimate or projection.
-- Model: the owner asked for "Claude Opus 5.2", which doesn't exist; Opus 5.5 is the default, with Fable 5.2
-  selectable.
+- Model: Claude Opus 5.5 (`claude-opus-5-5`), confirmed by the owner. It's the default; Fable 5.2 and
+  Sonnet 5.5 stay selectable in Settings › Integrations.
 - VAT: not registered.
 - MTD: turnover is under £50,000, so not in scope for 2026-27. It could apply from April 2027 (if 2025-26
   turnover is over £30,000) or April 2028 (over £20,000); the app checks this from the filed figures.
