@@ -105,15 +105,25 @@ class IntegrationSettingsController extends Controller
 
     public function connectTelegram(Request $request): RedirectResponse
     {
-        $data = $request->validate(['token' => 'required|string|max:200']);
-        Setting::put('telegram_bot_token', trim($data['token']));
+        $data = $request->validate(['token' => 'required|string|max:1000']);
+        // Accept the whole BotFather message pasted in: the token is the "digits:letters" part.
+        if (! preg_match('/\b\d{5,}:[A-Za-z0-9_-]{30,}\b/', $data['token'], $m)) {
+            return back()->with('error', 'That doesn’t look like a bot token. In @BotFather send /mybots, choose your bot, then API Token, and copy the line that looks like 123456789:AA….');
+        }
+        Setting::put('telegram_bot_token', $m[0]);
         Setting::put('telegram_chat_id', null);
         $result = Telegram::connect(url('/hooks/telegram'));
         AuditLog::record('settings.telegram_connected', 'Settings', null, ['ok' => $result['ok'] ?? false]);
 
-        return ($result['ok'] ?? false)
-            ? back()->with('success', 'Bot connected. Now send it the pairing code shown below.')
-            : back()->with('error', 'Telegram said: '.($result['description'] ?? 'unknown error').'. Check the token, and that the site is on HTTPS.');
+        if ($result['ok'] ?? false) {
+            return back()->with('success', 'Bot connected. Now send it the pairing code shown below.');
+        }
+        // Don't keep a token Telegram refused, or the page would look connected when it isn't.
+        foreach (['telegram_bot_token', 'telegram_webhook_secret', 'telegram_pairing_code'] as $key) {
+            Setting::put($key, null);
+        }
+
+        return back()->with('error', 'Telegram refused the token ('.($result['description'] ?? 'no answer').'). In @BotFather send /mybots, choose your bot, then API Token, and paste that token here.');
     }
 
     public function disconnectTelegram(): RedirectResponse
