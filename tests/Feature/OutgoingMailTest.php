@@ -6,7 +6,9 @@ use App\Domain\Mail\OutgoingMail;
 use App\Mail\TestEmail;
 use App\Models\Setting;
 use App\Models\User;
+use App\Notifications\QueuedResetPassword;
 use Illuminate\Auth\Notifications\ResetPassword;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -55,7 +57,7 @@ class OutgoingMailTest extends TestCase
         $this->assertStringNotContainsString('pw', (string) Setting::query()->find('smtp_password')->value, 'Stored encrypted');
 
         $this->post('/settings/integrations/mail/test')->assertSessionHas('success');
-        Mail::assertSent(TestEmail::class, fn ($m) => $m->hasTo('owner@example.com'));
+        Mail::assertQueued(TestEmail::class, fn ($m) => $m->hasTo('owner@example.com'));
     }
 
     public function test_forgot_password_sends_the_reset_link(): void
@@ -65,7 +67,10 @@ class OutgoingMailTest extends TestCase
 
         $this->post('/forgot-password', ['email' => $user->email]);
 
-        Notification::assertSentTo($user, ResetPassword::class);
+        // Queued, so the scheduled worker sends it: website requests can't run the server's mail program.
+        Notification::assertSentTo($user, QueuedResetPassword::class);
+        $this->assertInstanceOf(ShouldQueue::class, new QueuedResetPassword('t'));
+        $this->assertInstanceOf(ResetPassword::class, new QueuedResetPassword('t'));
     }
 
     public function test_the_health_check_can_send_a_test_email(): void

@@ -270,11 +270,12 @@ class IntegrationSettingsController extends Controller
     public function testMail(Request $request): RedirectResponse
     {
         try {
-            Mail::to($request->user()->email)->send(new TestEmail);
+            // Queued: the scheduled worker sends it (website requests can't run the server's mail program).
+            Mail::to($request->user()->email)->queue(new TestEmail);
         } catch (Throwable $e) {
             return back()->with('error', 'Couldn’t send: '.str_replace((string) Setting::get('smtp_password'), '••••', $e->getMessage()));
         }
 
-        return back()->with('success', 'Sent to '.$request->user()->email.'. If it isn’t in your inbox within a few minutes, look in spam.');
+        return back()->with('success', 'On its way to '.$request->user()->email.': it should arrive within a couple of minutes. If not, look in spam.');
     }
 }
