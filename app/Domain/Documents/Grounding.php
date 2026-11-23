@@ -2,6 +2,8 @@
 
 namespace App\Domain\Documents;
 
+use Carbon\CarbonImmutable;
+
 /**
  * Checks that what the AI says a document contains is really there. Comparison ignores case, spacing
  * and punctuation (PDF text layers vary), but every letter and digit of the quote must appear in order.
@@ -44,6 +46,28 @@ final class Grounding
     public static function amountInQuote(int $minor, string $quote): bool
     {
         return in_array(abs($minor), self::amountsIn($quote), true);
+    }
+
+    /** Does the quote state this date (as 14 March, Mar 14, 14/03/2025 or 2025-03-14)? */
+    public static function dateInQuote(string $date, string $quote): bool
+    {
+        $d = CarbonImmutable::parse($date);
+        $q = mb_strtolower($quote);
+        if (str_contains($q, $d->format('Y-m-d'))) {
+            return true;
+        }
+        $day = (int) $d->format('j');
+        $month = (int) $d->format('n');
+        preg_match_all('/\b(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-]\d{2,4})?\b/', $q, $numeric, PREG_SET_ORDER);
+        foreach ($numeric as $m) {
+            if ((int) $m[1] === $day && (int) $m[2] === $month) {
+                return true;
+            }
+        }
+        $name = mb_strtolower(substr($d->format('F'), 0, 3));
+
+        return (bool) preg_match('/\b0?'.$day.'(st|nd|rd|th)?\s+(of\s+)?'.$name.'/', $q)
+            || (bool) preg_match('/\b'.$name.'[a-z]*\.?,?\s+0?'.$day.'\b/', $q);
     }
 
     /**

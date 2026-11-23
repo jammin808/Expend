@@ -14,6 +14,7 @@ import {
 import { type SharedData } from '@/types';
 import { Link, usePage } from '@inertiajs/react';
 import {
+    BedDouble,
     Briefcase,
     Car,
     CreditCard,
@@ -44,6 +45,7 @@ export function AppSidebar() {
     const work = [
         { title: 'Jobs', url: '/jobs', icon: Briefcase },
         { title: 'Documents', url: '/documents', icon: FileText },
+        { title: 'Stays & travel', url: '/travel', icon: BedDouble },
         { title: 'Invoices', url: '/invoices', icon: ReceiptText },
         { title: 'Mileage', url: '/mileage', icon: Car },
         { title: 'Accounts', url: '/accounts', icon: CreditCard },

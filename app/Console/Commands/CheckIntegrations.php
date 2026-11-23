@@ -5,10 +5,13 @@ namespace App\Console\Commands;
 use App\Domain\Ai\AiClient;
 use App\Domain\Ai\AiUsage;
 use App\Domain\Documents\AiConfig;
+use App\Domain\Gmail\GmailClient;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Telegram\Telegram;
 use App\Models\AssistantLog;
+use App\Models\GmailMessage;
 use App\Models\Setting;
+use App\Models\TravelItem;
 use App\Models\User;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -88,6 +91,23 @@ class CheckIntegrations extends Command
                 $this->line('  Test message: '.(($sent['ok'] ?? false) ? 'sent' : 'FAILED, '.self::clean($sent['description'] ?? 'no answer')));
                 $problems += ($sent['ok'] ?? false) ? 0 : 1;
             }
+        }
+
+        $this->newLine();
+        $this->line('Gmail (read-only)');
+        if (! GmailClient::connected()) {
+            $this->line('  '.(GmailClient::configured() ? 'Google client saved, not connected yet' : 'not set up yet'));
+        } else {
+            try {
+                $profile = GmailClient::get('profile');
+                $this->line('  Connected: OK, reading '.($profile['emailAddress'] ?? '?'));
+            } catch (Throwable $e) {
+                $problems++;
+                $this->line('  Connected: FAILED, '.self::clean($e->getMessage()));
+            }
+            $read = GmailMessage::query()->selectRaw('status, COUNT(*) as n')->groupBy('status')->pluck('n', 'status');
+            $this->line('  Emails fetched: '.($read->isEmpty() ? 'none yet' : $read->map(fn ($n, $s) => "{$n} {$s}")->implode(', ')));
+            $this->line('  Stays and journeys found: '.TravelItem::query()->count().', decided: '.TravelItem::query()->whereNotNull('decided_at')->count());
         }
 
         $this->newLine();

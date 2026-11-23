@@ -15,6 +15,14 @@ invoicing, MTD quarterly export and passkeys. See the README for setup and deplo
 sheets, invoices from POs, the assistant with figure checks, AI transaction suggestions and car hire are
 built; an independent review's ten findings are fixed with regression tests.
 
+**Update (23 Nov 2026, later):** live at expenses.rohleder.tech. Gmail read-only connection and Stays & travel
+are built (§6.2, §6.5, §6.6 in simplified form): one `travel_items` table covers stays and journeys instead of
+separate `stays` and `journeys` tables; schema.org booking data is read first and AI with quote checks second;
+nights follow the distance and start/finish-time rules; payments are matched and client-booked stays proposed;
+statement-only TfL, taxi, rail and parking charges follow the same job days. Not built from those sections yet:
+searching again automatically when a job is added, per-sender parsers, the Calendar API, refund tracking for
+cancellations, and meals during stays.
+
 ---
 
 ## 0. What changed from v1

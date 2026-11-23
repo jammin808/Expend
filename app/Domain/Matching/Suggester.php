@@ -3,11 +3,13 @@
 namespace App\Domain\Matching;
 
 use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Travel\TravelDays;
 use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\Invoice;
 use App\Models\MerchantRule;
 use App\Models\TaxYear;
+use App\Models\TravelItem;
 use App\Support\Money;
 use Illuminate\Support\Collection;
 
@@ -23,7 +25,15 @@ final class Suggester
 
     private const CAR_HIRE_PATTERN = '/\b(ENTERPRISE RENT|ENTERPRISE CAR|HERTZ|EUROPCAR|AVIS|SIXT|BUDGET RENT|THRIFTY|ZIPCAR|ENTERPRISE CLUB|GREEN MOTION|ARNOLD CLARK RENTAL|NATIONAL CAR|ALAMO|DOLLAR RENT|CAR HIRE|CAR RENTAL|RENTALCARS)\b/i';
 
-    public function __construct(private AllocationWriter $writer) {}
+    /** Travel that usually has no email, only a statement line: matched to job days by date. */
+    public const TRAVEL_PATTERNS = [
+        'travel_local' => '/\bTFL\b|TRANSPORT FOR LONDON/i',
+        'travel_taxi' => '/\bUBER\b|\bBOLT\b|FREENOW|FREE NOW|ADDISON LEE|\bTAXIS?\b|MINICAB|\bCABS?\b|\bGETT\b/i',
+        'travel_rail' => '/TRAINLINE|\bLNER\b|\bGWR\b|AVANTI|THAMESLINK|SOUTHERN RAIL|NORTHERN TRAINS|CROSSCOUNTRY|TRANSPENNINE|SCOTRAIL|\bC2C\b|CHILTERN|GREATER ANGLIA|SOUTHEASTERN|SOUTH WESTERN RAIL|NATIONAL RAIL/i',
+        'travel_parking' => '/\bNCP\b|JUSTPARK|RINGGO|PAYBYPHONE|APCOA|Q-PARK|EURO CAR PARKS|DARTFORD CROSSING|CONGESTION CHARGE|\bULEZ\b/i',
+    ];
+
+    public function __construct(private AllocationWriter $writer, private TravelDays $days) {}
 
     /** @param Collection<int, BankTransaction> $transactions */
     public function suggestFor(Collection $transactions): int
@@ -66,9 +76,44 @@ final class Suggester
                 $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'business_expense', $penalty), 'matcher', false, 'Looks like a fine or penalty charge, which is never allowable');
             } elseif ($tx->amount_pence < 0 && $carHire && preg_match(self::CAR_HIRE_PATTERN, $text)) {
                 $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'business_expense', $carHire), 'matcher', false, 'Looks like car hire, usually a business expense. Check it was for work, and link the job');
+            } elseif ($tx->amount_pence < 0 && ($travel = $this->travelSuggestion($tx, $text))) {
+                $made += (int) $this->writer->decide($tx, $travel['lines'], 'matcher', false, $travel['reason']);
             }
         }
 
         return $made;
+    }
+
+    /** TfL, taxis, trains and parking from the statement alone: business on a job's travel days, personal otherwise. */
+    private function travelSuggestion(BankTransaction $tx, string $text): ?array
+    {
+        $code = null;
+        foreach (self::TRAVEL_PATTERNS as $category => $pattern) {
+            if (preg_match($pattern, $text) && ! preg_match('/UBER\s*\*?\s*EATS|DELIVEROO|JUST EAT/i', $text)) {
+                $code = $category;
+                break;
+            }
+        }
+        if (! $code || TravelItem::query()->where('bank_transaction_id', $tx->id)->exists()) {
+            return null;
+        }
+
+        // TfL charges are usually posted the day after you travel.
+        $date = $tx->transaction_on ?? ($code === 'travel_local' ? $tx->posted_on->copy()->subDay() : $tx->posted_on);
+        $day = $this->days->day($date->format('Y-m-d'));
+        $what = ['travel_local' => 'TfL', 'travel_taxi' => 'Taxi or ride', 'travel_rail' => 'Train ticket', 'travel_parking' => 'Parking or road charge'][$code];
+        $when = $date->format('D j M Y');
+
+        if ($day['verdict'] === 'personal') {
+            return ['lines' => AllocationWriter::lines($tx->amount_pence, 'personal'), 'reason' => "{$what} on {$when}: personal, {$day['reason']}"];
+        }
+        $category = Category::query()->where('code', $code)->value('id');
+        $check = $day['verdict'] === 'review' ? 'Check: ' : '';
+        $extra = $code === 'travel_rail' ? '. Tickets are often bought in advance, so check the travel date' : '';
+
+        return [
+            'lines' => AllocationWriter::lines($tx->amount_pence, 'business_expense', $category, $day['job']?->id),
+            'reason' => "{$check}{$what} on {$when}, {$day['reason']}{$extra}",
+        ];
     }
 }

@@ -7,6 +7,7 @@ use App\Http\Controllers\DecisionController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\ImportController;
 use App\Http\Controllers\InboxController;
+use App\Http\Controllers\IntegrationSettingsController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\JobController;
 use App\Http\Controllers\ManualExpenseController;
@@ -15,15 +16,35 @@ use App\Http\Controllers\SetupController;
 use App\Http\Controllers\TaxYearController;
 use App\Http\Controllers\TelegramWebhookController;
 use App\Http\Controllers\TransactionController;
+use App\Http\Controllers\TravelController;
+use App\Http\Middleware\HandleInertiaRequests;
 use App\Models\User;
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Route;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
 
 // Before the owner exists, a live site (with a setup code) still shows the sign-in page, so the sign-up page stays hidden.
 Route::get('/', fn () => redirect()->route(User::query()->exists() || config('app.setup_code') ? 'dashboard' : 'register'))->name('home');
 
 Route::post('hooks/telegram', TelegramWebhookController::class)->middleware('throttle:120,1')->name('hooks.telegram');
 
+// Google's redirect back after you allow Gmail access. No session here: see IntegrationSettingsController::gmailCallback.
+Route::get('settings/gmail/callback', [IntegrationSettingsController::class, 'gmailCallback'])->middleware('throttle:20,1')
+    ->withoutMiddleware([
+        StartSession::class, ShareErrorsFromSession::class,
+        ValidateCsrfToken::class, AddQueuedCookiesToResponse::class,
+        HandleInertiaRequests::class,
+    ])->name('gmail.callback');
+
 Route::middleware(['auth'])->group(function () {
+    Route::get('travel', [TravelController::class, 'index'])->name('travel');
+    Route::post('travel/scan', [TravelController::class, 'scan'])->name('travel.scan');
+    Route::post('travel/check', [TravelController::class, 'check'])->name('travel.check');
+    Route::post('travel/{item}/decide', [TravelController::class, 'decide'])->name('travel.decide');
+    Route::post('travel/{item}/reopen', [TravelController::class, 'reopen'])->name('travel.reopen');
+    Route::post('travel/messages/{message}/read', [TravelController::class, 'reread'])->name('travel.reread');
     Route::get('dashboard', DashboardController::class)->name('dashboard');
     Route::get('setup', [SetupController::class, 'show'])->name('setup');
     Route::post('setup', [SetupController::class, 'store'])->name('setup.store');

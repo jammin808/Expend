@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Domain\Ai\AiUsage;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
+use App\Domain\Gmail\GmailClient;
+use App\Domain\Gmail\GmailScanner;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Telegram\Telegram;
 use App\Models\Setting;
@@ -33,6 +35,13 @@ class IntegrationSettingsController extends Controller
             'email' => [
                 'host' => Setting::get('imap_host'), 'port' => Setting::get('imap_port'), 'username' => Setting::get('imap_username'),
                 'password_set' => Setting::get('imap_password') !== null, 'allowed' => implode(', ', (array) Setting::get('allowed_senders')),
+            ],
+            'gmail' => [
+                'configured' => GmailClient::configured(), 'connected' => GmailClient::connected(), 'account' => Setting::get('gmail_account'),
+                'client_id' => Setting::get('google_client_id'), 'redirect_uri' => GmailClient::redirectUri(), 'last_result' => Setting::get('gmail_last_result'),
+                'searches' => collect(GmailScanner::SEARCHES)->map(fn ($s, $key) => [
+                    'key' => $key, 'label' => $s['label'], 'query' => GmailScanner::query($key), 'default' => $s['query'],
+                ])->values(),
             ],
             'telegram' => [
                 'token_set' => Telegram::token() !== null, 'paired' => Setting::get('telegram_chat_id') !== null,
@@ -135,5 +144,65 @@ class IntegrationSettingsController extends Controller
         AuditLog::record('settings.telegram_disconnected', 'Settings');
 
         return back()->with('success', 'Telegram disconnected.');
+    }
+
+    public function updateGmail(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'client_id' => ['nullable', 'string', 'max:300', 'regex:/^[\w.-]+\.apps\.googleusercontent\.com$/'],
+            'client_secret' => 'nullable|string|max:300',
+            'queries' => 'array', 'queries.*' => 'nullable|string|max:2000',
+        ], ['client_id.regex' => 'The client ID ends in .apps.googleusercontent.com. Copy it from the Google Cloud console.']);
+
+        Setting::put('google_client_id', $data['client_id'] ? trim($data['client_id']) : null);
+        if (! empty($data['client_secret'])) {
+            Setting::put('google_client_secret', trim($data['client_secret']));
+        }
+        foreach (array_keys(GmailScanner::SEARCHES) as $key) {
+            $query = trim((string) ($data['queries'][$key] ?? ''));
+            Setting::put('gmail_query_'.$key, $query === '' || $query === GmailScanner::SEARCHES[$key]['query'] ? null : $query);
+        }
+        AuditLog::record('settings.gmail', 'Settings', null, ['client_id' => $data['client_id'] ?? null, 'secret_changed' => ! empty($data['client_secret'])]);
+
+        return back()->with('success', 'Gmail settings saved.');
+    }
+
+    public function connectGmail(): RedirectResponse|\Symfony\Component\HttpFoundation\Response
+    {
+        if (! GmailClient::configured()) {
+            return back()->with('error', 'Add your Google client ID and secret first.');
+        }
+
+        return Inertia::location(GmailClient::authUrl());
+    }
+
+    /**
+     * Google sends you back here. This route runs without the session: the session cookie is SameSite=Strict,
+     * so the browser doesn't send it on a redirect from Google, and starting a new session would sign you out.
+     * The one-time state proves the request started from your own Settings page.
+     */
+    public function gmailCallback(Request $request): \Illuminate\Http\Response
+    {
+        try {
+            if ($request->query('error')) {
+                throw new \RuntimeException($request->query('error') === 'access_denied' ? 'You didn’t allow access on Google’s screen.' : 'Google said: '.$request->query('error'));
+            }
+            $account = GmailClient::complete((string) $request->query('code'), (string) $request->query('state'));
+            $result = ['ok' => true, 'message' => "Gmail connected (read-only) for {$account}."];
+        } catch (Throwable $e) {
+            $result = ['ok' => false, 'message' => $e->getMessage()];
+        }
+        Setting::put('gmail_last_result', $result + ['at' => now()->toIso8601String()]);
+
+        // A page of our own moves you on, so the next request is same-site and your session cookie is sent.
+        return response()->view('gmail-return', ['result' => $result])->header('Cache-Control', 'no-store');
+    }
+
+    public function disconnectGmail(): RedirectResponse
+    {
+        GmailClient::disconnect();
+        Setting::put('gmail_last_result', null);
+
+        return back()->with('success', 'Gmail disconnected, and the app’s access revoked at Google.');
     }
 }

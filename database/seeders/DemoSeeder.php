@@ -8,10 +8,13 @@ use App\Domain\Import\CsvReader;
 use App\Domain\Import\Importer;
 use App\Domain\Import\ProfileDetector;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Travel\TravelReader;
 use App\Models\Account;
 use App\Models\CalendarEvent;
 use App\Models\Client;
+use App\Models\GmailMessage;
 use App\Models\MileageTrip;
+use App\Models\Setting;
 use App\Models\TaxYear;
 use App\Models\User;
 use App\Models\Vehicle;
@@ -20,6 +23,7 @@ use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
 use Dompdf\Dompdf;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Fictional sample data for trying the app locally. Never run this on the live site.
@@ -125,6 +129,7 @@ class DemoSeeder extends Seeder
         }
 
         $this->demoPurchaseOrder($jobs[1]);
+        $this->demoHotelBookings($jobs);
 
         $car = Vehicle::query()->firstOrCreate(['name' => 'My car'], ['type' => 'car_van', 'method' => 'simplified']);
         foreach (array_slice($jobs, 0, 4) as $job) {
@@ -132,6 +137,42 @@ class DemoSeeder extends Seeder
                 'vehicle_id' => $car->id, 'work_job_id' => $job->id, 'trip_on' => $job->starts_on, 'tax_year' => UkTaxYear::fromDate($job->starts_on)->label(),
                 'from_place' => 'Home', 'to_place' => $job->location, 'miles' => '86.0', 'purpose' => 'Drive to venue (return trip)',
             ]);
+        }
+    }
+
+    /**
+     * Fictional booking emails with the structured booking data booking sites embed, read without AI, to show
+     * Stays & travel. Postcode locations are stored here so the demo never calls postcodes.io.
+     */
+    private function demoHotelBookings(array $jobs): void
+    {
+        Setting::put('home_postcode', 'SW1A 1AA');
+        foreach (['SW1A 1AA' => [51.501, -0.1416], 'M2 3GX' => [53.4767, -2.2469], 'E16 1XL' => [51.5085, 0.0295], 'LS2 8BY' => [53.8035, -1.5487],
+            'B40 1NT' => [52.4531, -1.7178], 'G3 8YW' => [55.8607, -4.2871]] as $pc => [$lat, $lng]) {
+            DB::table('places')->updateOrInsert(['postcode' => $pc], ['latitude' => $lat, 'longitude' => $lng, 'created_at' => now(), 'updated_at' => now()]);
+        }
+
+        $intake = app(DocumentIntake::class);
+        foreach ([0, 2, 4, 6] as $n) {
+            $job = $jobs[$n];
+            $in = CarbonImmutable::instance($job->starts_on)->subDay();
+            $out = CarbonImmutable::instance($job->starts_on);
+            $town = explode(' ', $job->location)[0];
+            // Job 6's stay was booked by the client: no payment for it on any statement.
+            $price = $n === 6 ? '112.00' : number_format((8_900 + $n * 300) / 100, 2, '.', '');
+            $provider = $n === 6 ? ['Booking.com', 'noreply@booking.com', 'Hotel Indigo '.$town] : ['Premier Inn', 'noreply@premierinn.com', 'Premier Inn '.$town.' City Centre'];
+            $data = json_encode(['@context' => 'http://schema.org', '@type' => 'LodgingReservation', 'reservationNumber' => 'DEMO-'.(4800 + $n),
+                'checkinDate' => $in->format('Y-m-d'), 'checkoutDate' => $out->format('Y-m-d'),
+                'reservationFor' => ['@type' => 'LodgingBusiness', 'name' => $provider[2], 'address' => ['addressLocality' => $town, 'postalCode' => $job->postcode]],
+                'totalPrice' => $price, 'priceCurrency' => 'GBP', 'underName' => ['name' => 'Demo User']]);
+            $raw = "From: {$provider[0]} <{$provider[1]}>\r\nSubject: Booking confirmed: {$provider[2]}\r\nDate: ".$in->subWeeks(3)->format('D, d M Y').' 09:00:00 +0000'
+                ."\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><script type=\"application/ld+json\">{$data}</script></head><body><p>Your stay at {$provider[2]}, check-in "
+                .$in->format('j F Y').".</p></body></html>\r\n";
+            $doc = $intake->store($raw, "booking-{$n}.eml", 'message/rfc822', 'gmail', ['from' => "{$provider[0]} <{$provider[1]}>", 'subject' => "Booking confirmed: {$provider[2]}", 'received_at' => $in->subWeeks(3)]);
+            $message = GmailMessage::query()->create(['message_id' => 'demo-'.$n, 'search' => 'hotels', 'email_from' => "{$provider[0]} <{$provider[1]}>",
+                'subject' => "Booking confirmed: {$provider[2]}", 'sent_at' => $in->subWeeks(3), 'document_id' => $doc->id]);
+            $items = app(TravelReader::class)->read($doc);
+            $message->update(['status' => $items ? 'read' : 'no_booking']);
         }
     }
 

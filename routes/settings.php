@@ -21,6 +21,9 @@ Route::middleware('auth')->group(function () {
     Route::put('settings/integrations/email', [IntegrationSettingsController::class, 'updateEmail'])->name('integrations.email');
     Route::post('settings/integrations/telegram', [IntegrationSettingsController::class, 'connectTelegram'])->name('integrations.telegram');
     Route::delete('settings/integrations/telegram', [IntegrationSettingsController::class, 'disconnectTelegram'])->name('integrations.telegram.disconnect');
+    Route::put('settings/integrations/gmail', [IntegrationSettingsController::class, 'updateGmail'])->name('integrations.gmail');
+    Route::post('settings/gmail/connect', [IntegrationSettingsController::class, 'connectGmail'])->name('gmail.connect');
+    Route::delete('settings/gmail', [IntegrationSettingsController::class, 'disconnectGmail'])->name('gmail.disconnect');
 
     Route::get('settings/rules', [LedgerSettingsController::class, 'rules'])->name('rules.index');
     Route::patch('settings/rules/{rule}', [LedgerSettingsController::class, 'updateRule'])->name('rules.update');

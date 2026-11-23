@@ -17,6 +17,7 @@ use App\Models\Document;
 use App\Models\DocumentFact;
 use App\Models\Invoice;
 use App\Models\TaxYear;
+use App\Models\TravelItem;
 use App\Models\WorkJob;
 use App\Support\Money;
 use App\Support\UkTaxYear;
@@ -48,7 +49,7 @@ final class AssistantTools
                 'inputSchema' => $obj(['tax_year' => $str], ['tax_year'])],
             ['name' => 'list_jobs', 'description' => 'Jobs in a date range or matching words, with income, costs, mileage and profit from confirmed records.',
                 'inputSchema' => $obj(['date_from' => $str, 'date_to' => $str, 'query' => $str])],
-            ['name' => 'job_sheet', 'description' => 'Everything about one job: dates, times, venue, travel, accommodation, contacts and other details read from documents (each marked verified or not, with its source), linked costs and income, mileage, documents and invoices.',
+            ['name' => 'job_sheet', 'description' => 'Everything about one job: dates, times, venue, travel, accommodation, contacts and other details read from documents (each marked verified or not, with its source), hotel stays and journeys found in Gmail with their booking references, linked costs and income, mileage, documents and invoices.',
                 'inputSchema' => $obj(['job_id' => $int], ['job_id'])],
             ['name' => 'calendar', 'description' => 'Calendar entries and jobs between two dates.',
                 'inputSchema' => $obj(['date_from' => $str, 'date_to' => $str], ['date_from', 'date_to'])],
@@ -89,9 +90,9 @@ final class AssistantTools
         };
     }
 
-    private static function money(int $pence): array
+    private static function money(int $pence, string $currency = 'GBP'): array
     {
-        return ['pence' => $pence, 'formatted' => Money::format($pence)];
+        return ['pence' => $pence, 'formatted' => Money::format($pence, $currency)];
     }
 
     private function searchTransactions(array $f): array
@@ -200,6 +201,13 @@ final class AssistantTools
             ])->all(),
             'documents' => Document::query()->where('work_job_id', $id)->get(['id', 'original_name', 'kind', 'summary', 'received_at'])->toArray(),
             'invoices' => Invoice::query()->where('work_job_id', $id)->get()->map(fn ($i) => ['invoice_id' => $i->id, 'number' => $i->number, 'status' => $i->status, 'total' => self::money($i->total_minor), 'due' => $i->due_date?->format('Y-m-d')])->all(),
+            'stays_and_travel' => TravelItem::query()->where('work_job_id', $id)->orderBy('starts_on')->get()->map(fn ($t) => [
+                'travel_item_id' => $t->id, 'kind' => $t->kind, 'provider' => $t->provider, 'booking_reference' => $t->reference, 'status' => $t->status,
+                'from' => $t->starts_on->format('Y-m-d'), 'to' => $t->ends_on?->format('Y-m-d'), 'time' => $t->start_time, 'place' => $t->place, 'destination' => $t->destination,
+                'amount' => $t->amount_minor !== null ? self::money($t->amount_minor, $t->currency) : null, 'payment' => $t->payment, 'booked_by' => $t->booker,
+                'your_decision' => $t->decision, 'suggestion' => $t->suggestion['decision'] ?? null, 'details_not_verified' => $t->unverified_count,
+                'source_document_id' => $t->document_id,
+            ])->all(),
         ];
     }
 

@@ -24,9 +24,18 @@ interface Props {
     business: { name: string | null; address: string | null; email: string | null; bank: string | null; prefix: string; terms: number };
     email: { host: string | null; port: number; username: string | null; password_set: boolean; allowed: string };
     telegram: { token_set: boolean; paired: boolean; pairing_code: string | null; webhook: string };
+    gmail: {
+        configured: boolean;
+        connected: boolean;
+        account: string | null;
+        client_id: string | null;
+        redirect_uri: string;
+        last_result: { ok: boolean; message: string; at: string } | null;
+        searches: { key: string; label: string; query: string; default: string }[];
+    };
 }
 
-export default function Integrations({ ai, business, email, telegram }: Props) {
+export default function Integrations({ ai, business, email, telegram, gmail }: Props) {
     const aiForm = useForm({
         api_key: '',
         model: ai.model,
@@ -52,6 +61,11 @@ export default function Integrations({ ai, business, email, telegram }: Props) {
         test: false as boolean,
     });
     const tg = useForm({ token: '' });
+    const gm = useForm({
+        client_id: gmail.client_id ?? '',
+        client_secret: '',
+        queries: Object.fromEntries(gmail.searches.map((q) => [q.key, q.query])) as Record<string, string>,
+    });
 
     return (
         <AppLayout breadcrumbs={[{ title: 'Settings', href: '/settings/integrations' }]}>
@@ -165,6 +179,99 @@ export default function Integrations({ ai, business, email, telegram }: Props) {
                         </div>
                         <Button disabled={biz.processing}>Save business details</Button>
                     </form>
+
+                    <section id="gmail" className="space-y-4">
+                        <HeadingSmall
+                            title="Gmail (read-only)"
+                            description="Lets the app search your Gmail for hotel bookings, travel receipts and POs, using narrow searches you can edit. It can only read: it can't send, change or delete anything, and every email it fetches is listed under Stays & travel."
+                        />
+                        {gmail.last_result && (
+                            <p className={gmail.last_result.ok ? 'text-sm text-emerald-700' : 'text-sm text-rose-600'}>{gmail.last_result.message}</p>
+                        )}
+                        {gmail.connected ? (
+                            <div className="flex flex-wrap items-center gap-3 text-sm">
+                                <p className="font-medium text-emerald-700">Connected as {gmail.account}.</p>
+                                <Button variant="ghost" onClick={() => router.delete('/settings/gmail', { preserveScroll: true })}>
+                                    Disconnect
+                                </Button>
+                            </div>
+                        ) : (
+                            <ol className="text-muted-foreground list-decimal space-y-1.5 pl-5 text-sm">
+                                <li>
+                                    Go to console.cloud.google.com and create a project (for example "Expense Ledger"). Under APIs & Services ›
+                                    Library, enable the <strong>Gmail API</strong>.
+                                </li>
+                                <li>
+                                    Under Google Auth Platform, set up the consent screen: External, your own email as the contact, and add yourself
+                                    under Audience as a test user. Then choose <strong>Publish app</strong> so it's "In production" (otherwise Google
+                                    ends access after 7 days).
+                                </li>
+                                <li>
+                                    Under Clients, create an OAuth client of type <strong>Web application</strong> with this authorised redirect URI:
+                                    <code className="bg-muted mt-1 block rounded px-2 py-1 font-mono text-xs break-all">{gmail.redirect_uri}</code>
+                                </li>
+                                <li>Paste the client ID and secret below, save, then press Connect Gmail.</li>
+                                <li>
+                                    Google warns that the app isn't verified, because it's your own private app: choose Advanced, then continue, and
+                                    allow reading your email.
+                                </li>
+                            </ol>
+                        )}
+                        <form
+                            className="space-y-3"
+                            onSubmit={(e) => (
+                                e.preventDefault(),
+                                gm.put('/settings/integrations/gmail', { preserveScroll: true, onSuccess: () => gm.setData('client_secret', '') })
+                            )}
+                        >
+                            <div className="grid gap-3 sm:grid-cols-2">
+                                <Input
+                                    placeholder="Client ID (…apps.googleusercontent.com)"
+                                    value={gm.data.client_id}
+                                    onChange={(e) => gm.setData('client_id', e.target.value)}
+                                />
+                                <Input
+                                    type="password"
+                                    autoComplete="off"
+                                    placeholder={gmail.configured ? 'Client secret saved (encrypted)' : 'Client secret'}
+                                    value={gm.data.client_secret}
+                                    onChange={(e) => gm.setData('client_secret', e.target.value)}
+                                />
+                            </div>
+                            {Object.values(gm.errors).map((e) => (
+                                <p key={e} className="text-sm text-rose-600">
+                                    {e}
+                                </p>
+                            ))}
+                            <details className="text-sm">
+                                <summary className="text-muted-foreground cursor-pointer">Edit the Gmail searches</summary>
+                                <div className="mt-2 space-y-2">
+                                    {gmail.searches.map((q) => (
+                                        <div key={q.key} className="space-y-1">
+                                            <Label>{q.label}</Label>
+                                            <Textarea
+                                                rows={3}
+                                                className="font-mono text-xs"
+                                                value={gm.data.queries[q.key]}
+                                                onChange={(e) => gm.setData('queries', { ...gm.data.queries, [q.key]: e.target.value })}
+                                            />
+                                        </div>
+                                    ))}
+                                    <p className="text-muted-foreground text-xs">
+                                        Gmail search syntax. The tax year's dates are added automatically. Clear a box to go back to the default.
+                                    </p>
+                                </div>
+                            </details>
+                            <div className="flex gap-2">
+                                <Button disabled={gm.processing}>Save</Button>
+                                {gmail.configured && !gmail.connected && (
+                                    <Button type="button" variant="outline" onClick={() => router.post('/settings/gmail/connect')}>
+                                        Connect Gmail
+                                    </Button>
+                                )}
+                            </div>
+                        </form>
+                    </section>
 
                     <form
                         className="space-y-4"

@@ -24,12 +24,12 @@ class PagesTest extends TestCase
         foreach (['/dashboard', '/inbox', '/inbox?year=2024-25', '/years', '/years/2024-25', '/years/2025-26', '/transactions', '/transactions?year=2024-25&status=suggested',
             '/imports', '/accounts', '/jobs', '/jobs/'.WorkJob::query()->value('id'), '/mileage?year=2024-25', '/settings/ledger', '/settings/rules', '/settings/security', '/setup',
             '/documents', '/documents/'.Document::query()->value('id'), '/invoices', '/invoices/'.Invoice::query()->value('id'),
-            '/assistant', '/settings/integrations'] as $url) {
+            '/assistant', '/settings/integrations', '/travel', '/travel?year=2024-25'] as $url) {
             $this->get($url)->assertOk();
         }
 
-        $this->get('/documents/'.Document::query()->value('id'))->assertInertia(fn ($page) => $page->has('document.children')->has('document.facts', 8));
-        $this->get('/documents/'.Document::query()->value('id'))
+        $this->get('/documents/'.Document::query()->where('kind', 'po')->value('id'))->assertInertia(fn ($page) => $page->has('document.children')->has('document.facts', 8));
+        $this->get('/documents/'.Document::query()->where('kind', 'po')->value('id'))
             ->assertInertia(fn ($page) => $page->has('document.children', 0)->has('document.facts', 8)->etc());
         $this->get('/years/2024-25/export')->assertOk()->assertDownload('expense-ledger-2024-25.xlsx');
         $this->getJson('/items/bank/'.BankTransaction::query()->value('id'))->assertOk()->assertJsonStructure(['item', 'history', 'events', 'jobs_near']);
