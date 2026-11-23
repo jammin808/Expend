@@ -755,9 +755,21 @@ function NodePanel({
                     </>
                 )}
                 {n.type === 'candidate' && (
-                    <Button size="sm" asChild>
-                        <Link href="/jobs/finder">Review in Find jobs</Link>
-                    </Button>
+                    <>
+                        <div className="flex flex-wrap gap-2">
+                            <Button size="sm" onClick={() => router.post(`/todo/cand_add/${n.id.slice(10)}`, {}, opts)}>
+                                Add as a job
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => router.post(`/todo/cand_dismiss/${n.id.slice(10)}`, {}, opts)}>
+                                Not a job
+                            </Button>
+                        </div>
+                        <p className="text-muted-foreground text-xs">Or add what it was found from to a job you have:</p>
+                        {jobPicker((jobId) => router.post(`/jobs/finder/${n.id.slice(10)}/merge`, { work_job_id: jobId }, opts), 'Add to job')}
+                        <Link href="/jobs/finder" className="text-muted-foreground text-xs underline underline-offset-2">
+                            Edit the details first
+                        </Link>
+                    </>
                 )}
                 {n.type === 'invoice' && <ReceiptText className="text-muted-foreground size-4" />}
             </div>

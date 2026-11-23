@@ -7,7 +7,7 @@ import AppLayout from '@/layouts/app-layout';
 import { day, money, toPence } from '@/lib/format';
 import { type InvoiceRow } from '@/pages/invoices/index';
 import { Head, Link, router, useForm } from '@inertiajs/react';
-import { Download, Plus, Trash2 } from 'lucide-react';
+import { Download, Mail, Plus, Trash2 } from 'lucide-react';
 
 type Line = {
     description: string;
@@ -18,6 +18,10 @@ type Line = {
 
 interface Props {
     invoice: InvoiceRow & {
+        sent_at: string | null;
+        sent_to: string | null;
+        reminded_at: string | null;
+        reminder_count: number;
         bill_to_name: string | null;
         bill_to_address: string | null;
         bill_to_email: string | null;
@@ -75,7 +79,13 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                 ? `Void: ${invoice.void_reason}`
                                 : draft
                                   ? 'Edit freely until you issue it. After that it can’t be changed.'
-                                  : `Issued ${day(invoice.issue_date)} · due ${day(invoice.due_date)} · paid ${money(invoice.paid_minor, invoice.currency)}`}
+                                  : `Issued ${day(invoice.issue_date)} · due ${day(invoice.due_date)} · paid ${money(invoice.paid_minor, invoice.currency)}` +
+                                    (invoice.sent_at
+                                        ? ` · emailed to ${invoice.sent_to} ${day(invoice.sent_at.slice(0, 10))}`
+                                        : ' · not emailed yet') +
+                                    (invoice.reminder_count
+                                        ? ` · ${invoice.reminder_count} reminder${invoice.reminder_count === 1 ? '' : 's'} sent`
+                                        : '')}
                             {invoice.document && (
                                 <>
                                     {' · from '}
@@ -101,6 +111,21 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                 }}
                             >
                                 Issue invoice
+                            </Button>
+                        )}
+                        {(invoice.status === 'issued' || invoice.status === 'paid') && (
+                            <Button
+                                variant={invoice.sent_at ? 'outline' : 'default'}
+                                onClick={() => {
+                                    const reminder = invoice.overdue && !!invoice.sent_at;
+                                    const to = window.prompt(
+                                        reminder ? 'Send a reminder with the invoice attached to:' : 'Email the invoice (PDF attached) to:',
+                                        invoice.bill_to_email ?? '',
+                                    );
+                                    if (to) router.post(`/invoices/${invoice.id}/send`, { to, reminder }, { preserveScroll: true });
+                                }}
+                            >
+                                <Mail /> {invoice.overdue && invoice.sent_at ? 'Send a reminder' : invoice.sent_at ? 'Send again' : 'Email to client'}
                             </Button>
                         )}
                         {invoice.status === 'issued' && (

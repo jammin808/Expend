@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Tax\ReturnSummary;
+use App\Domain\Todo\TodoList;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\TaxYear;
@@ -61,6 +62,11 @@ class DashboardController extends Controller
                 'jobs_without_po' => collect(PoStatus::forJobs(WorkJob::query()->where('status', '!=', 'cancelled')->get()))->where('missing', true)->count(),
             ],
             'twoFactor' => request()->user()->hasTwoFactor(),
+            'todo' => (function () {
+                $list = TodoList::build(3);
+
+                return ['total' => $list['total'], 'items' => array_slice($list['items'], 0, 6)];
+            })(),
         ]);
     }
 }

@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Mileage\JobTrips;
 use App\Domain\Tax\MileageCalculator;
 use App\Domain\Tax\TaxParameters;
 use App\Models\MileageTrip;
+use App\Models\Setting;
 use App\Models\TaxYear;
 use App\Models\Vehicle;
 use App\Models\WorkJob;
@@ -32,6 +34,8 @@ class MileageController extends Controller
             'total_pence' => $result['total_pence'],
             'total_miles' => $result['total_miles'],
             'vehicles' => Vehicle::query()->orderBy('name')->get(['id', 'name', 'type', 'method', 'registration']),
+            'fromJobs' => JobTrips::proposals($year),
+            'homePostcode' => Setting::get('home_postcode'),
             'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on', 'postcode', 'location'])
                 ->map(fn ($j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'postcode' => $j->postcode, 'location' => $j->location]),
         ]);
@@ -47,6 +51,16 @@ class MileageController extends Controller
         AuditLog::record('vehicle.created', $vehicle, null, $vehicle->toArray());
 
         return back()->with('success', "Added {$vehicle->name}.");
+    }
+
+    /** Add a return trip for each job you ticked (estimated from postcodes). */
+    public function fromJobs(Request $request): RedirectResponse
+    {
+        $data = $request->validate(['year' => 'required|string|regex:/^\d{4}-\d{2}$/', 'vehicle_id' => 'required|integer|exists:vehicles,id', 'job_ids' => 'required|array|min:1', 'job_ids.*' => 'integer']);
+        $added = JobTrips::add($data['year'], $data['vehicle_id'], array_map('intval', $data['job_ids']));
+        AuditLog::record('mileage.from_jobs', 'Mileage', null, ['year' => $data['year'], 'jobs' => $data['job_ids'], 'trips' => $added]);
+
+        return back()->with('success', "Added {$added} ".($added === 1 ? 'trip' : 'trips').'. The distances are estimates from postcodes: correct any that differ from your route.');
     }
 
     public function storeTrip(Request $request): RedirectResponse

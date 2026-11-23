@@ -1,0 +1,43 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Domain\Ledger\RuleLearner;
+use App\Models\MerchantRule;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use InvalidArgumentException;
+
+class RuleLearningController extends Controller
+{
+    public function accept(Request $request, RuleLearner $learner): RedirectResponse
+    {
+        $key = $request->validate(['merchant_key' => 'required|string|max:120'])['merchant_key'];
+        try {
+            ['rule' => $rule, 'applied' => $applied] = $learner->accept($key);
+        } catch (InvalidArgumentException $e) {
+            return back()->with('error', $e->getMessage());
+        }
+        Cache::forget('todo_total');
+
+        return back()->with('success', 'Done: it’ll happen automatically from now on'.($applied ? ", and it’s applied to {$applied} waiting" : '').'.')
+            ->with('rule_undo', ['id' => $rule->id, 'applied' => $applied]);
+    }
+
+    public function decline(Request $request, RuleLearner $learner): RedirectResponse
+    {
+        $learner->decline($request->validate(['merchant_key' => 'required|string|max:120'])['merchant_key']);
+        Cache::forget('todo_total');
+
+        return back()->with('success', 'OK, it won’t ask about that one again.');
+    }
+
+    public function undo(MerchantRule $rule, RuleLearner $learner): RedirectResponse
+    {
+        $n = $learner->undo($rule);
+        Cache::forget('todo_total');
+
+        return back()->with('success', 'Rule removed'.($n ? " and {$n} ".($n === 1 ? 'payment' : 'payments').' put back in the Inbox' : '').'.');
+    }
+}

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
 use App\Models\Client;
 use App\Models\Invoice;
@@ -35,6 +36,8 @@ class InvoiceController extends Controller
                 'bill_to_address' => $invoice->bill_to_address, 'bill_to_email' => $invoice->bill_to_email, 'notes' => $invoice->notes,
                 'po_total_minor' => $invoice->po_total_minor, 'document' => $invoice->document ? ['id' => $invoice->document->id, 'name' => $invoice->document->original_name] : null,
                 'void_reason' => $invoice->void_reason,
+                'sent_at' => $invoice->sent_at?->format('Y-m-d H:i'), 'sent_to' => $invoice->sent_to,
+                'reminded_at' => $invoice->reminded_at?->format('Y-m-d H:i'), 'reminder_count' => $invoice->reminder_count,
                 'lines' => $invoice->lines->map(fn ($l) => [
                     'description' => $l->description, 'quantity' => (string) $l->quantity, 'unit_price' => (string) BigDecimal::ofUnscaledValue($l->unit_price_minor, 2),
                     'amount_minor' => $l->amount_minor, 'source_quote' => $l->source_quote,
@@ -112,6 +115,19 @@ class InvoiceController extends Controller
         $invoice->delete();
 
         return to_route('invoices.index')->with('success', 'Draft deleted.');
+    }
+
+    /** Email the issued invoice to the client (or a reminder when it's overdue), from your mailbox if set up. */
+    public function send(Request $request, Invoice $invoice, InvoiceMailer $mailer): RedirectResponse
+    {
+        $data = $request->validate(['to' => 'nullable|email|max:200', 'reminder' => 'boolean']);
+        try {
+            $message = $mailer->send($invoice, $data['to'] ?? null, (bool) ($data['reminder'] ?? false));
+        } catch (InvalidArgumentException $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
+        return back()->with('success', $message);
     }
 
     public static function row(Invoice $i): array

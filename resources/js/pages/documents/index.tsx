@@ -1,4 +1,5 @@
 import { DocLine, type DocRow } from '@/components/doc-line';
+import { JobsTabs } from '@/components/jobs-tabs';
 import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -35,6 +36,7 @@ export default function Documents({
         <AppLayout breadcrumbs={[{ title: 'Documents', href: '/documents' }]}>
             <Head title="Documents" />
             <div className="mx-auto w-full max-w-5xl space-y-5 p-4 md:p-6">
+                <JobsTabs />
                 <div>
                     <h1 className="text-2xl font-semibold tracking-tight">Documents</h1>
                     <p className="text-muted-foreground text-sm">

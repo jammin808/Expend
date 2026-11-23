@@ -13,6 +13,7 @@ interface Rule {
     category: string | null;
     business_pct: number;
     auto_confirm: boolean;
+    applied: number;
 }
 
 export default function Rules({ rules }: { rules: Rule[] }) {
@@ -53,6 +54,19 @@ export default function Rules({ rules }: { rules: Rule[] }) {
                                     >
                                         Remove
                                     </Button>
+                                    {r.applied > 0 && (
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            title="Remove the rule and put what it decided back in the Inbox"
+                                            onClick={() =>
+                                                window.confirm(`Undo this rule? Its ${r.applied} decisions go back to the Inbox.`) &&
+                                                router.post(`/rules/${r.id}/undo`, {}, { preserveScroll: true })
+                                            }
+                                        >
+                                            Undo ({r.applied})
+                                        </Button>
+                                    )}
                                 </span>
                             </li>
                         ))}

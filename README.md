@@ -61,6 +61,23 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   green **✓ Invoiced** label, taken off again if the invoice is voided. The app finds it by the Gmail message it
   fetched, by a forwarded email's Message-ID, or by the PO number when every match is in one conversation; it
   never guesses between conversations.
+- **To do** (top of the menu): one list of everything that needs you, most urgent first, with one-tap actions:
+  unpaid invoices (send a reminder), statements held, failed checks, a filing deadline, invoices to draft or send,
+  possible jobs (add, or not a job), payments to decide (accept the suggestion, or personal), merchants ready for a
+  rule, stays to decide, jobs with no PO, paid bookings missing from your statements and documents held for approval.
+  The top items show on the Overview. The same list comes to **Telegram every Monday** with buttons that act in the
+  chat (only from your paired chat); send `/todo` any time. Overdue invoices get a Telegram nudge with a "Send a
+  reminder" button.
+- **Learns from your decisions**: once you've decided a merchant the same way twice, it offers "Always do this". The
+  rule then applies automatically to what's waiting and to new statements, as a decision by your rule, and can be
+  undone in one go (Settings › Rules). The job is never part of a rule.
+- **Invoices by email**: email an issued invoice (PDF attached) to the client, and send reminders when it's overdue,
+  from your own mailbox if set up (replies go to your business email). The invoice records when it was sent.
+- **Mileage from jobs**: one click per year adds a return trip from home to each venue you drove to (estimated from
+  the postcodes, straight line × 1.25, clearly marked so you can correct it); a trip each day for multi-day jobs without
+  a stay; jobs reached by train, plane or coach are left out.
+- **Search everything** from the top bar (press `/`): payments, jobs, documents, invoices and stays, by name, amount,
+  PO number or reference.
 - **Job finder** (`Jobs › Find jobs`): looks through your calendar, the POs, job invites, production packs and call
   sheets read from email (bodies and attachments), and your stays and journeys. What clearly belongs to one of your jobs
   is linked: the same PO number, or the job's dates plus its client, venue, postcode or title words. Close calls are left
@@ -119,7 +136,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 146 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 155 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint

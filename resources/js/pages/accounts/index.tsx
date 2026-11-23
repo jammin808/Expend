@@ -2,7 +2,7 @@ import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import AppLayout from '@/layouts/app-layout';
-import { Head, router, useForm } from '@inertiajs/react';
+import { Head, Link, router, useForm } from '@inertiajs/react';
 
 interface AccountRow {
     id: number;
@@ -25,6 +25,9 @@ export default function Accounts({ accounts }: { accounts: AccountRow[] }) {
                 <div>
                     <h1 className="text-2xl font-semibold tracking-tight">Accounts</h1>
                     <p className="text-muted-foreground text-sm">Banks and cards change: add new ones any time. Old ones keep their history.</p>
+                    <Link href="/imports" className="hover:bg-muted mt-2 inline-flex rounded-md border px-3 py-1.5 text-sm font-medium">
+                        Import a statement
+                    </Link>
                 </div>
                 <ul className="divide-y rounded-xl border">
                     {accounts.map((a) => (

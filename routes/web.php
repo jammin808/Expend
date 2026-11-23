@@ -14,9 +14,12 @@ use App\Http\Controllers\JobController;
 use App\Http\Controllers\JobFinderController;
 use App\Http\Controllers\ManualExpenseController;
 use App\Http\Controllers\MileageController;
+use App\Http\Controllers\RuleLearningController;
+use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SetupController;
 use App\Http\Controllers\TaxYearController;
 use App\Http\Controllers\TelegramWebhookController;
+use App\Http\Controllers\TodoController;
 use App\Http\Controllers\TransactionController;
 use App\Http\Controllers\TravelController;
 use App\Http\Controllers\VerificationController;
@@ -96,6 +99,12 @@ Route::middleware(['auth'])->group(function () {
     Route::post('calendar/job', [JobFinderController::class, 'fromCalendar'])->name('calendar.job');
     Route::post('calendar/not-job', [JobFinderController::class, 'calendarNotJob'])->name('calendar.notJob');
     Route::get('connections', [ConnectionsController::class, 'index'])->name('connections');
+    Route::get('todo', [TodoController::class, 'index'])->name('todo');
+    Route::get('search', SearchController::class)->name('search');
+    Route::post('rules/learn', [RuleLearningController::class, 'accept'])->name('rules.learn');
+    Route::post('rules/learn/decline', [RuleLearningController::class, 'decline'])->name('rules.decline');
+    Route::post('rules/{rule}/undo', [RuleLearningController::class, 'undo'])->name('rules.undo');
+    Route::post('todo/{code}/{id}', [TodoController::class, 'act'])->where('id', '[A-Za-z0-9_:]+')->name('todo.act');
     Route::post('checks/{type}/{id}', [VerificationController::class, 'store'])->whereNumber('id')->name('checks.store');
     Route::get('jobs', [JobController::class, 'index'])->name('jobs.index');
     Route::post('jobs', [JobController::class, 'store'])->name('jobs.store');
@@ -118,6 +127,7 @@ Route::middleware(['auth'])->group(function () {
     Route::patch('invoices/{invoice}', [InvoiceController::class, 'update'])->name('invoices.update');
     Route::post('invoices/{invoice}/issue', [InvoiceController::class, 'issue'])->name('invoices.issue');
     Route::post('invoices/{invoice}/void', [InvoiceController::class, 'void'])->name('invoices.void');
+    Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send'])->name('invoices.send');
     Route::get('invoices/{invoice}/pdf', [InvoiceController::class, 'pdf'])->name('invoices.pdf');
     Route::delete('invoices/{invoice}', [InvoiceController::class, 'destroy'])->name('invoices.destroy');
 
@@ -128,6 +138,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('mileage', [MileageController::class, 'index'])->name('mileage.index');
     Route::post('vehicles', [MileageController::class, 'storeVehicle'])->name('vehicles.store');
     Route::post('mileage', [MileageController::class, 'storeTrip'])->name('mileage.store');
+    Route::post('mileage/from-jobs', [MileageController::class, 'fromJobs'])->name('mileage.fromJobs');
     Route::patch('mileage/{trip}', [MileageController::class, 'updateTrip'])->name('mileage.update');
     Route::delete('mileage/{trip}', [MileageController::class, 'destroyTrip'])->name('mileage.destroy');
 });

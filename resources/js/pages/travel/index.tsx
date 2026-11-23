@@ -1,4 +1,5 @@
 import { CheckBadge, type Check } from '@/components/check-badge';
+import { JobsTabs } from '@/components/jobs-tabs';
 import { Money } from '@/components/money';
 import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
@@ -335,6 +336,7 @@ export default function Travel({
         <AppLayout breadcrumbs={[{ title: 'Stays & travel', href: '/travel' }]}>
             <Head title="Stays & travel" />
             <div className="mx-auto w-full max-w-4xl space-y-5 p-4 md:p-6">
+                <JobsTabs />
                 <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
                         <h1 className="text-2xl font-semibold tracking-tight">Stays & travel</h1>

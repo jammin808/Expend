@@ -1,5 +1,5 @@
 import { type SharedData } from '@/types';
-import { usePage } from '@inertiajs/react';
+import { router, usePage } from '@inertiajs/react';
 import { CheckCircle2, X, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -25,9 +25,25 @@ export function Toaster() {
     }, []);
 
     useEffect(() => {
-        if (flash?.success) toast(flash.success, 'success');
+        if (flash?.success) {
+            // After a rule is learned, the confirmation carries an Undo.
+            const undo = flash.rule_undo;
+            toast(
+                flash.success,
+                'success',
+                undo ? { label: 'Undo', run: () => router.post(`/rules/${undo.id}/undo`, {}, { preserveScroll: true }) } : undefined,
+            );
+        }
         if (flash?.error) toast(flash.error, 'error');
-    }, [flash?.success, flash?.error]);
+        // You've decided this merchant the same way before: offer to make it automatic.
+        const offer = flash?.rule_offer;
+        if (offer) {
+            toast(offer.text, 'success', {
+                label: 'Always do this',
+                run: () => router.post('/rules/learn', { merchant_key: offer.merchant_key }, { preserveScroll: true }),
+            });
+        }
+    }, [flash?.success, flash?.error, flash?.rule_offer, flash?.rule_undo]);
 
     return (
         <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[100] flex flex-col items-center gap-2 px-4" aria-live="polite">

@@ -1,5 +1,6 @@
 import { CheckBadge, type Check } from '@/components/check-badge';
 import { JobForm } from '@/components/job-form';
+import { JobsTabs } from '@/components/jobs-tabs';
 import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -101,6 +102,7 @@ export default function JobFinder({
         >
             <Head title="Find jobs" />
             <div className="mx-auto w-full max-w-5xl space-y-6 p-4 md:p-6">
+                <JobsTabs />
                 <div className="flex flex-wrap items-end justify-between gap-3">
                     <div className="max-w-2xl">
                         <h1 className="text-2xl font-semibold tracking-tight">Find jobs</h1>

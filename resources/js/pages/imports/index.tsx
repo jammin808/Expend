@@ -136,7 +136,12 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
     };
 
     return (
-        <AppLayout breadcrumbs={[{ title: 'Import', href: '/imports' }]}>
+        <AppLayout
+            breadcrumbs={[
+                { title: 'Accounts', href: '/accounts' },
+                { title: 'Import', href: '/imports' },
+            ]}
+        >
             <Head title="Import" />
             <div className="mx-auto w-full max-w-5xl space-y-6 p-4 md:p-6">
                 <div>

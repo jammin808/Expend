@@ -13,7 +13,7 @@ class Invoice extends Model
     protected $guarded = ['id'];
 
     protected $casts = [
-        'issue_date' => 'date', 'due_date' => 'date', 'issued_at' => 'datetime',
+        'issue_date' => 'date', 'due_date' => 'date', 'issued_at' => 'datetime', 'sent_at' => 'datetime', 'reminded_at' => 'datetime', 'overdue_nudged_at' => 'datetime',
         'total_minor' => 'integer', 'po_total_minor' => 'integer',
     ];
 
@@ -21,7 +21,8 @@ class Invoice extends Model
     {
         static::updating(function (Invoice $invoice) {
             if (in_array($invoice->getOriginal('status'), ['issued', 'paid', 'void'], true)) {
-                $allowed = ['status', 'void_reason', 'updated_at'];
+                // Only its status and when it was emailed or chased can change; the invoice itself can't.
+                $allowed = ['status', 'void_reason', 'updated_at', 'sent_at', 'sent_to', 'reminded_at', 'reminder_count', 'overdue_nudged_at'];
                 foreach (array_keys($invoice->getDirty()) as $field) {
                     if (! in_array($field, $allowed, true)) {
                         throw new LogicException("Issued invoices can't be edited ({$field}). Void it and issue a new one.");

@@ -7,6 +7,7 @@ import AppLayout from '@/layouts/app-layout';
 import { day, money } from '@/lib/format';
 import { Head, router, useForm } from '@inertiajs/react';
 import { Trash2 } from 'lucide-react';
+import { useState } from 'react';
 
 interface Trip {
     id: number;
@@ -30,9 +31,23 @@ interface Props {
     total_miles: string;
     vehicles: { id: number; name: string; type: string; method: string }[];
     jobs: { id: number; title: string; starts_on: string; location: string | null }[];
+    fromJobs: {
+        job_id: number;
+        title: string;
+        starts_on: string;
+        ends_on: string;
+        venue: string | null;
+        postcode: string;
+        one_way: number;
+        trips: number;
+        miles: number;
+        why: string;
+    }[];
+    homePostcode: string | null;
 }
 
-export default function Mileage({ year, years, rates, trips, total_pence, total_miles, vehicles, jobs }: Props) {
+export default function Mileage({ year, years, rates, trips, total_pence, total_miles, vehicles, jobs, fromJobs, homePostcode }: Props) {
+    const [picked, setPicked] = useState<number[]>(fromJobs.map((p) => p.job_id));
     const trip = useForm({
         vehicle_id: vehicles[0]?.id ? String(vehicles[0].id) : '',
         work_job_id: '',
@@ -80,6 +95,55 @@ export default function Mileage({ year, years, rates, trips, total_pence, total_
                         <p className="text-xl font-semibold tabular-nums">{money(total_pence)}</p>
                     </div>
                 </div>
+
+                {fromJobs.length > 0 && vehicles.length > 0 && (
+                    <section className="space-y-2 rounded-xl border border-sky-300 bg-sky-50/50 p-4 dark:border-sky-800 dark:bg-sky-950/20">
+                        <h2 className="font-semibold">Add trips for the jobs you drove to</h2>
+                        <p className="text-muted-foreground text-sm">
+                            From home ({homePostcode}) to each venue and back. Distances are estimated from the postcodes (straight line × 1.25 for
+                            roads): correct any that differ. Jobs you reached by train, plane or coach, or that already have mileage, aren’t listed.
+                        </p>
+                        <ul className="bg-background divide-y rounded-lg border text-sm">
+                            {fromJobs.map((p) => (
+                                <li key={p.job_id}>
+                                    <label className="flex items-center gap-3 p-2">
+                                        <input
+                                            type="checkbox"
+                                            className="size-4"
+                                            checked={picked.includes(p.job_id)}
+                                            onChange={(e) =>
+                                                setPicked(e.target.checked ? [...picked, p.job_id] : picked.filter((id) => id !== p.job_id))
+                                            }
+                                        />
+                                        <span className="min-w-0 flex-1">
+                                            <span className="block truncate">{p.title}</span>
+                                            <span className="text-muted-foreground text-xs">
+                                                {day(p.starts_on)} · {p.venue ?? p.postcode} · {p.why}
+                                            </span>
+                                        </span>
+                                        <span className="tabular-nums">{p.miles} mi</span>
+                                    </label>
+                                </li>
+                            ))}
+                        </ul>
+                        <Button
+                            disabled={picked.length === 0}
+                            onClick={() =>
+                                router.post('/mileage/from-jobs', { year, vehicle_id: vehicles[0].id, job_ids: picked }, { preserveScroll: true })
+                            }
+                        >
+                            Add {picked.length} {picked.length === 1 ? 'job’s' : 'jobs’'} trips (
+                            {fromJobs
+                                .filter((p) => picked.includes(p.job_id))
+                                .reduce((t, p) => t + p.miles, 0)
+                                .toFixed(1)}{' '}
+                            miles)
+                        </Button>
+                    </section>
+                )}
+                {!homePostcode && (
+                    <p className="text-muted-foreground text-sm">Add your home postcode in Settings › Ledger to add trips for your jobs in one go.</p>
+                )}
 
                 {vehicles.length === 0 ? (
                     <form

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Calendar\CalendarSync;
+use App\Models\Allocation;
 use App\Models\CalendarEvent;
 use App\Models\MerchantRule;
 use App\Models\Setting;
@@ -69,6 +70,7 @@ class LedgerSettingsController extends Controller
             'rules' => MerchantRule::query()->with('category')->orderBy('merchant_key')->get()->map(fn (MerchantRule $r) => [
                 'id' => $r->id, 'merchant_key' => $r->merchant_key, 'kind' => $r->kind, 'category' => $r->category?->name,
                 'business_pct' => $r->business_pct, 'auto_confirm' => $r->auto_confirm,
+                'applied' => Allocation::query()->where('merchant_rule_id', $r->id)->where('decided_by', 'rule')->distinct()->count('bank_transaction_id'),
             ]),
         ]);
     }

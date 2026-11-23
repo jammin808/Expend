@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\DecisionService;
+use App\Domain\Ledger\RuleLearner;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\ManualExpense;
@@ -42,7 +43,7 @@ class DecisionController extends Controller
         $item = $this->find($source, $id);
         $result = $this->decisions->apply($data, collect([$item]));
 
-        return $this->respond($result);
+        return $this->respond($result, $item instanceof BankTransaction ? $item->merchant_key : null);
     }
 
     /** Decide many: explicit ids, or every undecided item from a merchant (in one year or all years). */
@@ -69,7 +70,7 @@ class DecisionController extends Controller
 
         unset($data['lines']);
 
-        return $this->respond($this->decisions->apply($data, $sources, $includeProtected));
+        return $this->respond($this->decisions->apply($data, $sources, $includeProtected), $sources->first() instanceof BankTransaction && ! ($data['make_rule'] ?? false) ? $sources->first()->merchant_key : null);
     }
 
     public function confirm(Request $request, string $source, int $id): RedirectResponse
@@ -118,8 +119,12 @@ class DecisionController extends Controller
         return $source === 'manual' ? ManualExpense::query()->findOrFail($id) : BankTransaction::query()->findOrFail($id);
     }
 
-    private function respond(array $result): RedirectResponse
+    private function respond(array $result, ?string $merchantKey = null): RedirectResponse
     {
+        $offer = $merchantKey && $result['saved'] ? app(RuleLearner::class)->offer($merchantKey) : null;
+        if ($offer) {
+            session()->flash('rule_offer', ['merchant_key' => $offer['merchant_key'], 'text' => $offer['text']]);
+        }
         $message = $result['saved'] === 1 ? 'Saved.' : "Saved {$result['saved']}.";
         if ($result['skipped']) {
             $message .= " Left {$result['skipped']} you'd already decided.";

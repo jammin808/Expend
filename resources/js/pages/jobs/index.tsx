@@ -1,5 +1,6 @@
 import { InvoicedTick, type Invoiced } from '@/components/doc-line';
 import { JobForm, type JobData } from '@/components/job-form';
+import { JobsTabs } from '@/components/jobs-tabs';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/app-layout';
@@ -40,6 +41,7 @@ export default function Jobs({
         <AppLayout breadcrumbs={[{ title: 'Jobs', href: '/jobs' }]}>
             <Head title="Jobs" />
             <div className="mx-auto w-full max-w-5xl space-y-5 p-4 md:p-6">
+                <JobsTabs />
                 <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
                         <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>

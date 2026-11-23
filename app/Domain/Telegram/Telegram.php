@@ -5,11 +5,15 @@ namespace App\Domain\Telegram;
 use App\Domain\Ai\Assistant;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
+use App\Domain\Todo\TodoActions;
+use App\Domain\Todo\TodoList;
 use App\Jobs\ReadDocument;
 use App\Models\AssistantLog;
 use App\Models\Document;
 use App\Models\Setting;
 use App\Support\Money;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Throwable;
@@ -42,7 +46,85 @@ final class Telegram
         Setting::put('telegram_webhook_secret', $secret);
         Setting::put('telegram_pairing_code', strtoupper(Str::random(8)));
 
-        return self::api('setWebhook', ['url' => $webhookUrl, 'secret_token' => $secret, 'allowed_updates' => ['message'], 'drop_pending_updates' => true]);
+        return self::api('setWebhook', ['url' => $webhookUrl, 'secret_token' => $secret, 'allowed_updates' => ['message', 'callback_query'], 'drop_pending_updates' => true]);
+    }
+
+    /** Let the bot receive button presses too (bots connected before buttons existed only received messages). */
+    public static function allowButtons(): bool
+    {
+        $secret = Setting::get('telegram_webhook_secret');
+        if (! self::token() || ! $secret || Setting::get('telegram_buttons_on')) {
+            return (bool) Setting::get('telegram_buttons_on');
+        }
+        $ok = (bool) (self::api('setWebhook', ['url' => url('/hooks/telegram'), 'secret_token' => $secret, 'allowed_updates' => ['message', 'callback_query']])['ok'] ?? false);
+        Setting::put('telegram_buttons_on', $ok);
+
+        return $ok;
+    }
+
+    /** Send a message with buttons. Each button is [label, todo action code, id]. */
+    public static function sendWithButtons(string|int $chatId, string $text, array $buttons): void
+    {
+        $row = array_map(fn ($b) => ['text' => $b[0], 'callback_data' => mb_substr('t|'.$b[1].'|'.$b[2], 0, 64)], $buttons);
+        self::api('sendMessage', ['chat_id' => $chatId, 'text' => mb_substr($text, 0, 3900), 'disable_web_page_preview' => true]
+            + ($row ? ['reply_markup' => ['inline_keyboard' => [$row]]] : []));
+    }
+
+    /**
+     * The to-do list as a few messages: a summary, then the most urgent items, each with its one-tap buttons.
+     *
+     * @return int items sent
+     */
+    public static function sendTodo(string|int $chatId, int $max = 8): int
+    {
+        $list = TodoList::build(5);
+        if ($list['total'] === 0) {
+            self::reply($chatId, 'Nothing needs you this week. 👍');
+
+            return 0;
+        }
+        $summary = collect($list['counts'])->map(fn ($n, $g) => '• '.$n.' '.mb_strtolower(TodoList::GROUPS[$g]))->implode("\n");
+        self::reply($chatId, "This week: {$list['total']} ".($list['total'] === 1 ? 'thing needs' : 'things need')." you.\n{$summary}\n\nThe most urgent below. Everything: ".url('/todo'));
+        $sent = 0;
+        foreach (array_slice($list['items'], 0, $max) as $item) {
+            $amount = isset($item['amount']) && $item['amount'] !== null ? ' ('.Money::format($item['amount']).')' : '';
+            self::sendWithButtons($chatId, $item['title'].$amount.($item['detail'] ? "\n".$item['detail'] : ''),
+                array_map(fn ($a) => [$a['label'], $a['code'], $a['id']], $item['actions']));
+            $sent++;
+        }
+
+        return $sent;
+    }
+
+    /** A button press: only from your paired chat, and only the to-do actions. */
+    public static function handleButton(array $query, TodoActions $actions): void
+    {
+        $chatId = (string) ($query['message']['chat']['id'] ?? '');
+        $paired = (string) Setting::get('telegram_chat_id');
+        if (! $paired || ! hash_equals($paired, $chatId)) {
+            self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => 'Not allowed.']);
+
+            return;
+        }
+        [$tag, $code, $id] = explode('|', (string) ($query['data'] ?? ''), 3) + [null, null, null];
+        if ($tag !== 't' || ! in_array($code, TodoActions::CODES, true) || $id === null) {
+            self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => 'Unknown button.']);
+
+            return;
+        }
+        try {
+            $result = '✓ '.$actions->run($code, $id);
+        } catch (ModelNotFoundException) {
+            $result = 'Already dealt with.';
+        } catch (Throwable $e) {
+            $result = '⚠ '.$e->getMessage();
+        }
+        Cache::forget('todo_total');
+        self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => mb_substr($result, 0, 190)]);
+        self::api('editMessageText', [
+            'chat_id' => $chatId, 'message_id' => $query['message']['message_id'] ?? 0,
+            'text' => mb_substr(($query['message']['text'] ?? '')."\n\n".$result, 0, 4000), 'disable_web_page_preview' => true,
+        ]);
     }
 
     public static function reply(string|int $chatId, string $text): void
@@ -54,6 +136,11 @@ final class Telegram
 
     public static function handle(array $update, DocumentIntake $intake, Assistant $assistant): void
     {
+        if (isset($update['callback_query'])) {
+            self::handleButton($update['callback_query'], app(TodoActions::class));
+
+            return;
+        }
         $message = $update['message'] ?? null;
         if (! $message) {
             return;
@@ -98,8 +185,13 @@ final class Telegram
                 return;
             }
 
+            if ($text === '/todo' || mb_strtolower($text) === 'todo' || mb_strtolower($text) === 'to do') {
+                self::sendTodo($chatId);
+
+                return;
+            }
             if ($text === '' || $text === '/start' || $text === '/help') {
-                self::reply($chatId, 'Send a file or photo to add it, or ask a question, for example: “What time is my call on Saturday?”, “Which invoices are overdue?”, “Where am I staying for the Leeds job?”');
+                self::reply($chatId, 'Send a file or photo to add it, send /todo for what needs you (with buttons), or ask a question, for example: “What time is my call on Saturday?”, “Which invoices are overdue?”, “Where am I staying for the Leeds job?”');
 
                 return;
             }

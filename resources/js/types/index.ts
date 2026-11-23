@@ -25,8 +25,13 @@ export interface NavItem {
 export interface SharedData {
     name: string;
     auth: Auth;
-    flash: { success?: string | null; error?: string | null };
-    nav: { inbox: number; years: { label: string; status: string }[] } | null;
+    flash: {
+        success?: string | null;
+        error?: string | null;
+        rule_offer?: { merchant_key: string; text: string } | null;
+        rule_undo?: { id: number; applied: number } | null;
+    };
+    nav: { inbox: number; todo: number; years: { label: string; status: string }[] } | null;
     [key: string]: unknown;
 }
 

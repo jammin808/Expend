@@ -24,10 +24,11 @@ interface Props {
     mtd: { starts: string; based_on: string; turnover_over: number; turnover_pence: number; applies: boolean }[];
     vat: { rolling_turnover_pence: number; threshold_pence: number };
     counts: { accounts: number; transactions: number; to_review: number; jobs_without_po: number };
+    todo: { total: number; items: { key: string; title: string; detail: string | null; href: string | null; priority: number }[] };
     twoFactor: boolean;
 }
 
-export default function Dashboard({ years, mtd, vat, counts, twoFactor }: Props) {
+export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo }: Props) {
     const outstanding = years.filter((y) => y.status !== 'filed');
     const vatPct = Math.round((vat.rolling_turnover_pence / vat.threshold_pence) * 100);
 
@@ -77,6 +78,30 @@ export default function Dashboard({ years, mtd, vat, counts, twoFactor }: Props)
                         </Button>
                     </div>
                 </div>
+
+                {todo.total > 0 && (
+                    <section className="space-y-2 rounded-xl border p-4">
+                        <div className="flex items-center justify-between gap-2">
+                            <h2 className="font-semibold">To do ({todo.total})</h2>
+                            <Link href="/todo" className="text-sm underline underline-offset-2">
+                                See all and act
+                            </Link>
+                        </div>
+                        <ul className="space-y-1.5 text-sm">
+                            {todo.items.map((i) => (
+                                <li key={i.key} className="flex items-start gap-2">
+                                    <span
+                                        className={`mt-1.5 size-2 shrink-0 rounded-full ${i.priority === 1 ? 'bg-rose-500' : i.priority === 2 ? 'bg-amber-500' : 'bg-slate-400'}`}
+                                    />
+                                    <Link href={i.href ?? '/todo'} className="min-w-0 hover:underline">
+                                        <span className="font-medium">{i.title}</span>
+                                        {i.detail && <span className="text-muted-foreground"> · {i.detail}</span>}
+                                    </Link>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
 
                 <section className="space-y-3">
                     <h2 className="text-muted-foreground text-sm font-medium tracking-wide uppercase">

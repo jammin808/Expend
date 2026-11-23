@@ -6,13 +6,16 @@ use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Mail\MailboxFetcher;
+use App\Domain\Telegram\Telegram;
 use App\Domain\Verification\Verifier;
 use App\Jobs\FindJobs;
 use App\Jobs\ScanGmail;
 use App\Jobs\SyncGmailLabels;
+use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\Setting;
 use App\Models\User;
+use App\Support\Money;
 use App\Support\UkTaxYear;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
@@ -62,6 +65,44 @@ Artisan::command('ledger:recheck {--limit=80} {--second-reads=5} {--no-gmail : D
     return 0;
 })->purpose('Double-check AI findings against their sources again (documents, Gmail, calendar, payments)');
 
+Artisan::command('ledger:telegram-digest', function () {
+    $chat = Setting::get('telegram_chat_id');
+    if (! $chat || ! Telegram::token()) {
+        $this->line('Telegram isn’t paired.');
+
+        return 0;
+    }
+    Telegram::allowButtons();
+    $sent = Telegram::sendTodo($chat);
+    $this->info("Sent the to-do digest ({$sent} items with buttons).");
+
+    return 0;
+})->purpose('Send the to-do list to Telegram, with buttons');
+
+Artisan::command('ledger:invoice-nudges', function () {
+    $chat = Setting::get('telegram_chat_id');
+    if (! $chat || ! Telegram::token()) {
+        return 0;
+    }
+    Telegram::allowButtons();
+    $n = 0;
+    foreach (Invoice::query()->where('status', 'issued')->whereNotNull('due_date')->whereDate('due_date', '<', today())
+        ->where(fn ($q) => $q->whereNull('overdue_nudged_at')->orWhere('overdue_nudged_at', '<', now()->subDays(7)))->get() as $invoice) {
+        if ($invoice->paidMinor() >= $invoice->total_minor) {
+            continue;
+        }
+        $days = (int) $invoice->due_date->diffInDays(today());
+        Telegram::sendWithButtons($chat, "Invoice {$invoice->number} to ".($invoice->bill_to_name ?: 'the client').' is '.$days.' days overdue ('
+            .Money::format($invoice->total_minor, $invoice->currency, false).').'.($invoice->reminder_count ? " Reminders sent: {$invoice->reminder_count}." : ''),
+            $invoice->bill_to_email ? [['Send a reminder', 'inv_chase', $invoice->id]] : []);
+        $invoice->forceFill(['overdue_nudged_at' => now()])->save();
+        $n++;
+    }
+    $this->info("Nudged about {$n} overdue invoices.");
+
+    return 0;
+})->purpose('Tell you on Telegram about invoices past their due date, with a button to send a reminder');
+
 Artisan::command('ledger:fetch-email', function (MailboxFetcher $fetcher) {
     if (! MailboxFetcher::configured()) {
         $this->line('No forwarding mailbox set.');
@@ -93,6 +134,9 @@ Artisan::command('ledger:reset-link', function () {
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();
 Schedule::command('ledger:verify-audit')->dailyAt('03:10');
 Schedule::command('ledger:fetch-email')->everyFiveMinutes()->withoutOverlapping();
+// What needs you, on Telegram every Monday morning; overdue invoices each weekday.
+Schedule::command('ledger:telegram-digest')->weeklyOn(1, '08:47')->timezone('Europe/London');
+Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('Europe/London');
 // The job finder and the double-check of AI findings, every night; scans get a few second reads a night.
 Schedule::command('ledger:find-jobs')->dailyAt('04:17')->withoutOverlapping();
 Schedule::command('ledger:recheck')->dailyAt('04:47')->withoutOverlapping();
