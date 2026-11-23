@@ -69,7 +69,11 @@ export default function AssistantPage({ history, aiReady, usage }: { history: Tu
     const [busy, setBusy] = useState(false);
     const end = useRef<HTMLDivElement>(null);
 
-    useEffect(() => end.current?.scrollIntoView({ behavior: 'smooth' }), [turns.length, busy]);
+    // Braces matter: newer browsers return a Promise from scrollIntoView, and React would call
+    // anything an effect returns as its cleanup, crashing the page on the way out.
+    useEffect(() => {
+        end.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [turns.length, busy]);
 
     const ask = async (q: string) => {
         if (!q.trim() || busy) return;

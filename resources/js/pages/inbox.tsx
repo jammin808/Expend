@@ -56,7 +56,9 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
         setIndex(0);
     }, [items]);
 
-    useEffect(() => setRecent(recentCategories()), []);
+    useEffect(() => {
+        setRecent(recentCategories());
+    }, []);
 
     const item = queue[index];
     const suggestion = item?.allocations.length && !item.allocations[0].confirmed ? item.allocations[0] : null;

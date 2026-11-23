@@ -51,7 +51,10 @@ function ManualExpenseDialog({ open, onClose, lookups }: { open: boolean; onClos
     const d = form.data;
 
     useEffect(() => {
-        if (d.currency === 'GBP' || !d.spent_on || d.sterling_from_document) return setRate(null);
+        if (d.currency === 'GBP' || !d.spent_on || d.sterling_from_document) {
+            setRate(null);
+            return;
+        }
         const ctrl = new AbortController();
         const q = new URLSearchParams({ currency: d.currency, date: d.spent_on, amount: d.amount || '0' });
         fetch(`/fx/rate?${q}`, { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal: ctrl.signal })
