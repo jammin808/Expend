@@ -10,12 +10,20 @@ use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Mail\OutgoingMail;
 use App\Domain\Telegram\Telegram;
 use App\Mail\TestEmail;
+use App\Models\Account;
 use App\Models\AssistantLog;
+use App\Models\BankTransaction;
+use App\Models\CalendarEvent;
+use App\Models\Document;
 use App\Models\GmailLabel;
 use App\Models\GmailMessage;
+use App\Models\MileageTrip;
 use App\Models\Setting;
+use App\Models\TaxYear;
 use App\Models\TravelItem;
 use App\Models\User;
+use App\Models\Vehicle;
+use App\Models\WorkJob;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
@@ -134,6 +142,9 @@ class CheckIntegrations extends Command
         $this->line('Queue: '.DB::table('jobs')->count().' waiting, '.$failed->count().' failed'
             .($lastFailure ? ', last failure '.$lastFailure->failed_at.': '.self::clean(strtok((string) $lastFailure->exception, "\n")) : ''));
 
+        $this->newLine();
+        $this->setup();
+
         $errors = self::recentLogErrors();
         $this->line('Errors logged in the last 2 days: '.($errors ? count($errors).', newest last:' : 'none'));
         foreach (array_slice($errors, -6) as $error) {
@@ -144,6 +155,32 @@ class CheckIntegrations extends Command
         $this->line($problems ? "{$problems} problem(s) found." : 'All checks passed.');
 
         return $problems ? 1 : 0;
+    }
+
+    /** What's filled in and what isn't, so nothing is left half set up. Counts only, never contents. */
+    private function setup(): void
+    {
+        $yes = fn ($v) => $v ? 'yes' : 'NO';
+        $this->line('Setup');
+        $this->line('  Business details for invoices: name '.$yes(Setting::get('business_name')).', address '.$yes(Setting::get('business_address'))
+            .', email '.$yes(Setting::get('business_email')).', bank details '.$yes(Setting::get('business_bank_details')));
+        $jobs = WorkJob::query()->where('status', '!=', 'cancelled');
+        $this->line('  Home postcode: '.$yes(Setting::get('home_postcode')).'; jobs with a venue postcode: '.(clone $jobs)->whereNotNull('postcode')->count().' of '.(clone $jobs)->count());
+        $this->line('  Calendar feed: '.$yes(Setting::get('calendar_ics_url')).', '.CalendarEvent::query()->count().' events'
+            .(Setting::get('calendar_synced_at') ? ', last synced '.Setting::get('calendar_synced_at') : ''));
+        $accounts = Account::query()->withCount('transactions')->get();
+        $this->line('  Accounts: '.($accounts->isEmpty() ? 'none' : $accounts->map(fn ($a) => $a->name.' ('.$a->transactions_count.' transactions'
+            .(($last = BankTransaction::query()->where('account_id', $a->id)->max('posted_on')) ? ', up to '.substr((string) $last, 0, 10) : '').')')->implode(', ')));
+        $this->line('  Tax years: '.(TaxYear::query()->orderBy('label')->get()->map(fn ($y) => $y->label.' '.$y->status.($y->locked_at ? ' (locked)' : ''))->implode(', ') ?: 'none'));
+        $this->line('  To review in the Inbox: '.BankTransaction::query()->whereIn('review_status', ['unreviewed', 'suggested'])->count());
+        $this->line('  Documents: '.Document::query()->whereNull('parent_id')->count().', reading with AI: '.Setting::get('ai_extraction'));
+        $this->line('  Mileage: '.Vehicle::query()->count().' vehicles, '.MileageTrip::query()->count().' trips');
+
+        $shared = dirname((string) realpath(storage_path()));
+        $dumps = glob(($_SERVER['HOME'] ?? getenv('HOME') ?: '/nonexistent').'/ledger-backups/*') ?: [];
+        $this->line('  Encrypted backups: '.(is_file($shared.'/backup_public.pem') ? 'key in place' : 'NO backup key yet')
+            .'; backup files on the server: '.count($dumps).($dumps ? ', newest '.date('Y-m-d H:i', max(array_map('filemtime', $dumps))) : ''));
+        $this->line('  Heartbeat monitor: '.$yes(config('services.heartbeat.url')));
     }
 
     /** @return list<string> */
