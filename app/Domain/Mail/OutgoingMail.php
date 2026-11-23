@@ -63,15 +63,23 @@ final class OutgoingMail
         }
     }
 
-    /** The From address: as set, else the mailbox you send through, your business email, or noreply@ your domain. */
+    /**
+     * The From address: as set, else the mailbox you send through. From the web server it has to be on your own
+     * domain (your business email if it is, otherwise noreply@): mail claiming to be from a Gmail address but
+     * sent from another server is treated as forged and blocked.
+     */
     public static function from(): string
     {
         $host = (string) parse_url((string) config('app.url'), PHP_URL_HOST);
         $domain = implode('.', array_slice(explode('.', $host), -2)) ?: 'localhost';
+        if ($set = Setting::get('mail_from_address')) {
+            return $set;
+        }
+        if (self::method() === 'smtp') {
+            return (string) Setting::get('smtp_username');
+        }
+        $business = (string) Setting::get('business_email');
 
-        return Setting::get('mail_from_address')
-            ?: (self::method() === 'smtp' ? Setting::get('smtp_username') : null)
-            ?: Setting::get('business_email')
-            ?: 'noreply@'.$domain;
+        return str_ends_with(strtolower($business), '@'.$domain) ? $business : 'noreply@'.$domain;
     }
 }

@@ -23,6 +23,12 @@ class OutgoingMailTest extends TestCase
         OutgoingMail::apply();
         $this->assertSame('sendmail', config('mail.default'));
         $this->assertSame('noreply@rohleder.tech', config('mail.from.address'));
+        Setting::put('business_email', 'jo@gmail.com');
+        OutgoingMail::apply();
+        $this->assertSame('noreply@rohleder.tech', config('mail.from.address'), 'Never a Gmail address from the web server');
+        Setting::put('business_email', 'jo@rohleder.tech');
+        OutgoingMail::apply();
+        $this->assertSame('jo@rohleder.tech', config('mail.from.address'));
 
         Setting::put('mail_method', 'smtp');
         Setting::put('smtp_host', 'smtp.hostinger.com');
