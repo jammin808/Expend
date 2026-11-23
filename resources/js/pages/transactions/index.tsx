@@ -1,4 +1,5 @@
 import { CategorySelect, DecisionForm, decisionProblem } from '@/components/decision-form';
+import { Explain } from '@/components/explain';
 import { ItemDrawer } from '@/components/item-drawer';
 import { Money } from '@/components/money';
 import { NativeSelect } from '@/components/native-select';
@@ -345,7 +346,10 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                                     </td>
                                     <td className="p-2 whitespace-nowrap tabular-nums">{day(t.date)}</td>
                                     <td className="max-w-80 p-2">
-                                        <p className="truncate">{t.description}</p>
+                                        <p className="flex items-center gap-1.5">
+                                            <span className="truncate">{t.description}</span>
+                                            <Explain url={`/explain/${t.source ?? 'bank'}/${t.id}`} />
+                                        </p>
                                         {t.original_currency && (
                                             <p className="text-muted-foreground text-xs">{money(t.original_amount_minor, t.original_currency)}</p>
                                         )}

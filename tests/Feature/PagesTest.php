@@ -22,7 +22,7 @@ class PagesTest extends TestCase
         $this->actingAs(User::query()->where('email', 'demo@example.com')->firstOrFail());
 
         foreach (['/dashboard', '/inbox', '/inbox?year=2024-25', '/years', '/years/2024-25', '/years/2025-26', '/transactions', '/transactions?year=2024-25&status=suggested',
-            '/imports', '/accounts', '/jobs', '/jobs/finder', '/connections', '/connections?year=2024-25', '/todo', '/jobs/'.WorkJob::query()->value('id'), '/mileage?year=2024-25', '/settings/ledger', '/settings/rules', '/settings/security', '/setup',
+            '/imports', '/accounts', '/jobs', '/jobs/finder', '/connections', '/connections?year=2024-25', '/todo', '/tax-guide', '/jobs/'.WorkJob::query()->value('id'), '/mileage?year=2024-25', '/settings/ledger', '/settings/rules', '/settings/security', '/setup',
             '/documents', '/documents/'.Document::query()->value('id'), '/invoices', '/invoices/'.Invoice::query()->value('id'),
             '/assistant', '/settings/integrations', '/travel', '/travel?year=2024-25'] as $url) {
             $this->get($url)->assertOk();

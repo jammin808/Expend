@@ -1,5 +1,6 @@
 import { CheckBadge, type Check } from '@/components/check-badge';
 import { DocLine, InvoicedTick, type DocRow, type Invoiced } from '@/components/doc-line';
+import { Explain } from '@/components/explain';
 import { ItemDrawer } from '@/components/item-drawer';
 import { JobForm, type JobData } from '@/components/job-form';
 import { JobSheet, type SheetFact } from '@/components/job-sheet';
@@ -325,7 +326,10 @@ export default function JobShow({ job, lines, mileage, totals, near, lookups, cl
                                 onClick={() => setDrawer({ source: l.source, id: l.source_id })}
                             >
                                 <span className="min-w-0">
-                                    <span className="block truncate">{l.description}</span>
+                                    <span className="flex items-center gap-1.5">
+                                        <span className="truncate">{l.description}</span>
+                                        <Explain url={`/explain/${l.source}/${l.source_id}`} />
+                                    </span>
                                     <span className="text-muted-foreground text-xs">
                                         {day(l.date)} · {l.account} · {kindLabels[l.kind]}
                                         {l.category ? ` · ${l.category}` : ''}

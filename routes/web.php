@@ -17,6 +17,7 @@ use App\Http\Controllers\MileageController;
 use App\Http\Controllers\RuleLearningController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SetupController;
+use App\Http\Controllers\TaxHelpController;
 use App\Http\Controllers\TaxYearController;
 use App\Http\Controllers\TelegramWebhookController;
 use App\Http\Controllers\TodoController;
@@ -101,6 +102,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('connections', [ConnectionsController::class, 'index'])->name('connections');
     Route::get('todo', [TodoController::class, 'index'])->name('todo');
     Route::get('search', SearchController::class)->name('search');
+    Route::get('explain/category/{category}', [TaxHelpController::class, 'category'])->name('explain.category');
+    Route::get('explain/{source}/{id}', [TaxHelpController::class, 'payment'])->whereIn('source', ['bank', 'manual'])->whereNumber('id')->name('explain.payment');
+    Route::get('tax-guide', [TaxHelpController::class, 'guide'])->name('tax-guide');
     Route::post('rules/learn', [RuleLearningController::class, 'accept'])->name('rules.learn');
     Route::post('rules/learn/decline', [RuleLearningController::class, 'decline'])->name('rules.decline');
     Route::post('rules/{rule}/undo', [RuleLearningController::class, 'undo'])->name('rules.undo');

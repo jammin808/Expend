@@ -74,7 +74,7 @@ final class Assistant
         }
 
         $answer = $result->text() ?: 'I couldn’t finish that. Try asking in a narrower way.';
-        $unmatched = self::unmatchedFigures($answer, $toolOutputs);
+        $unmatched = [...self::unmatchedFigures($answer, $toolOutputs), ...self::unmatchedLinks($answer, $toolOutputs)];
 
         $log = AssistantLog::query()->create([
             'channel' => $channel, 'question' => $question, 'answer' => $answer, 'tool_calls' => $calls,
@@ -82,6 +82,27 @@ final class Assistant
         ]);
 
         return ['answer' => $answer, 'unmatched' => $unmatched, 'tools' => $calls, 'log_id' => $log->id];
+    }
+
+    /**
+     * Web links in the answer that no tool returned: a cited source has to be a real one from the tax guide or records.
+     *
+     * @param  list<string>  $toolOutputs
+     * @return list<string>
+     */
+    public static function unmatchedLinks(string $answer, array $toolOutputs): array
+    {
+        preg_match_all('#https?://[^\s)\]>"\'<]+#', $answer, $m);
+        $known = implode(' ', $toolOutputs);
+        $out = [];
+        foreach (array_unique($m[0]) as $url) {
+            $clean = rtrim($url, '.,;:');
+            if (! str_contains($known, $clean) && ! str_contains($known, str_replace('/', '\/', $clean))) {
+                $out[] = 'link '.$clean;
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -137,7 +158,7 @@ How you work:
 - Don't do arithmetic yourself; use the totals the tools return. Quote money exactly as the tools give it.
 - Mention where facts come from in brackets, like (job 12), (document 40) or (transaction 381), so the owner can check.
 - Keep facts and advice apart. Put recommendations under a heading or sentence starting "Suggestion:" and label any estimate or projection as such.
-- Tax: figures marked ESTIMATE are estimates; HMRC's own calculation is the authority. Explain judgement calls (mileage, use of home, travel, entertainment) in plain English and say when an accountant or HMRC guidance should be checked. You are not a regulated adviser.
+- Tax: figures marked ESTIMATE are estimates; HMRC's own calculation is the authority. For any tax rule (what's allowable, travel, mileage, use of home, capital allowances, payments on account, pensions, VAT, ways to reduce tax) use the tax_guide tool, say what it says in plain English, and cite its GOV.UK or HMRC links. Don't state a rule or rate the guide or tax_rules don't give you. Use explain_payment for "what is this payment / can I claim it". Say when an accountant should be asked (the guide marks those). Only suggest legal ways to reduce tax. You are not a regulated adviser.
 - You can propose a decision for a transaction with propose_decision; it only becomes a suggestion in the Inbox. Never claim to have confirmed, filed, paid or sent anything.
 - Use British English and £. {$style}
 TXT;

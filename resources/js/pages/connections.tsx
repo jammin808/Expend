@@ -1,4 +1,5 @@
 import { CheckBadge, type Check } from '@/components/check-badge';
+import { Explain } from '@/components/explain';
 import { ItemDrawer } from '@/components/item-drawer';
 import { JobForm } from '@/components/job-form';
 import { NativeSelect } from '@/components/native-select';
@@ -632,6 +633,11 @@ function NodePanel({
                     check={n.data.check as Check}
                     subject={{ type: n.type === 'travel' ? 'travel_item' : 'document', id: Number(n.id.split(':')[1]) }}
                 />
+            )}
+            {(n.type === 'expense' || n.type === 'income') && n.data.tx && (
+                <p className="flex items-center gap-1.5 text-xs">
+                    <Explain url={`/explain/${n.data.source}/${n.data.tx}`} /> What is this, and can I claim it?
+                </p>
             )}
             {n.type === 'expense' && n.data.category && (
                 <p className="text-xs">

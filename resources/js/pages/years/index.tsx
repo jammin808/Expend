@@ -92,6 +92,9 @@ export default function YearsIndex({ years, statuses }: { years: YearRow[]; stat
                 <div className="flex flex-wrap items-end justify-between gap-4">
                     <div>
                         <h1 className="text-2xl font-semibold tracking-tight">Tax years</h1>
+                        <Link href="/tax-guide" className="text-sm underline underline-offset-2">
+                            Tax guide: what you can claim and legal ways to pay less tax
+                        </Link>
                         <p className="text-muted-foreground text-sm">Any year can be caught up. Each one uses that year's own tax rules.</p>
                     </div>
                     <form

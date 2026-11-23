@@ -1,3 +1,4 @@
+import { Explain } from '@/components/explain';
 import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -187,7 +188,16 @@ export function DecisionForm({
             {needsCategory && (
                 <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1.5">
-                        <Label htmlFor="decision-category">HMRC category</Label>
+                        <Label htmlFor="decision-category" className="flex items-center gap-1.5">
+                            HMRC category
+                            {value.category_id ? (
+                                <Explain
+                                    key={value.category_id}
+                                    url={`/explain/category/${value.category_id}`}
+                                    label="What counts in this category?"
+                                />
+                            ) : null}
+                        </Label>
                         <CategorySelect
                             id="decision-category"
                             lookups={lookups}

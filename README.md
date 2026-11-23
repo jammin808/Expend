@@ -39,6 +39,14 @@ in [`docs/PLAN.md`](docs/PLAN.md).
 - **Invoices from POs**: PO lines prefill a draft; the total is checked against the PO; issuing gives the next
   number and a PDF, after which it can't be edited (void and re-issue instead). Incoming payments of the
   invoice amount are suggested against it.
+- **Tax help everywhere**: a "?" next to every payment (Inbox, Transactions, job pages, the map) and next to the HMRC
+  category explains what it is, whether it's normally allowable and on what conditions, the evidence to keep, and notes
+  from its own context (a job that day or not, your vehicle's mileage method, a non-allowable category, a split). The
+  rules come from a guide researched from GOV.UK and HMRC's manuals, every rule with its source, dated, and points that
+  need an accountant marked as such. **Tax guide** (from Tax years): 18 legal ways to pay less tax, the rules that matter
+  (travel, mileage, use of home, capital allowances, cash basis, payments on account, pensions, VAT, Making Tax Digital)
+  and every expense category. The assistant looks rules up in the same guide and cites its links; any link it gives
+  that didn't come from the guide or your records is flagged.
 - **Assistant**: ask anything about your money, jobs, dates and documents, in the app or on Telegram. It
   looks things up with read-only tools, cites records, labels suggestions and estimates, and every money
   figure it quotes is checked against your data; anything it can't match is flagged. It can suggest
@@ -143,7 +151,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 156 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 159 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint

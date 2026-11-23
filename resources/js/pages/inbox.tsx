@@ -1,5 +1,6 @@
 import { CheckBadge } from '@/components/check-badge';
 import { DecisionForm, decisionProblem, initialDecision } from '@/components/decision-form';
+import { Explain } from '@/components/explain';
 import { ItemDrawer } from '@/components/item-drawer';
 import { Money } from '@/components/money';
 import { toast } from '@/components/toaster';
@@ -264,12 +265,15 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                                     </span>
                                 </div>
                                 <div className="flex items-start justify-between gap-4">
-                                    <button
-                                        className="text-left text-lg leading-snug font-semibold hover:underline md:text-xl"
-                                        onClick={() => setDrawer({ source: 'bank', id: item.id })}
-                                    >
-                                        {item.description}
-                                    </button>
+                                    <span className="flex items-start gap-2">
+                                        <button
+                                            className="text-left text-lg leading-snug font-semibold hover:underline md:text-xl"
+                                            onClick={() => setDrawer({ source: 'bank', id: item.id })}
+                                        >
+                                            {item.description}
+                                        </button>
+                                        <Explain key={item.id} url={`/explain/bank/${item.id}`} className="mt-1.5" />
+                                    </span>
                                     <Money pence={item.amount_pence} className="text-xl font-semibold md:text-2xl" />
                                 </div>
                                 <div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-sm">

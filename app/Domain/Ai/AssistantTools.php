@@ -5,9 +5,11 @@ namespace App\Domain\Ai;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Tax\BillPreview;
+use App\Domain\Tax\Explainer;
 use App\Domain\Tax\MileageCalculator;
 use App\Domain\Tax\ReturnSummary;
 use App\Domain\Tax\TaxEstimator;
+use App\Domain\Tax\TaxGuide;
 use App\Domain\Tax\TaxParameters;
 use App\Domain\Tax\YearChecks;
 use App\Models\Allocation;
@@ -66,6 +68,11 @@ final class AssistantTools
                 'inputSchema' => $obj(['tax_year' => $str, 'direction' => ['type' => 'string', 'enum' => ['in', 'out']]], ['tax_year'])],
             ['name' => 'tax_rules', 'description' => 'The tax rates, allowances, mileage rates and thresholds the app uses for a tax year, with GOV.UK sources.',
                 'inputSchema' => $obj(['tax_year' => $str], ['tax_year'])],
+            ['name' => 'tax_guide', 'description' => 'The UK tax guide (GOV.UK and HMRC manuals, with source links): what an expense category is and whether it is allowable, rules on topics such as travel, mileage, use of home, capital allowances, payments on account, pensions and VAT, and legal ways to reduce tax. Use it for any tax rule; cite its sources.',
+                'inputSchema' => $obj(['category_code' => $str + ['description' => 'e.g. travel_accommodation, equipment, use_of_home'], 'topic' => ['type' => 'string', 'enum' => array_keys(TaxGuide::topicTitles())],
+                    'query' => $str + ['description' => 'Words to search the guide for'], 'ways_to_reduce_tax' => ['type' => 'boolean']])],
+            ['name' => 'explain_payment', 'description' => 'What one bank transaction is, how it has been treated, whether it is normally allowable and on what conditions, the evidence to keep, and notes from its context (jobs that day, bookings, vehicle mileage method).',
+                'inputSchema' => $obj(['transaction_id' => $int], ['transaction_id'])],
             ['name' => 'propose_decision', 'description' => 'Suggest what one transaction is. It is saved as an unconfirmed AI suggestion for the owner to accept or change in the Inbox. Cannot change anything the owner has decided.',
                 'inputSchema' => $obj(['transaction_id' => $int, 'kind' => ['type' => 'string', 'enum' => array_keys(Allocation::KINDS)], 'category_code' => $str,
                     'job_id' => $int, 'business_pct' => $int, 'reason' => $str], ['transaction_id', 'kind', 'reason'])],
@@ -86,9 +93,32 @@ final class AssistantTools
             'deadlines' => $this->deadlines(),
             'merchant_breakdown' => $this->merchants($input),
             'tax_rules' => $this->rules($input['tax_year'] ?? ''),
+            'tax_guide' => $this->taxGuide($input),
+            'explain_payment' => ($t = BankTransaction::query()->with('account')->find((int) ($input['transaction_id'] ?? 0))) ? Explainer::payment($t) : ['error' => 'No such transaction'],
             'propose_decision' => $this->propose($input),
             default => ['error' => "Unknown tool {$name}"],
         };
+    }
+
+    private function taxGuide(array $in): array
+    {
+        $out = ['researched_on' => TaxGuide::researchedOn(), 'note' => 'General guidance from GOV.UK and HMRC manuals, not personal advice. Items starting "Ask an accountant" need one.'];
+        if (! empty($in['category_code'])) {
+            $out['category'] = TaxGuide::category($in['category_code']) ?? ['error' => 'No such category code'];
+        }
+        if (! empty($in['topic'])) {
+            $out['topic'] = TaxGuide::topic($in['topic']) ?? ['error' => 'No such topic'];
+        }
+        if (! empty($in['ways_to_reduce_tax'])) {
+            $out['ways_to_reduce_tax'] = TaxGuide::ways();
+        }
+        if (! empty($in['query'])) {
+            $out['matches'] = array_map(fn ($h) => $h + ['detail' => match ($h['type']) {
+                'category' => TaxGuide::category($h['key']), 'topic' => TaxGuide::topic($h['key']), default => TaxGuide::ways()[(int) $h['key']] ?? null,
+            }], array_slice(TaxGuide::search($in['query']), 0, 3));
+        }
+
+        return $out;
     }
 
     private static function money(int $pence, string $currency = 'GBP'): array
