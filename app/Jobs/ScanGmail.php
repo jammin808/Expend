@@ -17,7 +17,8 @@ class ScanGmail implements ShouldQueue
 
     public int $timeout = 200;
 
-    public function __construct(public string $search, public string $taxYear, public ?string $pageToken = null, public int $pagesLeft = 10) {}
+    /** Up to 30 pages of 100: 3,000 emails per search and tax year. Already-read emails are skipped on a rerun. */
+    public function __construct(public string $search, public string $taxYear, public ?string $pageToken = null, public int $pagesLeft = 30) {}
 
     public function handle(GmailScanner $scanner): void
     {
@@ -28,7 +29,7 @@ class ScanGmail implements ShouldQueue
             $page = $scanner->scanPage($this->search, $this->taxYear, $this->pageToken);
             $row = ['found' => $row['found'] + $page['found'], 'new' => $row['new'] + $page['new'], 'error' => null];
             $more = $page['next'] && $this->pagesLeft > 1;
-            $row['state'] = $more ? 'running' : 'done';
+            $row['state'] = $more ? 'running' : ($page['next'] ? 'partial' : 'done');
             if ($more) {
                 self::dispatch($this->search, $this->taxYear, $page['next'], $this->pagesLeft - 1);
             }

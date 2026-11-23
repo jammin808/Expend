@@ -48,19 +48,27 @@ final class Grounding
         return in_array(abs($minor), self::amountsIn($quote), true);
     }
 
-    /** Does the quote state this date (as 14 March, Mar 14, 14/03/2025 or 2025-03-14)? */
+    /**
+     * Does the quote state this date (as 14 March, Mar 14, 14/03/2025 or 2025-03-14)? Prices like £14.03 don't
+     * count as dates, and when the quote gives a year it has to be the right one.
+     */
     public static function dateInQuote(string $date, string $quote): bool
     {
         $d = CarbonImmutable::parse($date);
-        $q = mb_strtolower($quote);
+        $q = mb_strtolower(preg_replace('/[£$€]\s?\d[\d,]*(?:\.\d+)?/u', ' ', $quote));
         if (str_contains($q, $d->format('Y-m-d'))) {
             return true;
         }
+        preg_match_all('/\b(?:19|20)\d{2}\b/', $q, $years);
+        if ($years[0] && ! in_array($d->format('Y'), $years[0], true)) {
+            return false;
+        }
         $day = (int) $d->format('j');
         $month = (int) $d->format('n');
-        preg_match_all('/\b(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-]\d{2,4})?\b/', $q, $numeric, PREG_SET_ORDER);
+        preg_match_all('/\b(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-](\d{2}|\d{4}))?\b/', $q, $numeric, PREG_SET_ORDER);
         foreach ($numeric as $m) {
-            if ((int) $m[1] === $day && (int) $m[2] === $month) {
+            $yearOk = ! isset($m[3]) || $m[3] === '' || $m[3] === $d->format('Y') || $m[3] === $d->format('y');
+            if ((int) $m[1] === $day && (int) $m[2] === $month && $yearOk) {
                 return true;
             }
         }

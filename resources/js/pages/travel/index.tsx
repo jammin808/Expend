@@ -397,7 +397,9 @@ export default function Travel({
                                             {gmail.searches[key] ?? key}:{' '}
                                             {p.state === 'failed'
                                                 ? `couldn’t finish (${p.error})`
-                                                : `${p.state === 'done' ? 'done' : 'searching…'} ${p.found} found, ${p.new} new`}
+                                                : p.state === 'partial'
+                                                  ? `stopped after ${p.found} emails, ${p.new} new. Search again to carry on.`
+                                                  : `${p.state === 'done' ? 'done' : 'searching…'} ${p.found} found, ${p.new} new`}
                                         </li>
                                     ))}
                                     {gmail.waiting > 0 && <li>{gmail.waiting} emails waiting to be read…</li>}

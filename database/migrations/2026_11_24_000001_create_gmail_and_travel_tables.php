@@ -45,6 +45,8 @@ return new class extends Migration
             $table->json('evidence')->nullable();
             $table->unsignedSmallInteger('unverified_count')->default(0);
             $table->foreignId('document_id')->nullable()->constrained()->nullOnDelete();
+            // When the email behind the current details was sent: an older email never overrides a newer one.
+            $table->timestamp('source_sent_at')->nullable();
             $table->foreignId('bank_transaction_id')->nullable()->constrained()->nullOnDelete();
             $table->foreignId('work_job_id')->nullable()->constrained()->nullOnDelete();
             $table->json('suggestion')->nullable();
@@ -53,7 +55,8 @@ return new class extends Migration
             $table->timestamp('decided_at')->nullable();
             $table->text('note')->nullable();
             $table->timestamps();
-            $table->unique(['provider', 'reference']);
+            // Legs of a return or multi-leg trip share a booking reference, so the travel date is part of the key.
+            $table->unique(['provider', 'reference', 'kind', 'starts_on']);
             $table->index('starts_on');
         });
 

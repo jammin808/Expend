@@ -98,8 +98,8 @@ final class Suggester
             return null;
         }
 
-        // TfL charges are usually posted the day after you travel.
-        $date = $tx->transaction_on ?? ($code === 'travel_local' ? $tx->posted_on->copy()->subDay() : $tx->posted_on);
+        // TfL adds up a day's contactless journeys and charges them the next day, so the travel day is the day before.
+        $date = $code === 'travel_local' ? $tx->effectiveDate()->copy()->subDay() : $tx->effectiveDate();
         $day = $this->days->day($date->format('Y-m-d'));
         $what = ['travel_local' => 'TfL', 'travel_taxi' => 'Taxi or ride', 'travel_rail' => 'Train ticket', 'travel_parking' => 'Parking or road charge'][$code];
         $when = $date->format('D j M Y');

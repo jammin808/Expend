@@ -6,6 +6,7 @@ use App\Domain\Documents\DocumentIntake;
 use App\Domain\Jobs\PoStatus;
 use App\Models\Document;
 use App\Models\Invoice;
+use App\Models\TaxYear;
 use App\Models\User;
 use App\Models\WorkJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -56,7 +57,7 @@ class PoStatusTest extends TestCase
 
         $this->actingAs(User::factory()->create());
         $this->get('/jobs?show=no_po')->assertOk()->assertInertia(fn ($p) => $p->has('jobs', 1)->where('jobs.0.title', 'No paperwork')->where('counts.no_po', 1));
-        \App\Models\TaxYear::track('2025-26');
+        TaxYear::track('2025-26');
         $this->get('/dashboard')->assertInertia(fn ($p) => $p->where('counts.jobs_without_po', 1));
     }
 

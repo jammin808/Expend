@@ -65,8 +65,8 @@ final class AllocationWriter
                     'is_manual' => $decidedBy === 'you',
                     'confirmed_at' => $confirm ? $now : null,
                     'merchant_rule_id' => $ruleId,
-                    'reason' => $reason,
-                    'note' => $line['note'] ?? null,
+                    'reason' => self::fit($reason),
+                    'note' => self::fit($line['note'] ?? null),
                 ]);
             }
 
@@ -83,6 +83,12 @@ final class AllocationWriter
 
             return true;
         });
+    }
+
+    /** Reasons and notes are shown in full in the history; the stored copy fits its column. */
+    private static function fit(?string $text, int $max = 255): ?string
+    {
+        return $text !== null && mb_strlen($text) > $max ? mb_substr($text, 0, $max - 1).'…' : $text;
     }
 
     /** Accept the current suggestion as it stands. */

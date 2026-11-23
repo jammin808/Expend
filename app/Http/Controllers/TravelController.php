@@ -79,14 +79,31 @@ class TravelController extends Controller
     {
         $label = UkTaxYear::fromLabel((string) $request->input('tax_year'))->label();
         $year = UkTaxYear::fromLabel($label);
+        // Shared hosting stops long requests, so this works within a time budget and says if there's more to do.
+        $started = microtime(true);
         $items = TravelItem::query()->whereNull('decided_at')->whereBetween('starts_on', [$year->startsOn(), $year->endsOn()])->get();
+        $checked = $failed = 0;
         foreach ($items as $item) {
-            $matcher->suggest($item);
+            if (microtime(true) - $started > 60) {
+                break;
+            }
+            try {
+                $matcher->suggest($item);
+                $checked++;
+            } catch (Throwable $e) {
+                $failed++;
+                report($e);
+            }
         }
-        $payments = BankTransaction::query()->where('tax_year', $label)->where('review_status', 'unreviewed')->whereDoesntHave('allocations')->get();
-        $made = $suggester->suggestFor($payments);
+        $made = 0;
+        if (microtime(true) - $started < 60) {
+            $payments = BankTransaction::query()->where('tax_year', $label)->where('review_status', 'unreviewed')->whereDoesntHave('allocations')->limit(2000)->get();
+            $made = $suggester->suggestFor($payments);
+        }
+        $rest = $items->count() - $checked - $failed;
 
-        return back()->with('success', "Checked {$items->count()} stays and journeys against your jobs, and made {$made} new suggestions for payments in your Inbox.");
+        return back()->with($failed ? 'error' : 'success', "Checked {$checked} stays and journeys against your jobs and made {$made} new payment suggestions for your Inbox."
+            .($failed ? " {$failed} couldn’t be checked (see the log)." : '').($rest > 0 ? " {$rest} are left: press it again to carry on." : ''));
     }
 
     public function decide(Request $request, TravelItem $item, TravelMatcher $matcher): RedirectResponse
@@ -98,18 +115,27 @@ class TravelController extends Controller
             'note' => 'nullable|string|max:500',
         ]);
         try {
-            $matcher->decide($item, $data['decision'], $data['job_id'] ?? null, $data['business_nights'] ?? null, $data['note'] ?? null);
+            $outcome = $matcher->decide($item, $data['decision'], $data['job_id'] ?? null, $data['business_nights'] ?? null, $data['note'] ?? null);
         } catch (Throwable $e) {
             return back()->with('error', $e->getMessage());
         }
 
-        return back()->with('success', 'Saved'.($item->bank_transaction_id && $data['decision'] !== 'client_booked' ? ', and applied to its payment.' : '.'));
+        return back()->with('success', match ($outcome) {
+            'applied' => 'Saved, and applied to its payment.',
+            'kept' => 'Saved. You’d already decided its payment yourself, so that was left as you set it.',
+            'unlinked' => 'Saved. The payment that had been matched to it is no longer linked.',
+            default => 'Saved.',
+        });
     }
 
     public function reopen(TravelItem $item, TravelMatcher $matcher): RedirectResponse
     {
         $item->update(['decision' => null, 'decided_at' => null, 'business_nights' => null]);
-        $matcher->suggest($item->fresh());
+        try {
+            $matcher->suggest($item->fresh());
+        } catch (Throwable $e) {
+            report($e);
+        }
 
         return back()->with('success', 'Reopened. Its payment keeps your last decision until you decide again.');
     }

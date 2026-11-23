@@ -25,13 +25,13 @@ class TravelItem extends Model
 
     protected $fillable = [
         'kind', 'provider', 'reference', 'status', 'starts_on', 'ends_on', 'start_time', 'place', 'destination', 'postcode',
-        'amount_minor', 'currency', 'payment', 'booked_for', 'booker', 'source', 'evidence', 'unverified_count', 'document_id',
+        'amount_minor', 'currency', 'payment', 'booked_for', 'booker', 'source', 'evidence', 'unverified_count', 'document_id', 'source_sent_at',
         'bank_transaction_id', 'work_job_id', 'suggestion', 'decision', 'business_nights', 'decided_at', 'note',
     ];
 
     protected $casts = [
         'starts_on' => 'date', 'ends_on' => 'date', 'amount_minor' => 'integer', 'evidence' => 'array', 'suggestion' => 'array',
-        'decided_at' => 'datetime', 'business_nights' => 'integer', 'unverified_count' => 'integer',
+        'decided_at' => 'datetime', 'source_sent_at' => 'datetime', 'business_nights' => 'integer', 'unverified_count' => 'integer',
     ];
 
     public function document(): BelongsTo

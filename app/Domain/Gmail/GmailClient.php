@@ -4,6 +4,8 @@ namespace App\Domain\Gmail;
 
 use App\Domain\Audit\AuditLog;
 use App\Models\Setting;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -118,7 +120,11 @@ final class GmailClient
     public static function disconnect(): void
     {
         if ($token = Setting::get('gmail_refresh_token')) {
-            Http::asForm()->timeout(15)->post('https://oauth2.googleapis.com/revoke', ['token' => $token]);
+            try {
+                Http::asForm()->timeout(10)->post('https://oauth2.googleapis.com/revoke', ['token' => $token]);
+            } catch (\Throwable $e) {
+                report($e); // the tokens are still removed below; access can also be removed at myaccount.google.com
+            }
         }
         foreach (['gmail_refresh_token', 'gmail_access_token', 'gmail_access_expires', 'gmail_account'] as $key) {
             Setting::put($key, null);
@@ -129,7 +135,10 @@ final class GmailClient
     /** GET a Gmail API path, for example "messages" or "messages/{id}". */
     public static function get(string $path, array $query = []): array
     {
-        $response = Http::withToken(self::accessToken())->timeout(30)->retry(2, 500, throw: false)->get(self::API.$path, $query);
+        // Retry only what a retry can fix: network trouble and Google's own server errors.
+        $retryable = fn ($e) => $e instanceof ConnectionException
+            || ($e instanceof RequestException && $e->response->serverError());
+        $response = Http::withToken(self::accessToken())->timeout(30)->retry(2, 500, $retryable, throw: false)->get(self::API.$path, $query);
         if ($response->status() === 401) {
             Setting::put('gmail_access_token', null);
             $response = Http::withToken(self::accessToken())->timeout(30)->get(self::API.$path, $query);

@@ -43,7 +43,7 @@ final class DocumentIntake
             'size' => strlen($contents),
             'sha256' => $sha,
             'stored_path' => $path,
-            'email_from' => $meta['from'] ?? null,
+            'email_from' => isset($meta['from']) ? mb_substr($meta['from'], 0, 250) : null,
             'email_subject' => isset($meta['subject']) ? mb_substr($meta['subject'], 0, 500) : null,
             'received_at' => $meta['received_at'] ?? now(),
             'kind' => $isEmail ? 'email' : 'unknown',
@@ -76,7 +76,7 @@ final class DocumentIntake
         $header = 'From: '.$message->getHeaderValue('From')."\nTo: ".$message->getHeaderValue('To')."\nDate: ".$message->getHeaderValue('Date')."\nSubject: ".$message->getHeaderValue('Subject');
 
         $document->update([
-            'email_from' => $document->email_from ?? $message->getHeaderValue('From'),
+            'email_from' => $document->email_from ?? (($from = $message->getHeaderValue('From')) ? mb_substr($from, 0, 250) : null),
             'email_subject' => $document->email_subject ?? mb_substr((string) $message->getHeaderValue('Subject'), 0, 500),
             'text' => trim($header."\n\n".preg_replace("/\n{3,}/", "\n\n", (string) $body)),
             'text_status' => 'extracted',

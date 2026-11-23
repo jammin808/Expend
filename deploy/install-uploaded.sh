@@ -61,9 +61,22 @@ ln -sfn ../../shared/.env .env
 rm -rf storage && ln -sfn ../../shared/storage storage
 mkdir -p bootstrap/cache
 
-if [ -L "$APP/current" ] && [ -f "$APP/shared/backup_public.pem" ]; then
-    step "Backing up the database before migrating"
-    bash deploy/backup.sh --pre-deploy
+if [ -L "$APP/current" ]; then
+    if [ -f "$APP/shared/backup_public.pem" ]; then
+        step "Backing up the database before migrating (encrypted)"
+        bash deploy/backup.sh --pre-deploy
+    else
+        # No backup key yet: keep a plain copy outside the web root, readable only by this account, last 5 kept.
+        # It stops the deploy if the dump fails. Add backup_public.pem to get encrypted backups instead.
+        step "Backing up the database before migrating (server-only copy in ~/ledger-backups)"
+        env_value() { grep -E "^$1=" "$APP/shared/.env" | tail -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//'; }
+        mkdir -p "$HOME/ledger-backups" && chmod 700 "$HOME/ledger-backups"
+        OUT="$HOME/ledger-backups/pre-deploy-$RELEASE.sql.gz"
+        (umask 077; MYSQL_PWD="$(env_value DB_PASSWORD)" mysqldump --single-transaction --no-tablespaces \
+            -h "$(env_value DB_HOST)" -u "$(env_value DB_USERNAME)" "$(env_value DB_DATABASE)" | gzip > "$OUT")
+        step "Saved $(du -h "$OUT" | cut -f1) to ~/ledger-backups"
+        for old in $(ls -1t "$HOME"/ledger-backups/pre-deploy-*.sql.gz | tail -n +6); do rm -f "$old"; done
+    fi
 fi
 
 step "Migrating"

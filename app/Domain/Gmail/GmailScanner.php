@@ -8,6 +8,7 @@ use App\Jobs\ReadTravelEmail;
 use App\Models\GmailMessage;
 use App\Models\Setting;
 use App\Support\UkTaxYear;
+use Throwable;
 
 /**
  * Runs the narrow, editable Gmail searches for one tax year and keeps only what matches: each message is
@@ -59,21 +60,34 @@ final class GmailScanner
         $new = 0;
 
         foreach ($page['ids'] as $id) {
-            if (GmailMessage::query()->where('message_id', $id)->exists()) {
+            $seen = GmailMessage::query()->where('message_id', $id)->first();
+            if ($seen && ($seen->document_id || $seen->status !== 'failed')) {
+                continue; // already read; a message that failed to download is tried again
+            }
+            // One bad message (deleted since the search, too big, unreadable) is logged and skipped, not the whole search.
+            try {
+                $message = GmailClient::message($id);
+                [$from, $subject] = self::headers($message['raw']);
+                $sentAt = $message['sent_at'] ? date('Y-m-d H:i:s', $message['sent_at']) : null;
+                $document = $this->intake->store($message['raw'], mb_substr($subject ?: 'email', 0, 200).'.eml', 'message/rfc822', 'gmail', [
+                    'from' => $from, 'subject' => $subject, 'received_at' => $sentAt,
+                ]);
+            } catch (Throwable $e) {
+                GmailMessage::query()->updateOrCreate(['message_id' => $id], [
+                    'search' => $search, 'subject' => mb_substr((string) ($subject ?? ''), 0, 500) ?: null,
+                    'email_from' => isset($from) ? mb_substr((string) $from, 0, 300) : null, 'sent_at' => $sentAt ?? null,
+                    'status' => 'failed', 'error' => mb_substr($e->getMessage(), 0, 1000),
+                ]);
+                unset($from, $subject, $sentAt);
+
                 continue;
             }
-            $message = GmailClient::message($id);
-            [$from, $subject] = self::headers($message['raw']);
-
-            $document = $this->intake->store($message['raw'], ($subject ?: 'email').'.eml', 'message/rfc822', 'gmail', [
-                'from' => $from, 'subject' => $subject,
-                'received_at' => $message['sent_at'] ? date('Y-m-d H:i:s', $message['sent_at']) : null,
-            ]);
-            $logged = GmailMessage::query()->create([
-                'message_id' => $id, 'thread_id' => $message['thread_id'], 'search' => $search,
+            $logged = GmailMessage::query()->updateOrCreate(['message_id' => $id], [
+                'thread_id' => $message['thread_id'], 'search' => $search, 'status' => 'stored', 'error' => null,
                 'email_from' => mb_substr((string) $from, 0, 300), 'subject' => mb_substr((string) $subject, 0, 500),
-                'sent_at' => $message['sent_at'] ? date('Y-m-d H:i:s', $message['sent_at']) : null, 'document_id' => $document->id,
+                'sent_at' => $sentAt, 'document_id' => $document->id,
             ]);
+            unset($from, $subject, $sentAt);
             $new++;
 
             if ($search !== 'job_documents') {

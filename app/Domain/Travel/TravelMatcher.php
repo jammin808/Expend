@@ -9,6 +9,7 @@ use App\Models\Category;
 use App\Models\TaxYear;
 use App\Models\TravelItem;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Proposes what each stay or journey is: lines it up with your jobs night by night (TravelDays), finds the
@@ -50,6 +51,7 @@ final class TravelMatcher
 
         $business = count(array_filter($verdicts, fn ($v) => $v['verdict'] === 'business'));
         $review = count(array_filter($verdicts, fn ($v) => $v['verdict'] === 'review'));
+        $personal = count($verdicts) - $business - $review;
         $jobCounts = array_count_values(array_filter(array_map(fn ($v) => $v['job']?->id, $verdicts)));
         arsort($jobCounts);
         $jobId = array_key_first($jobCounts);
@@ -85,79 +87,127 @@ final class TravelMatcher
             ],
         ]);
 
-        if ($payment && in_array($decision, ['business', 'personal', 'mixed', 'review'], true)) {
-            $kind = $decision === 'personal' || ($decision === 'review' && ! $jobId) ? 'personal' : ($decision === 'mixed' ? 'mixed' : 'business');
+        // The same proposal goes on the payment, unconfirmed. "Check" nights are proposed as business, the rest
+        // as personal, so a stay with any personal night is split. Locked years and your own decisions are left alone.
+        if ($payment && in_array($decision, ['business', 'personal', 'mixed', 'review'], true) && ! $this->isLocked($payment)) {
+            $kind = match (true) {
+                $decision === 'personal', $decision === 'review' && ! $jobId => 'personal',
+                $decision === 'mixed', $decision === 'review' && $personal > 0 => 'mixed',
+                default => 'business',
+            };
             $lines = $this->lines($item, $payment->amount_pence, $kind, $jobId, $business + $review);
             $this->writer->decide($payment, $lines, 'matcher', false, $this->summary($item).': '.implode('; ', array_slice($reasons, 0, 3)));
         }
     }
 
     /**
-     * Your decision on a stay or journey. It's applied to its payment too, as your own confirmed decision.
+     * Your decision on a stay or journey. It's applied to its payment too, as your own confirmed decision,
+     * unless you've already decided that payment yourself (then it's left as you set it).
+     *
+     * @return string what happened to the payment, for the message you see
      */
-    public function decide(TravelItem $item, string $decision, ?int $jobId, ?int $businessNights, ?string $note): void
+    public function decide(TravelItem $item, string $decision, ?int $jobId, ?int $businessNights, ?string $note): string
     {
         $nights = count($item->nights());
         $businessNights = $decision === 'mixed' ? max(1, min($nights - 1, (int) $businessNights)) : null;
-        $item->update([
-            'decision' => $decision, 'work_job_id' => in_array($decision, ['personal', 'client_booked'], true) && ! $jobId ? $item->work_job_id : $jobId,
-            'business_nights' => $businessNights, 'decided_at' => now(), 'note' => $note,
-        ]);
-        AuditLog::record('travel.decided', $item, null, ['decision' => $decision, 'job_id' => $jobId, 'business_nights' => $businessNights, 'note' => $note]);
-
         $payment = $item->transaction;
-        if (! $payment || $decision === 'client_booked') {
-            return;
+        if ($payment && $decision !== 'client_booked' && $this->isLocked($payment)) {
+            throw new \RuntimeException("Its payment is in a locked tax year ({$payment->tax_year}). Unlock the year to change it.");
         }
-        $kind = match ($decision) {
-            'personal' => 'personal', 'mixed' => 'mixed', default => 'business',
-        };
-        $lines = $this->lines($item, $payment->amount_pence, $kind, $jobId, $businessNights ?? $nights,
-            $decision === 'recharge' ? 'Recharged to the client' : $note);
-        $this->writer->decide($payment, $lines, 'you', true, $this->summary($item).': '.(TravelItem::DECISIONS[$decision] ?? $decision));
+
+        return DB::transaction(function () use ($item, $decision, $jobId, $businessNights, $note, $nights, $payment) {
+            $outcome = 'none';
+            if ($payment && $decision === 'client_booked') {
+                // Booked and paid by the client: the payment isn't this stay's. Take back any automatic suggestion.
+                if ($payment->allocations()->get()->every(fn ($a) => ! $a->is_manual && $a->confirmed_at === null) && ! $this->isLocked($payment)) {
+                    $this->writer->clear($payment, 'Not this stay’s payment: booked by the client');
+                }
+                $item->bank_transaction_id = null;
+                $outcome = 'unlinked';
+            } elseif ($payment && $payment->allocations()->get()->contains(fn ($a) => $a->is_manual || $a->confirmed_at !== null)) {
+                $outcome = 'kept';
+            } elseif ($payment) {
+                $kind = match ($decision) {
+                    'personal' => 'personal', 'mixed' => 'mixed', default => 'business',
+                };
+                $lines = $this->lines($item, $payment->amount_pence, $kind, $jobId, $businessNights ?? $nights,
+                    $decision === 'recharge' ? 'Recharged to the client' : $note);
+                $this->writer->decide($payment, $lines, 'you', true, $this->summary($item).': '.(TravelItem::DECISIONS[$decision] ?? $decision));
+                $outcome = 'applied';
+            }
+
+            $item->fill([
+                'decision' => $decision, 'work_job_id' => $decision === 'personal' ? $jobId : ($jobId ?? $item->work_job_id),
+                'business_nights' => $businessNights, 'decided_at' => now(), 'note' => $note,
+            ])->save();
+            AuditLog::record('travel.decided', $item, null, ['decision' => $decision, 'job_id' => $jobId, 'business_nights' => $businessNights, 'note' => $note, 'payment' => $outcome]);
+
+            return $outcome;
+        });
     }
 
-    /** The payment for a stay or journey: same amount (when in pounds), a statement description naming the provider, and a sensible date. */
+    private function isLocked(BankTransaction $payment): bool
+    {
+        return TaxYear::query()->where('label', $payment->tax_year)->whereNotNull('locked_at')->exists();
+    }
+
+    /**
+     * The payment for a stay or journey: a statement line naming the provider (hotel brand for pay-at-hotel
+     * stays) at the same amount, or, abroad, the same original amount and currency; and a sensible date.
+     * Without an amount to compare, a match only counts when it's the only one.
+     */
     public function findPayment(TravelItem $item): ?BankTransaction
     {
         $booked = CarbonImmutable::parse($item->document?->received_at ?? $item->starts_on);
         $from = ($booked->lt($item->starts_on) ? $booked : CarbonImmutable::parse($item->starts_on))->subDays(3);
-        $to = CarbonImmutable::parse($item->ends_on ?? $item->starts_on)->addDays(7);
+        $to = CarbonImmutable::parse($item->ends_on ?? $item->starts_on)->addDays(10);
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
         $taken = TravelItem::query()->whereNotNull('bank_transaction_id')->where('id', '!=', $item->id)->pluck('bank_transaction_id');
 
-        $candidates = BankTransaction::query()->where('amount_pence', '<', 0)
-            ->whereBetween('posted_on', [$from->format('Y-m-d'), $to->addDays(3)->format('Y-m-d')])
+        $base = fn () => BankTransaction::query()->where('amount_pence', '<', 0)
+            ->whereBetween('posted_on', [$from->format('Y-m-d'), $to->format('Y-m-d')])
             ->whereNotIn('id', $taken)->whereNotIn('tax_year', $locked)
-            ->when($item->currency === 'GBP' && $item->amount_minor, fn ($q) => $q->where('amount_pence', -$item->amount_minor))
-            ->orderBy('posted_on')->limit(50)->get();
+            ->where('description', 'not like', '%UBER%EATS%');
+        $sameAmount = function ($q) use ($item) {
+            if (! $item->amount_minor) {
+                return $q;
+            }
 
-        $words = self::MERCHANT_WORDS[$item->provider] ?? [];
-        if ($item->place) {
+            return $item->currency === 'GBP'
+                ? $q->where('amount_pence', -$item->amount_minor)
+                : $q->where('original_currency', $item->currency)->whereIn('original_amount_minor', [$item->amount_minor, -$item->amount_minor]);
+        };
+        $named = function ($q, array $words) {
+            return $q->where(function ($q) use ($words) {
+                foreach (array_filter($words) as $word) {
+                    $like = '%'.addcslashes($word, '%_\\').'%';
+                    $q->orWhere('description', 'like', $like)->orWhere('counterparty', 'like', $like);
+                }
+            });
+        };
+        $target = CarbonImmutable::parse($item->payment === 'pay_at_property' ? ($item->ends_on ?? $item->starts_on) : $booked);
+        $closest = fn ($candidates) => $candidates->sortBy(fn (BankTransaction $t) => abs($t->effectiveDate()->diffInDays($target)))->first();
+
+        // 1. Named after the provider (or, for a pay-at-hotel stay, the hotel's own name) at the same amount.
+        $words = self::MERCHANT_WORDS[$item->provider] ?? [strtoupper($item->provider)];
+        if ($item->kind === 'hotel' && $item->place) {
             $words[] = strtoupper(implode(' ', array_slice(preg_split('/[\s,]+/', $item->place), 0, 2)));
         }
-        $named = $candidates->filter(function (BankTransaction $t) use ($words) {
-            $text = strtoupper($t->description.' '.$t->counterparty);
-            if (str_contains($text, 'UBER') && str_contains($text, 'EATS')) {
-                return false;
+        if ($item->amount_minor) {
+            $match = $named($sameAmount($base()), $words)->orderBy('posted_on')->limit(20)->get();
+            if ($match->isNotEmpty()) {
+                return $closest($match);
             }
-            foreach ($words as $w) {
-                if ($w !== '' && str_contains($text, $w)) {
-                    return true;
-                }
-            }
+            // 2. The same amount, but the statement doesn't name the provider: only a single exact match counts.
+            $match = $sameAmount($base())->limit(2)->get();
 
-            return false;
-        });
-
-        if ($named->isNotEmpty()) {
-            $target = CarbonImmutable::parse($item->payment === 'pay_at_property' ? ($item->ends_on ?? $item->starts_on) : $booked);
-
-            return $named->sortBy(fn (BankTransaction $t) => abs($t->effectiveDate()->diffInDays($target)))->first();
+            return $match->count() === 1 ? $match->first() : null;
         }
 
-        // Same amount but the statement doesn't name the provider: only a single, exact match counts.
-        return $item->currency === 'GBP' && $item->amount_minor && $candidates->count() === 1 ? $candidates->first() : null;
+        // 3. No amount to compare: only when exactly one payment names the provider.
+        $match = $named($base(), self::MERCHANT_WORDS[$item->provider] ?? [strtoupper($item->provider)])->limit(2)->get();
+
+        return $match->count() === 1 ? $match->first() : null;
     }
 
     private function lines(TravelItem $item, int $amount, string $kind, ?int $jobId, int $businessNights, ?string $note = null): array

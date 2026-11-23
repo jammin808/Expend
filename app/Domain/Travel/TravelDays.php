@@ -62,7 +62,8 @@ final class TravelDays
             if (! $side) {
                 continue;
             }
-            $stayed = TravelItem::query()->where('kind', 'hotel')->where('work_job_id', $job->id)->where('status', '!=', 'cancelled')->exists();
+            $stayed = TravelItem::query()->where('kind', 'hotel')->where('work_job_id', $job->id)->where('status', '!=', 'cancelled')
+                ->where(fn ($q) => $q->whereNull('decision')->orWhere('decision', '!=', 'personal'))->exists();
             $miles = $this->milesFromHome($job);
             if ($stayed || ($miles !== null && $miles > $this->far())) {
                 return $this->result('business', $job, "the day {$side} ".$this->name($job).($stayed ? ', with a hotel stay for it' : ", {$miles} miles from home"));

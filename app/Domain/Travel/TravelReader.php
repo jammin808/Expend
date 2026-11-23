@@ -138,17 +138,17 @@ final class TravelReader
 
             $items[] = [
                 'kind' => $kind,
-                'provider' => (string) ($node['provider']['name'] ?? $node['broker']['name'] ?? $for['airline']['name'] ?? $provider),
-                'reference' => isset($node['reservationNumber']) ? (string) $node['reservationNumber'] : null,
+                'provider' => self::clip(is_string($p = $node['provider']['name'] ?? $node['broker']['name'] ?? $for['airline']['name'] ?? null) ? $p : $provider, 120),
+                'reference' => self::clip(isset($node['reservationNumber']) ? (string) $node['reservationNumber'] : null, 120),
                 'status' => $status,
                 'starts_on' => $startsOn,
                 'ends_on' => self::isoDate($end),
                 'start_time' => self::isoTime($start),
-                'place' => $place, 'destination' => $destination, 'postcode' => self::postcode($postcode),
+                'place' => self::clip($place), 'destination' => self::clip(is_string($destination) ? $destination : null), 'postcode' => self::postcode($postcode),
                 'amount_minor' => self::minor($price),
                 'currency' => self::currency($currency ?? $node['priceCurrency'] ?? null),
                 'payment' => 'unknown',
-                'booked_for' => $node['underName']['name'] ?? null,
+                'booked_for' => self::clip(is_string($n = $node['underName']['name'] ?? null) ? $n : null, 200),
                 'booker' => null,
                 'source' => 'structured_data',
                 'evidence' => ['starts_on' => $structured, 'ends_on' => $structured, 'amount' => $structured, 'reference' => $structured, 'place' => $structured],
@@ -216,23 +216,39 @@ final class TravelReader
     }
 
     /** One record per booking: later emails (amendments, receipts, cancellations) update the same stay. */
+    /**
+     * One record per booking: later emails (amendments, receipts, cancellations) update the same stay.
+     * A hotel booking is keyed by its reference; the legs of a return or multi-leg trip share a reference,
+     * so journeys are keyed by reference and travel date. Gmail lists newest first, so an email older than
+     * the one behind the current details is ignored: it can't undo a cancellation or an amendment.
+     */
     private function save(array $data, Document $document): TravelItem
     {
-        $existing = $data['reference']
-            ? TravelItem::query()->where('provider', $data['provider'])->where('reference', $data['reference'])->first()
-            : TravelItem::query()->where('kind', $data['kind'])->where('provider', $data['provider'])->whereDate('starts_on', $data['starts_on'])
-                ->where(fn ($q) => $q->where('amount_minor', $data['amount_minor'])->orWhereNull('amount_minor'))->first();
+        $sentAt = $document->received_at;
+        $query = TravelItem::query()->where('provider', $data['provider'])->where('kind', $data['kind']);
+        $existing = match (true) {
+            $data['reference'] && $data['kind'] === 'hotel' => (clone $query)->where('reference', $data['reference'])->first(),
+            (bool) $data['reference'] => (clone $query)->where('reference', $data['reference'])->whereDate('starts_on', $data['starts_on'])->first(),
+            default => (clone $query)->whereNull('reference')->whereDate('starts_on', $data['starts_on'])
+                ->where(fn ($q) => $q->where('amount_minor', $data['amount_minor'])->orWhereNull('amount_minor'))->first(),
+        };
 
-        if ($existing) {
-            // A cancellation only changes the status. Once you've decided a stay, later emails don't
-            // rewrite its details either; otherwise the newest email's details win.
-            $existing->update($data['status'] === 'cancelled' || $existing->decided_at
-                ? ['status' => $data['status'] === 'cancelled' ? 'cancelled' : $existing->status]
-                : array_filter($data, fn ($v) => $v !== null) + ['document_id' => $document->id]);
-            $item = $existing->fresh();
-        } else {
-            $item = TravelItem::query()->create($data + ['document_id' => $document->id]);
+        if (! $existing) {
+            $item = TravelItem::query()->create($data + ['document_id' => $document->id, 'source_sent_at' => $sentAt]);
             AuditLog::record('travel.found', $item, null, ['kind' => $item->kind, 'provider' => $item->provider, 'starts_on' => $data['starts_on']]);
+        } else {
+            $older = $sentAt && $existing->source_sent_at && $sentAt->lt($existing->source_sent_at);
+            if (! $older) {
+                if ($data['status'] === 'cancelled') {
+                    $existing->update(['status' => 'cancelled', 'source_sent_at' => $sentAt]);
+                } elseif ($existing->decided_at) {
+                    // Once you've decided, a later email only matters if it un-cancels the booking.
+                    $existing->update(['status' => 'booked', 'source_sent_at' => $sentAt]);
+                } else {
+                    $existing->update(array_filter($data, fn ($v) => $v !== null) + ['document_id' => $document->id, 'source_sent_at' => $sentAt]);
+                }
+            }
+            $item = $existing->fresh();
         }
 
         $this->matcher->suggest($item);

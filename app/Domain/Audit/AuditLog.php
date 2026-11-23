@@ -32,7 +32,8 @@ final class AuditLog
             'subject_id' => $id,
             'before' => $before,
             'after' => $after,
-            'reason' => $reason,
+            // Shortened to fit the column before hashing, so the stored row and its hash agree.
+            'reason' => $reason !== null && mb_strlen($reason) > 255 ? mb_substr($reason, 0, 254).'…' : $reason,
             'prev_hash' => $prev,
         ]);
         $event->hash = self::hashFor($event);
