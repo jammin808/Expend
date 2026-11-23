@@ -7,6 +7,7 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Jobs\PoStatus;
 use App\Models\Client;
 use App\Models\Document;
 use App\Models\Invoice;
@@ -33,8 +34,10 @@ class DocumentController extends Controller
             ->when($f['status'] ?? null, fn ($q, $v) => $q->where('status', $v))
             ->withCount('children')->orderByDesc('received_at')->limit(200)->get();
 
+        $invoiced = PoStatus::invoicedDocuments($docs);
+
         return Inertia::render('documents/index', [
-            'documents' => $docs->map(fn (Document $d) => self::row($d)),
+            'documents' => $docs->map(fn (Document $d) => self::row($d) + ['invoiced' => $invoiced[$d->id] ?? null]),
             'filters' => $f,
             'kinds' => Document::KINDS,
             'aiReady' => AiConfig::ready(),
@@ -44,15 +47,16 @@ class DocumentController extends Controller
     public function show(Document $document): Response
     {
         $document->load(['facts', 'job', 'children.facts', 'parent']);
+        $invoiced = PoStatus::invoicedDocuments(collect([$document])->merge($document->children));
 
         return Inertia::render('documents/show', [
-            'document' => array_merge(self::row($document), [
+            'document' => array_merge(self::row($document), ['invoiced' => $invoiced[$document->id] ?? null], [
                 'text' => $document->text ? mb_substr($document->text, 0, 60_000) : null,
                 'text_status' => $document->text_status,
                 'extraction' => $document->extraction,
                 'error' => $document->error,
                 'facts' => $document->facts->map(fn ($f) => $f->only(['id', 'field', 'label', 'value', 'at_time', 'quote', 'page', 'verified', 'verification_note']) + ['on_date' => $f->on_date?->format('Y-m-d')]),
-                'children' => $document->children->map(fn (Document $c) => self::row($c)),
+                'children' => $document->children->map(fn (Document $c) => self::row($c) + ['invoiced' => $invoiced[$c->id] ?? null]),
                 'parent' => $document->parent ? self::row($document->parent) : null,
                 'invoices' => Invoice::query()->where('document_id', $document->id)->get(['id', 'number', 'status', 'total_minor']),
             ]),

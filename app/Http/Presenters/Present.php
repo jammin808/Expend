@@ -86,6 +86,8 @@ final class Present
             'location' => $job->location,
             'postcode' => $job->postcode,
             'fee_pence' => $job->fee_pence,
+            'po_number' => $job->po_number,
+            'po_not_required' => (bool) $job->po_not_required,
             'status' => $job->status,
             'notes' => $job->notes,
         ];

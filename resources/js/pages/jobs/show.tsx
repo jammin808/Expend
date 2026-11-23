@@ -1,4 +1,4 @@
-import { DocLine, type DocRow } from '@/components/doc-line';
+import { DocLine, InvoicedTick, type DocRow, type Invoiced } from '@/components/doc-line';
 import { ItemDrawer } from '@/components/item-drawer';
 import { JobForm, type JobData } from '@/components/job-form';
 import { JobSheet, type SheetFact } from '@/components/job-sheet';
@@ -10,11 +10,18 @@ import AppLayout from '@/layouts/app-layout';
 import { day, kindLabels, money } from '@/lib/format';
 import { type InvoiceRow } from '@/pages/invoices/index';
 import { type Item, type Lookups } from '@/types';
-import { Head, router } from '@inertiajs/react';
+import { Head, Link, router } from '@inertiajs/react';
+import { FileWarning } from 'lucide-react';
 import { useState } from 'react';
 
 interface Props {
-    job: JobData & { id: number; client: string | null };
+    job: JobData & {
+        id: number;
+        client: string | null;
+        po: { number: string | null; document_id: number | null; source: string } | null;
+        missing: boolean;
+        invoice: Invoiced | null;
+    };
     lines: {
         id: number;
         date: string;
@@ -53,7 +60,10 @@ export default function JobShow({ job, lines, mileage, totals, near, lookups, cl
             <div className="mx-auto w-full max-w-5xl space-y-5 p-4 md:p-6">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                        <h1 className="text-2xl font-semibold tracking-tight">{job.title}</h1>
+                        <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight">
+                            {job.title}
+                            {job.invoice && <InvoicedTick invoiced={job.invoice} className="text-sm" />}
+                        </h1>
                         <p className="text-muted-foreground text-sm">
                             {day(job.starts_on)}
                             {job.ends_on !== job.starts_on ? ` – ${day(job.ends_on)}` : ''}
@@ -67,6 +77,32 @@ export default function JobShow({ job, lines, mileage, totals, near, lookups, cl
                         Edit job
                     </Button>
                 </div>
+
+                {job.missing ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950/30">
+                        <p className="flex items-center gap-2">
+                            <FileWarning className="size-4 text-amber-600" />
+                            No PO for this job yet. Ask the client for one before you invoice, or link the PO email under Documents.
+                        </p>
+                        <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+                            Add PO number, or mark it not needed
+                        </Button>
+                    </div>
+                ) : (
+                    job.po && (
+                        <p className="text-muted-foreground text-sm">
+                            PO {job.po.number ?? '(number not read)'}
+                            {job.po.document_id && (
+                                <>
+                                    {' · '}
+                                    <Link className="underline underline-offset-2" href={`/documents/${job.po.document_id}`}>
+                                        view the PO
+                                    </Link>
+                                </>
+                            )}
+                        </p>
+                    )
+                )}
 
                 <div className="grid gap-3 sm:grid-cols-4">
                     {[

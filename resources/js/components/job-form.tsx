@@ -18,6 +18,8 @@ export interface JobData {
     fee_pence: number | null;
     status: string;
     notes: string | null;
+    po_number?: string | null;
+    po_not_required?: boolean;
 }
 
 export function JobForm({ job, clients, onDone }: { job?: JobData; clients: { id: number; name: string }[]; onDone?: () => void }) {
@@ -34,6 +36,8 @@ export function JobForm({ job, clients, onDone }: { job?: JobData; clients: { id
         fee: job?.fee_pence ? (job.fee_pence / 100).toFixed(2) : '',
         status: job?.status ?? 'booked',
         notes: job?.notes ?? '',
+        po_number: job?.po_number ?? '',
+        po_not_required: job?.po_not_required ?? false,
     });
 
     return (
@@ -107,6 +111,23 @@ export function JobForm({ job, clients, onDone }: { job?: JobData; clients: { id
                     <option value="cancelled">Cancelled</option>
                 </NativeSelect>
             </div>
+            <div className="space-y-1.5">
+                <Label>PO number</Label>
+                <Input
+                    value={form.data.po_number}
+                    onChange={(e) => form.setData('po_number', e.target.value)}
+                    placeholder="If the PO didn’t come as a document"
+                />
+            </div>
+            <label className="flex items-center gap-2 self-end pb-2 text-sm">
+                <input
+                    type="checkbox"
+                    className="size-4"
+                    checked={form.data.po_not_required}
+                    onChange={(e) => form.setData('po_not_required', e.target.checked)}
+                />
+                No PO needed for this job
+            </label>
             <div className="space-y-1.5 sm:col-span-2">
                 <Label>Notes</Label>
                 <Textarea value={form.data.notes} onChange={(e) => form.setData('notes', e.target.value)} />

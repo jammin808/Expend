@@ -1,4 +1,4 @@
-import { DocLine, type DocRow } from '@/components/doc-line';
+import { DocLine, InvoicedTick, type DocRow } from '@/components/doc-line';
 import { Money } from '@/components/money';
 import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
@@ -106,7 +106,10 @@ export default function DocumentShow({ document: d, jobs, kinds, aiReady }: Prop
             <div className="mx-auto w-full max-w-5xl space-y-5 p-4 md:p-6">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                        <h1 className="text-xl font-semibold tracking-tight break-words">{d.subject ?? d.name}</h1>
+                        <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold tracking-tight break-words">
+                            {d.subject ?? d.name}
+                            {d.invoiced && <InvoicedTick invoiced={d.invoiced} />}
+                        </h1>
                         <p className="text-muted-foreground text-sm">
                             {kinds[d.kind]} · {d.received} · via {d.source}
                             {d.from ? ` · from ${d.from}` : ''}

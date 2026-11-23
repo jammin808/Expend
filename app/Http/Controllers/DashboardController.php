@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Jobs\PoStatus;
 use App\Domain\Tax\ReturnSummary;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\TaxYear;
+use App\Models\WorkJob;
 use App\Support\UkTaxYear;
 use Illuminate\Http\RedirectResponse;
 use Inertia\Inertia;
@@ -56,6 +58,7 @@ class DashboardController extends Controller
                 'accounts' => Account::query()->count(),
                 'transactions' => BankTransaction::query()->count(),
                 'to_review' => BankTransaction::query()->whereIn('review_status', ['unreviewed', 'suggested'])->count(),
+                'jobs_without_po' => collect(PoStatus::forJobs(WorkJob::query()->where('status', '!=', 'cancelled')->get()))->where('missing', true)->count(),
             ],
             'twoFactor' => request()->user()->hasTwoFactor(),
         ]);

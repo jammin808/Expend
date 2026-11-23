@@ -23,7 +23,7 @@ interface Props {
     currentYear: string;
     mtd: { starts: string; based_on: string; turnover_over: number; turnover_pence: number; applies: boolean }[];
     vat: { rolling_turnover_pence: number; threshold_pence: number };
-    counts: { accounts: number; transactions: number; to_review: number };
+    counts: { accounts: number; transactions: number; to_review: number; jobs_without_po: number };
     twoFactor: boolean;
 }
 
@@ -55,6 +55,14 @@ export default function Dashboard({ years, mtd, vat, counts, twoFactor }: Props)
                         <p className="text-muted-foreground text-sm">
                             {counts.transactions.toLocaleString()} transactions across {counts.accounts} accounts
                         </p>
+                        {counts.jobs_without_po > 0 && (
+                            <Link
+                                href="/jobs?show=no_po"
+                                className="mt-1 inline-block text-sm text-amber-700 underline underline-offset-2 dark:text-amber-400"
+                            >
+                                {counts.jobs_without_po} job{counts.jobs_without_po === 1 ? '' : 's'} without a PO
+                            </Link>
+                        )}
                     </div>
                     <div className="flex gap-2">
                         <Button variant="outline" asChild>

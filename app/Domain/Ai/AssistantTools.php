@@ -2,6 +2,7 @@
 
 namespace App\Domain\Ai;
 
+use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Tax\BillPreview;
 use App\Domain\Tax\MileageCalculator;
@@ -47,7 +48,7 @@ final class AssistantTools
                     'direction' => ['type' => 'string', 'enum' => ['in', 'out']], 'limit' => $int])],
             ['name' => 'tax_year_overview', 'description' => 'Self-employment figures for a tax year from confirmed decisions, items still pending, pre-filing checks, deadline, and a labelled ESTIMATE of tax and the likely HMRC bill.',
                 'inputSchema' => $obj(['tax_year' => $str], ['tax_year'])],
-            ['name' => 'list_jobs', 'description' => 'Jobs in a date range or matching words, with income, costs, mileage and profit from confirmed records.',
+            ['name' => 'list_jobs', 'description' => 'Jobs in a date range or matching words, with income, costs, mileage and profit from confirmed records, the PO number (or missing_po when a job has no PO) and whether it has been invoiced.',
                 'inputSchema' => $obj(['date_from' => $str, 'date_to' => $str, 'query' => $str])],
             ['name' => 'job_sheet', 'description' => 'Everything about one job: dates, times, venue, travel, accommodation, contacts and other details read from documents (each marked verified or not, with its source), hotel stays and journeys found in Gmail with their booking references, linked costs and income, mileage, documents and invoices.',
                 'inputSchema' => $obj(['job_id' => $int], ['job_id'])],
@@ -181,6 +182,19 @@ final class AssistantTools
             'agreed_fee' => $j->fee_pence ? self::money($j->fee_pence) : null,
             'income_confirmed' => self::money($income), 'costs_confirmed' => self::money($costs), 'mileage_claim' => self::money($mileage),
             'profit' => self::money($income - $costs - $mileage),
+        ] + self::poAndInvoice($j);
+    }
+
+    private static function poAndInvoice(WorkJob $j): array
+    {
+        $status = PoStatus::forJobs([$j])[$j->id];
+
+        return [
+            'po_number' => $status['po']['number'] ?? null,
+            'has_po' => $status['po'] !== null,
+            'po_not_needed' => (bool) $j->po_not_required,
+            'missing_po' => $status['missing'],
+            'invoiced' => $status['invoice'] ? $status['invoice']['number'].' ('.$status['invoice']['status'].')' : null,
         ];
     }
 

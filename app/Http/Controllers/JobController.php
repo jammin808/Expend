@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Jobs\PoStatus;
 use App\Domain\Tax\MileageCalculator;
 use App\Http\Presenters\Present;
 use App\Models\Allocation;
@@ -25,6 +26,7 @@ class JobController extends Controller
     {
         $year = $request->string('year')->toString() ?: null;
         $period = $year ? UkTaxYear::fromLabel($year) : null;
+        $show = in_array($request->query('show'), ['no_po', 'not_invoiced'], true) ? $request->query('show') : null;
 
         $jobs = WorkJob::query()->with('client')
             ->when($period, fn ($q) => $q->whereBetween('starts_on', [$period->startsOn(), $period->endsOn()]))
@@ -33,13 +35,21 @@ class JobController extends Controller
         $costs = Allocation::query()->whereIn('work_job_id', $jobs->pluck('id'))->whereNotNull('confirmed_at')
             ->selectRaw('work_job_id, kind, SUM(amount_pence) as total')->groupBy('work_job_id', 'kind')->get()->groupBy('work_job_id');
 
+        $po = PoStatus::forJobs($jobs);
+        $rows = $jobs->map(fn (WorkJob $j) => Present::job($j) + $po[$j->id] + [
+            'income_pence' => (int) ($costs[$j->id] ?? collect())->where('kind', 'business_income')->sum('total'),
+            'costs_pence' => (int) -($costs[$j->id] ?? collect())->where('kind', 'business_expense')->sum('total'),
+        ]);
+
         return Inertia::render('jobs/index', [
-            'jobs' => $jobs->map(fn (WorkJob $j) => Present::job($j) + [
-                'income_pence' => (int) ($costs[$j->id] ?? collect())->where('kind', 'business_income')->sum('total'),
-                'costs_pence' => (int) -($costs[$j->id] ?? collect())->where('kind', 'business_expense')->sum('total'),
-            ]),
+            'jobs' => $rows->filter(fn ($r) => match ($show) {
+                'no_po' => $r['missing'],
+                'not_invoiced' => ! $r['invoice'] && $r['status'] !== 'cancelled',
+                default => true,
+            })->values(),
+            'counts' => ['no_po' => $rows->where('missing', true)->count(), 'not_invoiced' => $rows->filter(fn ($r) => ! $r['invoice'] && $r['status'] !== 'cancelled')->count()],
             'clients' => Client::query()->orderBy('name')->get(['id', 'name']),
-            'filters' => ['year' => $year],
+            'filters' => ['year' => $year, 'show' => $show],
         ]);
     }
 
@@ -76,8 +86,11 @@ class JobController extends Controller
         $spent = -$allocations->where('kind', 'business_expense')->whereNotNull('confirmed_at')->sum('amount_pence');
         $mileagePence = $mileage->sum('claim_pence');
 
+        $documents = Document::query()->where('work_job_id', $job->id)->whereNull('parent_id')->withCount('children')->orderByDesc('received_at')->get();
+        $invoicedDocs = PoStatus::invoicedDocuments($documents);
+
         return Inertia::render('jobs/show', [
-            'job' => Present::job($job),
+            'job' => Present::job($job) + PoStatus::forJobs([$job])[$job->id],
             'lines' => $allocations->map(fn (Allocation $a) => [
                 'id' => $a->id, 'date' => $a->transaction?->effectiveDate()->format('Y-m-d') ?? $a->manualExpense?->spent_on->format('Y-m-d'),
                 'description' => $a->transaction?->description ?? $a->manualExpense?->description, 'account' => $a->transaction?->account->name ?? 'Manual',
@@ -91,8 +104,7 @@ class JobController extends Controller
                 ->map(fn ($f) => $f->only(['id', 'field', 'label', 'value', 'at_time', 'quote', 'verified', 'verification_note', 'document_id']) + [
                     'on_date' => $f->on_date?->format('Y-m-d'), 'document' => $f->document?->original_name, 'received' => $f->document?->received_at?->format('Y-m-d'),
                 ]),
-            'documents' => Document::query()->where('work_job_id', $job->id)->whereNull('parent_id')->withCount('children')->orderByDesc('received_at')->get()
-                ->map(fn ($d) => DocumentController::row($d)),
+            'documents' => $documents->map(fn ($d) => DocumentController::row($d) + ['invoiced' => $invoicedDocs[$d->id] ?? null]),
             'invoices' => Invoice::query()->where('work_job_id', $job->id)->get()->map(fn ($i) => InvoiceController::row($i)),
             'kinds' => Document::KINDS,
             'lookups' => Present::lookups(),
@@ -132,6 +144,8 @@ class JobController extends Controller
             'fee' => 'nullable|string',
             'status' => 'nullable|in:booked,done,cancelled',
             'notes' => 'nullable|string|max:2000',
+            'po_number' => 'nullable|string|max:100',
+            'po_not_required' => 'boolean',
         ]);
 
         if (! empty($data['new_client'])) {
@@ -139,6 +153,8 @@ class JobController extends Controller
         }
         $data['fee_pence'] = Money::parse($data['fee'] ?? null);
         $data['postcode'] = isset($data['postcode']) ? strtoupper(trim($data['postcode'])) : null;
+        $data['po_number'] = isset($data['po_number']) && trim($data['po_number']) !== '' ? trim($data['po_number']) : null;
+        $data['po_not_required'] = (bool) ($data['po_not_required'] ?? false);
         unset($data['new_client'], $data['fee']);
 
         return $data + ['status' => 'booked'];

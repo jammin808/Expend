@@ -11,10 +11,10 @@ class WorkJob extends Model
 {
     protected $fillable = [
         'client_id', 'title', 'starts_on', 'ends_on', 'start_time', 'end_time', 'location', 'postcode',
-        'fee_pence', 'status', 'notes',
+        'fee_pence', 'po_number', 'po_not_required', 'status', 'notes',
     ];
 
-    protected $casts = ['starts_on' => 'date', 'ends_on' => 'date', 'fee_pence' => 'integer'];
+    protected $casts = ['starts_on' => 'date', 'ends_on' => 'date', 'fee_pence' => 'integer', 'po_not_required' => 'boolean'];
 
     public function client(): BelongsTo
     {
