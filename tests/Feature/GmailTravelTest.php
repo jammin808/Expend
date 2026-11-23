@@ -110,8 +110,9 @@ class GmailTravelTest extends TestCase
             'oauth2.googleapis.com/token' => Http::response(['access_token' => 'at', 'expires_in' => 3600, 'refresh_token' => 'rt', 'scope' => GmailClient::SCOPE]),
             'gmail.googleapis.com/*' => Http::response(['emailAddress' => 'jo@example.com']),
         ]);
-        $this->get('/settings/gmail/callback?code=xyz&state=forged')->assertOk();
+        $this->get('/settings/gmail/callback?code=xyz&state=forged&error=call+0800+now')->assertOk()->assertDontSee('0800');
         $this->assertNull(Setting::get('gmail_refresh_token'), 'A forged state is refused');
+        $this->assertNull(Setting::get('gmail_last_result'), 'and records nothing on your settings page');
 
         $url = GmailClient::authUrl();
         parse_str(parse_url($url, PHP_URL_QUERY), $q);
@@ -125,9 +126,8 @@ class GmailTravelTest extends TestCase
 
         // The same state can't be used twice.
         Setting::put('gmail_refresh_token', null);
-        $this->get('/settings/gmail/callback?code=xyz&state='.urlencode($q['state']));
+        $this->get('/settings/gmail/callback?code=xyz&state='.urlencode($q['state']))->assertSee('expired');
         $this->assertNull(Setting::get('gmail_refresh_token'));
-        $this->assertFalse(Setting::get('gmail_last_result')['ok']);
     }
 
     public function test_a_gmail_search_reads_a_booking_and_lines_it_up_with_the_job_and_payment(): void

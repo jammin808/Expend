@@ -65,19 +65,29 @@ final class GmailClient
         ]);
     }
 
-    /** Finish the sign-in: check the state, swap the code for tokens and remember the account. */
-    public static function complete(string $code, string $state): string
+    /**
+     * Check the state Google sent back and use up its one-time nonce. Returns the PKCE verifier, or null if
+     * the state isn't one this app issued in the last 15 minutes (forged, replayed or expired).
+     */
+    public static function acceptState(string $state): ?string
     {
         try {
             $data = json_decode(Crypt::decryptString($state), true);
         } catch (\Throwable) {
-            throw new RuntimeException('That sign-in link isn’t valid. Start again from Settings › Integrations.');
+            return null;
         }
         $expected = Setting::get('gmail_oauth_nonce');
-        Setting::put('gmail_oauth_nonce', null);
         if (! $expected || ($expected['expires'] ?? 0) < now()->timestamp || ! hash_equals((string) $expected['nonce'], (string) ($data['nonce'] ?? ''))) {
-            throw new RuntimeException('That sign-in has expired or was already used. Start again from Settings › Integrations.');
+            return null;
         }
+        Setting::put('gmail_oauth_nonce', null);
+
+        return (string) ($data['verifier'] ?? '');
+    }
+
+    /** Finish the sign-in: swap the code for tokens and remember the account. */
+    public static function complete(string $code, string $verifier): string
+    {
 
         $response = Http::asForm()->timeout(20)->post(self::TOKEN_URL, [
             'code' => $code,
@@ -85,7 +95,7 @@ final class GmailClient
             'client_secret' => Setting::get('google_client_secret'),
             'redirect_uri' => self::redirectUri(),
             'grant_type' => 'authorization_code',
-            'code_verifier' => $data['verifier'] ?? '',
+            'code_verifier' => $verifier,
         ])->json() ?? [];
 
         if (empty($response['refresh_token'])) {

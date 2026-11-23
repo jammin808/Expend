@@ -183,11 +183,20 @@ class IntegrationSettingsController extends Controller
      */
     public function gmailCallback(Request $request): \Illuminate\Http\Response
     {
+        $verifier = GmailClient::acceptState((string) $request->query('state'));
+        if ($verifier === null) {
+            // Not a sign-in this app started: show a message, but record nothing.
+            return response()->view('gmail-return', ['result' => ['ok' => false, 'message' => 'That sign-in link isn’t valid or has expired. Start again from Settings › Integrations.']])
+                ->header('Cache-Control', 'no-store');
+        }
+
         try {
-            if ($request->query('error')) {
-                throw new \RuntimeException($request->query('error') === 'access_denied' ? 'You didn’t allow access on Google’s screen.' : 'Google said: '.$request->query('error'));
+            if ($error = $request->query('error')) {
+                throw new \RuntimeException($error === 'access_denied'
+                    ? 'You didn’t allow access on Google’s screen.'
+                    : 'Google returned an error ('.preg_replace('/[^a-z_]/', '', strtolower(substr((string) $error, 0, 40))).').');
             }
-            $account = GmailClient::complete((string) $request->query('code'), (string) $request->query('state'));
+            $account = GmailClient::complete((string) $request->query('code'), $verifier);
             $result = ['ok' => true, 'message' => "Gmail connected (read-only) for {$account}."];
         } catch (Throwable $e) {
             $result = ['ok' => false, 'message' => $e->getMessage()];

@@ -377,13 +377,6 @@ export default function Travel({
                                     >
                                         <Search className="size-4" /> Search Gmail for {year}
                                     </Button>
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() => router.post('/travel/check', { tax_year: year }, { preserveScroll: true })}
-                                    >
-                                        <RefreshCw className="size-4" /> Check against jobs again
-                                    </Button>
                                 </div>
                             </div>
                             <div className="flex flex-wrap gap-4 text-sm">
@@ -429,7 +422,7 @@ export default function Travel({
                 </section>
 
                 <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-                    <div className="flex gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                         <button
                             className={cn('rounded-full border px-3 py-1', show === 'open' && 'bg-foreground text-background')}
                             onClick={() => setShow('open')}
@@ -443,9 +436,18 @@ export default function Travel({
                             All ({items.length})
                         </button>
                     </div>
-                    <p className="text-muted-foreground">
-                        {counts.business} business · {counts.personal} personal · {counts.client} client-booked
-                    </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                        <p className="text-muted-foreground">
+                            {counts.business} business · {counts.personal} personal · {counts.client} client-booked
+                        </p>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => router.post('/travel/check', { tax_year: year }, { preserveScroll: true })}
+                        >
+                            <RefreshCw className="size-4" /> Check against jobs again
+                        </Button>
+                    </div>
                 </div>
 
                 <ul className="divide-y rounded-xl border">
