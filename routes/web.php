@@ -18,7 +18,8 @@ use App\Http\Controllers\TransactionController;
 use App\Models\User;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/', fn () => User::query()->exists() ? redirect()->route('dashboard') : redirect()->route('register'))->name('home');
+// Before the owner exists, a live site (with a setup code) still shows the sign-in page, so the sign-up page stays hidden.
+Route::get('/', fn () => redirect()->route(User::query()->exists() || config('app.setup_code') ? 'dashboard' : 'register'))->name('home');
 
 Route::post('hooks/telegram', TelegramWebhookController::class)->middleware('throttle:120,1')->name('hooks.telegram');
 
