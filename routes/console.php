@@ -2,10 +2,18 @@
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Calendar\CalendarSync;
+use App\Domain\Gmail\GmailClient;
+use App\Domain\Gmail\GmailScanner;
+use App\Domain\Jobs\JobFinder;
 use App\Domain\Mail\MailboxFetcher;
+use App\Domain\Verification\Verifier;
+use App\Jobs\FindJobs;
+use App\Jobs\ScanGmail;
 use App\Jobs\SyncGmailLabels;
+use App\Models\JobCandidate;
 use App\Models\Setting;
 use App\Models\User;
+use App\Support\UkTaxYear;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -34,9 +42,25 @@ Artisan::command('ledger:sync-calendar', function (CalendarSync $sync) {
     $count = $sync->sync();
     Setting::put('calendar_synced_at', now()->format('Y-m-d H:i'));
     $this->info("Synced {$count} calendar events.");
+    FindJobs::dispatch();
 
     return 0;
 })->purpose('Refresh calendar events from the private iCal feed');
+
+Artisan::command('ledger:find-jobs {year? : A tax year such as 2024-25; default the last 30 months and the next year} {--no-ai : Rules only}', function (JobFinder $finder, Verifier $verifier) {
+    $r = $finder->run($this->argument('year'), ! $this->option('no-ai'));
+    $open = JobCandidate::query()->where('status', 'open')->get()->each(fn ($c) => $verifier->candidate($c))->count();
+    $this->info("Linked {$r['linked']} to existing jobs, {$r['proposed']} possible jobs proposed ({$open} open). AI asked about {$r['ai_checked']} calendar entries; {$r['ai_rejected']} answers failed the check against the entry and were ignored.");
+
+    return 0;
+})->purpose('Find jobs in your calendar, documents, stays and journeys, and link what clearly belongs to a job');
+
+Artisan::command('ledger:recheck {--limit=80} {--second-reads=5} {--no-gmail : Don’t fetch emails again from Gmail}', function (Verifier $verifier) {
+    $r = $verifier->recheck((int) $this->option('limit'), (int) $this->option('second-reads'), ! $this->option('no-gmail'));
+    $this->info("Re-checked {$r['checked']} AI findings against their sources; {$r['warnings']} need a look.");
+
+    return 0;
+})->purpose('Double-check AI findings against their sources again (documents, Gmail, calendar, payments)');
 
 Artisan::command('ledger:fetch-email', function (MailboxFetcher $fetcher) {
     if (! MailboxFetcher::configured()) {
@@ -69,6 +93,25 @@ Artisan::command('ledger:reset-link', function () {
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();
 Schedule::command('ledger:verify-audit')->dailyAt('03:10');
 Schedule::command('ledger:fetch-email')->everyFiveMinutes()->withoutOverlapping();
+// The job finder and the double-check of AI findings, every night; scans get a few second reads a night.
+Schedule::command('ledger:find-jobs')->dailyAt('04:17')->withoutOverlapping();
+Schedule::command('ledger:recheck')->dailyAt('04:47')->withoutOverlapping();
+// Re-run the Gmail searches weekly for this tax year (and last year until the 31 January deadline), so new,
+// changed and cancelled bookings and POs are picked up. Emails already read are skipped.
+Schedule::call(function () {
+    if (! GmailClient::connected()) {
+        return;
+    }
+    $years = [UkTaxYear::current()->label()];
+    if (now()->month <= 1 || now()->month >= 4) {
+        $years[] = UkTaxYear::current()->previous()->label();
+    }
+    foreach ($years as $year) {
+        foreach (array_keys(GmailScanner::SEARCHES) as $search) {
+            ScanGmail::dispatch($search, $year);
+        }
+    }
+})->weeklyOn(0, '05:23')->name('gmail-rescan');
 // Catch-up for the Gmail "✓ Invoiced" label (POs linked after invoicing, or a run that failed).
 Schedule::job(new SyncGmailLabels)->hourly()->name('gmail-labels')->withoutOverlapping();
 // Shared hosting has no long-running worker: process queued work (document reading, Telegram) every minute.

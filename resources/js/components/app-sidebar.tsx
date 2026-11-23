@@ -23,6 +23,7 @@ import {
     Inbox,
     LayoutGrid,
     ListChecks,
+    Network,
     ReceiptText,
     Settings,
     Sparkles,
@@ -44,6 +45,7 @@ export function AppSidebar() {
     ];
     const work = [
         { title: 'Jobs', url: '/jobs', icon: Briefcase },
+        { title: 'Connections', url: '/connections', icon: Network },
         { title: 'Documents', url: '/documents', icon: FileText },
         { title: 'Stays & travel', url: '/travel', icon: BedDouble },
         { title: 'Invoices', url: '/invoices', icon: ReceiptText },

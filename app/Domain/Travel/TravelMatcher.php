@@ -80,7 +80,9 @@ final class TravelMatcher
 
         $item->update([
             'bank_transaction_id' => $payment?->id,
-            'work_job_id' => $item->work_job_id ?? $jobId,
+            // A job you linked (or unlinked) stays as you set it.
+            'work_job_id' => $item->job_linked_by === 'you' ? $item->work_job_id : ($item->work_job_id ?? $jobId),
+            'job_linked_by' => $item->job_linked_by === 'you' || $item->work_job_id ? $item->job_linked_by : ($jobId ? 'rules' : null),
             'suggestion' => [
                 'decision' => $decision, 'job_id' => $jobId, 'business_nights' => $business + $review, 'nights' => count($verdicts),
                 'reasons' => $reasons, 'at' => now()->toIso8601String(),
@@ -137,7 +139,7 @@ final class TravelMatcher
             }
 
             $item->fill([
-                'decision' => $decision, 'work_job_id' => $decision === 'personal' ? $jobId : ($jobId ?? $item->work_job_id),
+                'decision' => $decision, 'work_job_id' => $decision === 'personal' ? $jobId : ($jobId ?? $item->work_job_id), 'job_linked_by' => 'you',
                 'business_nights' => $businessNights, 'decided_at' => now(), 'note' => $note,
             ])->save();
             AuditLog::record('travel.decided', $item, null, ['decision' => $decision, 'job_id' => $jobId, 'business_nights' => $businessNights, 'note' => $note, 'payment' => $outcome]);

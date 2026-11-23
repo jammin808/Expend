@@ -22,11 +22,29 @@ export interface JobData {
     po_not_required?: boolean;
 }
 
-export function JobForm({ job, clients, onDone }: { job?: JobData; clients: { id: number; name: string }[]; onDone?: () => void }) {
+export function JobForm({
+    job,
+    clients,
+    onDone,
+    submitUrl,
+    submitLabel,
+    newClient,
+    extra,
+}: {
+    job?: JobData;
+    clients: { id: number; name: string }[];
+    onDone?: () => void;
+    /** Post here instead (for example, adding a possible job from the job finder). */
+    submitUrl?: string;
+    submitLabel?: string;
+    newClient?: string | null;
+    /** Sent along with the form (for example, which calendar entry it comes from). */
+    extra?: Record<string, string>;
+}) {
     const form = useForm({
         title: job?.title ?? '',
         client_id: job?.client_id ? String(job.client_id) : '',
-        new_client: '',
+        new_client: newClient ?? '',
         starts_on: job?.starts_on ?? new Date().toISOString().slice(0, 10),
         ends_on: job?.ends_on ?? new Date().toISOString().slice(0, 10),
         start_time: job?.start_time ?? '',
@@ -46,7 +64,9 @@ export function JobForm({ job, clients, onDone }: { job?: JobData; clients: { id
             onSubmit={(e) => {
                 e.preventDefault();
                 const opts = { preserveScroll: true, onSuccess: () => (job ? onDone?.() : (form.reset(), onDone?.())) };
-                if (job?.id) form.patch(`/jobs/${job.id}`, opts);
+                if (extra) form.transform((data) => ({ ...data, ...extra }));
+                if (submitUrl) form.post(submitUrl, { preserveScroll: true, onSuccess: () => onDone?.() });
+                else if (job?.id) form.patch(`/jobs/${job.id}`, opts);
                 else form.post('/jobs', opts);
             }}
         >
@@ -138,7 +158,7 @@ export function JobForm({ job, clients, onDone }: { job?: JobData; clients: { id
                 </p>
             ))}
             <div className="sm:col-span-2">
-                <Button disabled={form.processing}>{job?.id ? 'Save job' : 'Add job'}</Button>
+                <Button disabled={form.processing}>{submitLabel ?? (job?.id ? 'Save job' : 'Add job')}</Button>
             </div>
         </form>
     );

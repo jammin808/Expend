@@ -13,6 +13,7 @@ use App\Models\BankTransaction;
 use App\Models\GmailMessage;
 use App\Models\Setting;
 use App\Models\TravelItem;
+use App\Models\Verification;
 use App\Models\WorkJob;
 use App\Support\UkTaxYear;
 use Illuminate\Http\RedirectResponse;
@@ -35,6 +36,7 @@ class TravelController extends Controller
         $items = TravelItem::query()->with(['document', 'transaction.account', 'job'])
             ->whereBetween('starts_on', [$from, $to])->orderBy('starts_on')->get();
 
+        $checks = Verification::forMany('travel_item', $items->pluck('id'));
         $messages = GmailMessage::query()->whereBetween('sent_at', [$year->startsOn()->subMonths(2), $year->endsOn()->addMonth()->endOfDay()]);
 
         return Inertia::render('travel/index', [
@@ -45,7 +47,7 @@ class TravelController extends Controller
                 'waiting' => (clone $messages)->where('status', 'stored')->where('search', '!=', 'job_documents')->count(),
             ],
             'aiReady' => AiConfig::ready() && Setting::get('ai_extraction') !== 'off',
-            'items' => $items->map(fn (TravelItem $i) => self::row($i))->values(),
+            'items' => $items->map(fn (TravelItem $i) => self::row($i) + ['check' => $checks[$i->id] ?? null])->values(),
             'jobs' => WorkJob::query()->whereBetween('starts_on', [$year->startsOn()->subMonth(), $year->endsOn()->addMonth()])
                 ->orderBy('starts_on')->get(['id', 'title', 'starts_on'])->map(fn ($j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d')]),
             'log' => (clone $messages)->latest('sent_at')->limit(200)->get()->map(fn (GmailMessage $m) => [

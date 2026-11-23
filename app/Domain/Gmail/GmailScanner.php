@@ -4,6 +4,7 @@ namespace App\Domain\Gmail;
 
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
+use App\Jobs\ReadDocument;
 use App\Jobs\ReadTravelEmail;
 use App\Models\GmailMessage;
 use App\Models\Setting;
@@ -28,7 +29,7 @@ final class GmailScanner
         ],
         'job_documents' => [
             'label' => 'POs, job invites and production packs',
-            'query' => 'subject:(PO OR "purchase order" OR "call sheet" OR "production pack" OR "crew pack" OR "job sheet" OR "booking form" OR "tech pack" OR "running order" OR invite)',
+            'query' => '(subject:(PO OR "purchase order" OR "call sheet" OR "production pack" OR "crew pack" OR "job sheet" OR "booking form" OR "tech pack" OR "running order" OR invite OR "day sheet" OR "run sheet" OR "crew call" OR "show info" OR "production schedule" OR "job confirmation" OR "booking confirmation" OR pencil OR "work order") OR filename:(PO OR "purchase order" OR callsheet OR "call sheet" OR "production pack")) -in:sent -in:drafts -in:chats',
         ],
     ];
 
@@ -92,6 +93,10 @@ final class GmailScanner
 
             if ($search !== 'job_documents') {
                 ReadTravelEmail::dispatch($logged->id);
+            } elseif (Setting::get('ai_extraction') === 'on' && AiConfig::ready() && $document->kind === 'email' && $document->status === 'new' && mb_strlen((string) $document->text) > 300) {
+                // The email itself is read too (attachments already are): POs and job details are often in the body.
+                $document->update(['status' => 'queued']);
+                ReadDocument::dispatch($document->id);
             }
         }
 

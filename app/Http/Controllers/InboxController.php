@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Domain\Calendar\CalendarSync;
 use App\Http\Presenters\Present;
 use App\Models\BankTransaction;
+use App\Models\Verification;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -30,8 +31,11 @@ class InboxController extends Controller
             ->when($year, fn ($q) => $q->where('tax_year', $year))
             ->selectRaw('merchant_key, COUNT(*) as n')->groupBy('merchant_key')->pluck('n', 'merchant_key');
 
+        $checks = Verification::forMany('transaction', $items->pluck('id'));
+
         return Inertia::render('inbox', [
             'items' => $items->map(fn (BankTransaction $tx) => Present::tx($tx) + [
+                'check' => $checks[$tx->id] ?? null,
                 'merchant_count' => (int) ($merchantCounts[$tx->merchant_key] ?? 1),
                 'events' => CalendarSync::eventsOn($tx->effectiveDate()->format('Y-m-d')),
                 'jobs_near' => Present::jobsNear($tx->effectiveDate()->format('Y-m-d')),

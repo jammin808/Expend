@@ -21,6 +21,7 @@ class Setting extends Model
         'early_start' => '08:00',
         'late_finish' => '22:00',
         'ai_suggestions' => true,
+        'job_finder_auto' => true,
         'ai_extraction' => 'on_demand',
         'mileage_threshold_scope' => 'all_vehicles',
         'ai_model' => 'claude-opus-5-5',

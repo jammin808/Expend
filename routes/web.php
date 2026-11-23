@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AccountController;
 use App\Http\Controllers\AssistantController;
+use App\Http\Controllers\ConnectionsController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DecisionController;
 use App\Http\Controllers\DocumentController;
@@ -10,6 +11,7 @@ use App\Http\Controllers\InboxController;
 use App\Http\Controllers\IntegrationSettingsController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\JobController;
+use App\Http\Controllers\JobFinderController;
 use App\Http\Controllers\ManualExpenseController;
 use App\Http\Controllers\MileageController;
 use App\Http\Controllers\SetupController;
@@ -17,6 +19,7 @@ use App\Http\Controllers\TaxYearController;
 use App\Http\Controllers\TelegramWebhookController;
 use App\Http\Controllers\TransactionController;
 use App\Http\Controllers\TravelController;
+use App\Http\Controllers\VerificationController;
 use App\Http\Middleware\HandleInertiaRequests;
 use App\Models\User;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
@@ -82,6 +85,18 @@ Route::middleware(['auth'])->group(function () {
     Route::post('accounts', [AccountController::class, 'store'])->name('accounts.store');
     Route::patch('accounts/{account}', [AccountController::class, 'update'])->name('accounts.update');
 
+    Route::get('jobs/finder', [JobFinderController::class, 'index'])->name('jobs.finder');
+    Route::post('jobs/finder/run', [JobFinderController::class, 'run'])->name('jobs.finder.run');
+    Route::post('jobs/finder/links', [JobFinderController::class, 'decideLink'])->name('jobs.finder.links');
+    Route::patch('jobs/finder/{candidate}', [JobFinderController::class, 'update'])->name('jobs.finder.update');
+    Route::post('jobs/finder/{candidate}/accept', [JobFinderController::class, 'accept'])->name('jobs.finder.accept');
+    Route::post('jobs/finder/{candidate}/merge', [JobFinderController::class, 'merge'])->name('jobs.finder.merge');
+    Route::post('jobs/finder/{candidate}/dismiss', [JobFinderController::class, 'dismiss'])->name('jobs.finder.dismiss');
+    Route::post('jobs/{job}/links', [JobFinderController::class, 'link'])->name('jobs.links');
+    Route::post('calendar/job', [JobFinderController::class, 'fromCalendar'])->name('calendar.job');
+    Route::post('calendar/not-job', [JobFinderController::class, 'calendarNotJob'])->name('calendar.notJob');
+    Route::get('connections', [ConnectionsController::class, 'index'])->name('connections');
+    Route::post('checks/{type}/{id}', [VerificationController::class, 'store'])->whereNumber('id')->name('checks.store');
     Route::get('jobs', [JobController::class, 'index'])->name('jobs.index');
     Route::post('jobs', [JobController::class, 'store'])->name('jobs.store');
     Route::get('jobs/{job}', [JobController::class, 'show'])->name('jobs.show');

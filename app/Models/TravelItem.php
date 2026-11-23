@@ -26,7 +26,7 @@ class TravelItem extends Model
     protected $fillable = [
         'kind', 'provider', 'reference', 'status', 'starts_on', 'ends_on', 'start_time', 'place', 'destination', 'postcode',
         'amount_minor', 'currency', 'payment', 'booked_for', 'booker', 'source', 'evidence', 'unverified_count', 'document_id', 'source_sent_at',
-        'bank_transaction_id', 'work_job_id', 'suggestion', 'decision', 'business_nights', 'decided_at', 'note',
+        'bank_transaction_id', 'work_job_id', 'job_linked_by', 'suggestion', 'decision', 'business_nights', 'decided_at', 'note',
     ];
 
     protected $casts = [

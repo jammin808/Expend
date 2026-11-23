@@ -1,3 +1,4 @@
+import { CheckBadge, type Check } from '@/components/check-badge';
 import { DocLine, InvoicedTick, type DocRow } from '@/components/doc-line';
 import { Money } from '@/components/money';
 import { NativeSelect } from '@/components/native-select';
@@ -37,6 +38,9 @@ interface Props {
         text: string | null;
         text_status: string;
         error: string | null;
+        check: Check | null;
+        linked_by: string | null;
+        link_hint: null | { job_id: number; title: string; reason: string | null; note: string };
         extraction: null | {
             summary: string;
             job_link_reason: string | null;
@@ -114,6 +118,7 @@ export default function DocumentShow({ document: d, jobs, kinds, aiReady }: Prop
                             {kinds[d.kind]} · {d.received} · via {d.source}
                             {d.from ? ` · from ${d.from}` : ''}
                         </p>
+                        {d.extraction && <CheckBadge check={d.check} subject={{ type: 'document', id: d.id }} className="mt-1" />}
                         {d.parent && (
                             <p className="text-sm">
                                 Attachment of{' '}
@@ -183,7 +188,22 @@ export default function DocumentShow({ document: d, jobs, kinds, aiReady }: Prop
                                 </option>
                             ))}
                         </NativeSelect>
-                        {x?.job_link_reason && d.job && <span className="text-muted-foreground text-xs">Linked by AI: {x.job_link_reason}</span>}
+                        {x?.job_link_reason && d.job && d.linked_by === 'ai' && (
+                            <span className="text-muted-foreground text-xs">Linked by AI (checked against the document): {x.job_link_reason}</span>
+                        )}
+                        {d.link_hint && (
+                            <span className="block rounded-md border border-amber-300 p-2 text-xs dark:border-amber-800">
+                                AI thinks this is for <strong>{d.link_hint.title}</strong>
+                                {d.link_hint.reason ? ` (${d.link_hint.reason})` : ''}. {d.link_hint.note}{' '}
+                                <button
+                                    type="button"
+                                    className="underline underline-offset-2"
+                                    onClick={() => router.patch(`/documents/${d.id}`, { work_job_id: d.link_hint!.job_id }, { preserveScroll: true })}
+                                >
+                                    Link it
+                                </button>
+                            </span>
+                        )}
                     </label>
                     <label className="space-y-1 text-sm">
                         <span className="text-muted-foreground">Kind</span>

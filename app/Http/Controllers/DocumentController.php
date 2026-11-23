@@ -11,6 +11,7 @@ use App\Domain\Jobs\PoStatus;
 use App\Models\Client;
 use App\Models\Document;
 use App\Models\Invoice;
+use App\Models\Verification;
 use App\Models\WorkJob;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -59,6 +60,10 @@ class DocumentController extends Controller
                 'children' => $document->children->map(fn (Document $c) => self::row($c) + ['invoiced' => $invoiced[$c->id] ?? null]),
                 'parent' => $document->parent ? self::row($document->parent) : null,
                 'invoices' => Invoice::query()->where('document_id', $document->id)->get(['id', 'number', 'status', 'total_minor']),
+                'check' => Verification::for('document', $document->id)?->present(),
+                'linked_by' => $document->job_linked_by,
+                'link_hint' => ($hint = $document->extraction['job_link_hint'] ?? null) && ! $document->work_job_id && ($hintJob = WorkJob::query()->find($hint['job_id']))
+                    ? $hint + ['title' => $hintJob->title] : null,
             ]),
             'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on'])->map(fn ($j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d')]),
             'kinds' => Document::KINDS,
@@ -106,7 +111,7 @@ class DocumentController extends Controller
     {
         $data = $request->validate(['work_job_id' => 'nullable|integer|exists:work_jobs,id', 'kind' => 'nullable|string', 'approve' => 'boolean']);
         if ($request->has('work_job_id')) {
-            DocumentReader::relink($document, $data['work_job_id']);
+            DocumentReader::relink($document, $data['work_job_id'], 'you');
         }
         if (! empty($data['kind']) && isset(Document::KINDS[$data['kind']])) {
             $document->update(['kind' => $data['kind']]);
@@ -133,7 +138,7 @@ class DocumentController extends Controller
             'client_id' => $data['client'] ? Client::query()->firstOrCreate(['name' => trim($data['client'])])->id : null,
             'location' => $data['location'] ?? null, 'postcode' => isset($data['postcode']) ? strtoupper($data['postcode']) : null,
         ]);
-        DocumentReader::relink($document, $job->id);
+        DocumentReader::relink($document, $job->id, 'you');
         AuditLog::record('job.created_from_document', $job, null, ['document' => $document->id, 'suggested' => $new]);
 
         return to_route('jobs.show', $job)->with('success', "Created {$job->title} and linked the document.");

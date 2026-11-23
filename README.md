@@ -61,6 +61,27 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   green **✓ Invoiced** label, taken off again if the invoice is voided. The app finds it by the Gmail message it
   fetched, by a forwarded email's Message-ID, or by the PO number when every match is in one conversation; it
   never guesses between conversations.
+- **Job finder** (`Jobs › Find jobs`): looks through your calendar, the POs, job invites, production packs and call
+  sheets read from email (bodies and attachments), and your stays and journeys. What clearly belongs to one of your jobs
+  is linked: the same PO number, or the job's dates plus its client, venue, postcode or title words. Close calls are left
+  for you. The rest is grouped by date and shared words into possible jobs (a calendar entry, the job invite and the
+  hotel stay become one), which you add as a job (with your edits), add to a job you have (only its blank details are
+  filled in), or dismiss for good. Calendar entries the rules can't call are asked about with AI; an answer only counts
+  if the words it quotes are in the entry. Links you make are never changed automatically; automatic ones can be
+  confirmed or undone. Adding a job lines up stays around its dates again and links an invoice that quotes its PO.
+  It runs nightly and after new documents, bookings or calendar entries arrive.
+- **Connections** map: jobs in the middle of a timeline, joined to calendar entries, documents and POs, stays,
+  costs, income, invoices and mileage. Solid links are yours, dashed are automatic, dotted are possible (a cost on a
+  job's day: is it that job's?). "Needs attention" flags jobs with no PO, calendar entries that look like jobs but
+  aren't set up ("This is a job: add it", or "Not a job"), costs and undecided payments on job days, stays with no job,
+  jobs not invoiced and AI findings that failed their check. Select anything to link, unlink or decide it.
+- **Every AI finding is double-checked** against its source, separately from the read that produced it: the stored file
+  is checked against its fingerprint and its text extracted again, then every quoted detail, PO line, total, receipt,
+  proposed job and job link is matched again; an AI job link only counts if the document shows the job's dates with its
+  client, venue or title, or its PO number. Scans and photos get an independent second read. Bookings are fetched again
+  from Gmail (still there? unchanged?) and re-checked. AI suggestions on payments are checked against the payment and
+  the job's dates. Each finding shows its result with a Re-check button; everything is re-checked nightly and the
+  Gmail searches re-run weekly.
 - **Sending email** (password reset and test emails only): from the web server with no setup, or from your own
   mailbox (recommended, more reliable), set in Settings › Integrations with a test button. Locked out with no email?
   `php artisan ledger:reset-link` on the server prints a one-time reset link.
@@ -98,7 +119,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 134 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 146 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint

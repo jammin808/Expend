@@ -7,7 +7,7 @@ import { day, money } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { type SharedData } from '@/types';
 import { Head, Link, router, usePage } from '@inertiajs/react';
-import { FileWarning, Plus } from 'lucide-react';
+import { FileWarning, Plus, Search } from 'lucide-react';
 import { useState } from 'react';
 
 interface Row extends JobData {
@@ -29,7 +29,7 @@ export default function Jobs({
     jobs: Row[];
     clients: { id: number; name: string }[];
     filters: { year: string | null; show: string | null };
-    counts: { no_po: number; not_invoiced: number };
+    counts: { no_po: number; not_invoiced: number; possible: number };
 }) {
     const go = (patch: Record<string, string | null>) =>
         router.get('/jobs', Object.fromEntries(Object.entries({ ...filters, ...patch }).filter(([, v]) => v)), { preserveState: true });
@@ -57,6 +57,11 @@ export default function Jobs({
                             <option value="">All years</option>
                             {nav?.years.map((y) => <option key={y.label}>{y.label}</option>)}
                         </select>
+                        <Button variant="outline" asChild>
+                            <Link href="/jobs/finder">
+                                <Search /> Find jobs{counts.possible ? ` (${counts.possible})` : ''}
+                            </Link>
+                        </Button>
                         <Button onClick={() => setAdding(true)}>
                             <Plus /> Add job
                         </Button>

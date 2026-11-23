@@ -50,6 +50,7 @@ final class DocumentIntake
             'status' => ($meta['held'] ?? false) ? 'held' : 'new',
             'error' => $meta['held_reason'] ?? null,
             'work_job_id' => $meta['work_job_id'] ?? null,
+            'job_linked_by' => ($meta['work_job_id'] ?? null) ? ($meta['job_linked_by'] ?? 'you') : null,
         ]);
 
         if ($isEmail) {
@@ -72,13 +73,11 @@ final class DocumentIntake
     private function unpackEmail(Document $document, string $raw): void
     {
         $message = (new MailMimeParser)->parse($raw, false);
-        $body = $message->getTextContent() ?? strip_tags((string) $message->getHtmlContent());
-        $header = 'From: '.$message->getHeaderValue('From')."\nTo: ".$message->getHeaderValue('To')."\nDate: ".$message->getHeaderValue('Date')."\nSubject: ".$message->getHeaderValue('Subject');
 
         $document->update([
             'email_from' => $document->email_from ?? (($from = $message->getHeaderValue('From')) ? mb_substr($from, 0, 250) : null),
             'email_subject' => $document->email_subject ?? mb_substr((string) $message->getHeaderValue('Subject'), 0, 500),
-            'text' => trim($header."\n\n".preg_replace("/\n{3,}/", "\n\n", (string) $body)),
+            'text' => self::emailText($raw),
             'text_status' => 'extracted',
         ]);
 
@@ -90,9 +89,19 @@ final class DocumentIntake
             }
             $this->store($content, $name, $part->getContentType(), $document->source, [
                 'from' => $document->email_from, 'subject' => $document->email_subject, 'received_at' => $document->received_at,
-                'work_job_id' => $document->work_job_id, 'held' => $document->status === 'held', 'held_reason' => $document->error,
+                'work_job_id' => $document->work_job_id, 'job_linked_by' => $document->job_linked_by, 'held' => $document->status === 'held', 'held_reason' => $document->error,
             ], $document->id);
         }
+    }
+
+    /** The headers and body text of an email, as stored for checking quotes against. */
+    public static function emailText(string $raw): string
+    {
+        $message = (new MailMimeParser)->parse($raw, false);
+        $body = $message->getTextContent() ?? strip_tags((string) $message->getHtmlContent());
+        $header = 'From: '.$message->getHeaderValue('From')."\nTo: ".$message->getHeaderValue('To')."\nDate: ".$message->getHeaderValue('Date')."\nSubject: ".$message->getHeaderValue('Subject');
+
+        return trim($header."\n\n".preg_replace("/\n{3,}/", "\n\n", (string) $body));
     }
 
     public static function guessMime(string $ext): string

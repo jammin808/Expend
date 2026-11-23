@@ -1,3 +1,4 @@
+import { CheckBadge, type Check } from '@/components/check-badge';
 import { DocLine, InvoicedTick, type DocRow, type Invoiced } from '@/components/doc-line';
 import { ItemDrawer } from '@/components/item-drawer';
 import { JobForm, type JobData } from '@/components/job-form';
@@ -40,12 +41,42 @@ interface Props {
     lookups: Lookups;
     clients: { id: number; name: string }[];
     facts: SheetFact[];
-    documents: DocRow[];
+    documents: (DocRow & { linked_by: string | null; check: Check | null })[];
     invoices: InvoiceRow[];
     kinds: Record<string, string>;
+    calendar: {
+        key: string;
+        date: string;
+        summary: string | null;
+        location: string | null;
+        time: string | null;
+        linked: boolean;
+        other_job: number | null;
+        by: string | null;
+        not_job: boolean;
+        check: Check | null;
+    }[];
+    travel: {
+        id: number;
+        kind: string;
+        provider: string;
+        place: string | null;
+        starts_on: string;
+        ends_on: string | null;
+        amount_minor: number | null;
+        currency: string;
+        linked: boolean;
+        by: string | null;
+        decision: string | null;
+        source: string;
+        check: Check | null;
+    }[];
 }
 
-export default function JobShow({ job, lines, mileage, totals, near, lookups, clients, facts, documents, invoices, kinds }: Props) {
+const byLabel = (by: string | null) => (by === 'you' ? 'linked by you' : by === 'ai' ? 'linked by AI (checked)' : by ? 'linked automatically' : '');
+
+export default function JobShow({ job, lines, mileage, totals, near, lookups, clients, facts, documents, invoices, kinds, calendar, travel }: Props) {
+    const link = (data: Record<string, string | number>) => router.post(`/jobs/${job.id}/links`, data, { preserveScroll: true });
     const [editing, setEditing] = useState(false);
     const [drawer, setDrawer] = useState<{ source: 'bank' | 'manual'; id: number } | null>(null);
 
@@ -73,9 +104,14 @@ export default function JobShow({ job, lines, mileage, totals, near, lookups, cl
                             {job.location ? ` · ${job.location}` : ''} {job.postcode ?? ''}
                         </p>
                     </div>
-                    <Button variant="outline" onClick={() => setEditing(true)}>
-                        Edit job
-                    </Button>
+                    <div className="flex gap-2">
+                        <Button variant="ghost" asChild>
+                            <Link href={`/connections?job=${job.id}`}>Connections</Link>
+                        </Button>
+                        <Button variant="outline" onClick={() => setEditing(true)}>
+                            Edit job
+                        </Button>
+                    </div>
                 </div>
 
                 {job.missing ? (
@@ -152,6 +188,101 @@ export default function JobShow({ job, lines, mileage, totals, near, lookups, cl
                             {documents.map((d) => (
                                 <li key={d.id}>
                                     <DocLine d={d} kinds={kinds} />
+                                    <div className="flex flex-wrap items-center gap-2 px-3 pb-2 text-xs">
+                                        {d.linked_by && <span className="text-muted-foreground">{byLabel(d.linked_by)}</span>}
+                                        <CheckBadge check={d.check} subject={{ type: 'document', id: d.id }} />
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
+
+                {calendar.length > 0 && (
+                    <section className="space-y-2">
+                        <h2 className="font-semibold">Calendar</h2>
+                        <p className="text-muted-foreground text-sm">Entries on and around this job’s days. Link the ones that are part of it.</p>
+                        <ul className="divide-y rounded-xl border text-sm">
+                            {calendar.map((e) => (
+                                <li key={e.key} className="flex flex-wrap items-center justify-between gap-2 p-3">
+                                    <span className="min-w-0">
+                                        <span className="block truncate">{e.summary || '(no title)'}</span>
+                                        <span className="text-muted-foreground text-xs">
+                                            {day(e.date)}
+                                            {e.time ? ` · ${e.time}` : ''}
+                                            {e.location ? ` · ${e.location}` : ''}
+                                            {e.linked
+                                                ? ` · ${byLabel(e.by)}`
+                                                : e.other_job
+                                                  ? ' · linked to another job'
+                                                  : e.not_job
+                                                    ? ' · marked not a job'
+                                                    : ''}
+                                        </span>
+                                        {e.linked && e.by !== 'you' && <CheckBadge check={e.check} className="mt-1" />}
+                                    </span>
+                                    {e.linked ? (
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => link({ type: 'calendar', key: e.key, date: e.date, action: 'unlink' })}
+                                        >
+                                            Unlink
+                                        </Button>
+                                    ) : (
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => link({ type: 'calendar', key: e.key, date: e.date, action: 'link' })}
+                                        >
+                                            Link to this job
+                                        </Button>
+                                    )}
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
+
+                {travel.length > 0 && (
+                    <section className="space-y-2">
+                        <h2 className="font-semibold">Stays and travel</h2>
+                        <ul className="divide-y rounded-xl border text-sm">
+                            {travel.map((t) => (
+                                <li key={t.id} className="flex flex-wrap items-center justify-between gap-2 p-3">
+                                    <span className="min-w-0">
+                                        <span className="block truncate">
+                                            {t.kind}: {t.provider}
+                                            {t.place ? `, ${t.place}` : ''}
+                                        </span>
+                                        <span className="text-muted-foreground text-xs">
+                                            {t.ends_on && t.ends_on !== t.starts_on
+                                                ? `${day(t.starts_on, false)} – ${day(t.ends_on)}`
+                                                : day(t.starts_on)}
+                                            {t.amount_minor !== null ? ` · ${money(t.amount_minor, t.currency)}` : ''}
+                                            {t.decision ? ` · ${t.decision}` : ''}
+                                            {t.linked ? ` · ${byLabel(t.by)}` : ' · not linked to a job'}
+                                        </span>
+                                        {t.source !== 'manual' && (
+                                            <div className="mt-1">
+                                                <CheckBadge check={t.check} subject={{ type: 'travel_item', id: t.id }} />
+                                            </div>
+                                        )}
+                                    </span>
+                                    <span className="flex gap-2">
+                                        <Link href="/travel" className="text-muted-foreground self-center text-xs underline-offset-2 hover:underline">
+                                            Decide in Stays & travel
+                                        </Link>
+                                        {t.linked ? (
+                                            <Button size="sm" variant="ghost" onClick={() => link({ type: 'travel', id: t.id, action: 'unlink' })}>
+                                                Unlink
+                                            </Button>
+                                        ) : (
+                                            <Button size="sm" variant="outline" onClick={() => link({ type: 'travel', id: t.id, action: 'link' })}>
+                                                Link to this job
+                                            </Button>
+                                        )}
+                                    </span>
                                 </li>
                             ))}
                         </ul>

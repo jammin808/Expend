@@ -6,6 +6,7 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\Grounding;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Verification\Verifier;
 use App\Models\Document;
 use App\Models\DocumentFact;
 use App\Models\WorkJob;
@@ -34,7 +35,7 @@ final class DocumentReader
 
     public function read(Document $document): Document
     {
-        $content = $this->content($document);
+        $content = self::content($document);
         $jobs = $this->candidateJobs($document);
 
         $result = $this->ai->send([
@@ -120,8 +121,22 @@ final class DocumentReader
             ];
         }
 
+        // The AI's job link is double-checked against the document before it's used: the job's PO number, or one
+        // of its dates together with its client, venue or title. Otherwise it's kept only as a hint for you.
+        $linkHint = null;
+        if ($jobId && ! $document->work_job_id) {
+            $job = WorkJob::query()->with('client')->find($jobId);
+            $evidence = $status === 'extracted' && $job ? Verifier::jobEvidence($text, $job, $po['po_number'] ?? null) : ['ok' => false, 'why' => []];
+            if (! $evidence['ok']) {
+                $linkHint = ['job_id' => $jobId, 'reason' => $data['job_link']['reason'] ?? null,
+                    'note' => $status === 'extracted' ? 'The document doesn’t show this job’s dates with its client, venue or title, or its PO number, so it wasn’t linked.' : 'A scan or photo, so the link couldn’t be checked. Link it yourself if it’s right.'];
+                $jobId = null;
+            }
+        }
+
         $extraction = [
             'summary' => mb_substr((string) ($data['summary'] ?? ''), 0, 1000),
+            'job_link_hint' => $linkHint,
             'job_link_reason' => $jobId ? ($data['job_link']['reason'] ?? null) : null,
             'new_job' => $jobId ? null : $this->newJob($data['new_job'] ?? null, $text, $status),
             'po' => $po,
@@ -139,6 +154,7 @@ final class DocumentReader
                 'status' => 'extracted',
                 'error' => null,
                 'work_job_id' => $document->work_job_id ?? $jobId,
+                'job_linked_by' => $document->work_job_id ? $document->job_linked_by : ($jobId ? 'ai' : null),
             ]);
             $document->facts()->delete();
             foreach ($facts as $fact) {
@@ -154,9 +170,12 @@ final class DocumentReader
     }
 
     /** Keep facts in step when a document is linked to a different job. */
-    public static function relink(Document $document, ?int $jobId): void
+    public static function relink(Document $document, ?int $jobId, ?string $by = null): void
     {
-        $document->update(['work_job_id' => $jobId]);
+        $document->update(['work_job_id' => $jobId] + ($by ? ['job_linked_by' => $by] : []));
+        if ($by) {
+            $document->children()->update(['job_linked_by' => $by]);
+        }
         DocumentFact::query()->where('document_id', $document->id)->update(['work_job_id' => $jobId]);
         $document->children()->update(['work_job_id' => $jobId]);
         DocumentFact::query()->whereIn('document_id', $document->children()->pluck('id'))->update(['work_job_id' => $jobId]);
@@ -197,7 +216,8 @@ final class DocumentReader
         ];
     }
 
-    private function content(Document $document): array
+    /** The document as Claude receives it: the PDF or image itself, or its text. */
+    public static function content(Document $document): array
     {
         $path = Storage::disk('local')->path($document->stored_path);
 

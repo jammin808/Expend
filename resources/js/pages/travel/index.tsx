@@ -1,3 +1,4 @@
+import { CheckBadge, type Check } from '@/components/check-badge';
 import { Money } from '@/components/money';
 import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
@@ -35,6 +36,7 @@ interface Item {
     source: string;
     evidence: Record<string, Evidence>;
     unverified_count: number;
+    check: Check | null;
     document: { id: number; subject: string } | null;
     transaction: { id: number; date: string; amount_pence: number; description: string; account: string | null; review_status: string } | null;
     job: { id: number; title: string; starts_on: string } | null;
@@ -151,6 +153,9 @@ function ItemCard({
                             {item.booker ? ` · booked by ${item.booker}` : ''}
                             {item.source === 'structured_data' ? ' · from the booking data' : item.source === 'ai' ? ' · read by AI' : ''}
                         </p>
+                        {item.source !== 'manual' && (
+                            <CheckBadge check={item.check} subject={{ type: 'travel_item', id: item.id }} className="mt-1" />
+                        )}
                     </div>
                 </div>
                 <div className="text-right text-sm">

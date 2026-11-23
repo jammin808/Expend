@@ -8,7 +8,9 @@ use App\Domain\Import\CsvReader;
 use App\Domain\Import\Importer;
 use App\Domain\Import\ProfileDetector;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Jobs\JobFinder;
 use App\Domain\Travel\TravelReader;
+use App\Domain\Verification\Verifier;
 use App\Models\Account;
 use App\Models\CalendarEvent;
 use App\Models\Client;
@@ -16,6 +18,7 @@ use App\Models\GmailMessage;
 use App\Models\MileageTrip;
 use App\Models\Setting;
 use App\Models\TaxYear;
+use App\Models\TravelItem;
 use App\Models\User;
 use App\Models\Vehicle;
 use App\Models\WorkJob;
@@ -130,6 +133,7 @@ class DemoSeeder extends Seeder
 
         $this->demoPurchaseOrder($jobs[1]);
         $this->demoHotelBookings($jobs);
+        $this->demoJobFinder();
 
         $car = Vehicle::query()->firstOrCreate(['name' => 'My car'], ['type' => 'car_van', 'method' => 'simplified']);
         foreach (array_slice($jobs, 0, 4) as $job) {
@@ -174,6 +178,40 @@ class DemoSeeder extends Seeder
             $items = app(TravelReader::class)->read($doc);
             $message->update(['status' => $items ? 'read' : 'no_booking']);
         }
+    }
+
+    /**
+     * A job that isn't in the app yet, spread over two calendar entries, a job invite email and a hotel stay, plus a
+     * dentist appointment that isn't work: the job finder (rules only, no AI call) groups the first three.
+     */
+    private function demoJobFinder(): void
+    {
+        foreach ([
+            ['Load in: Spring Showcase', '2025-03-12 07:00:00', '2025-03-12 19:00:00', 'O2 Academy Brixton, SW9 9SL', false],
+            ['Spring Showcase show day', '2025-03-13 00:00:00', '2025-03-14 00:00:00', 'O2 Academy Brixton', true],
+            ['Dentist', '2025-03-14 09:00:00', '2025-03-14 09:30:00', null, false],
+        ] as [$summary, $start, $end, $location, $allDay]) {
+            CalendarEvent::query()->create(['uid' => 'demo-finder-'.md5($summary), 'starts_at' => $start, 'ends_at' => $end, 'all_day' => $allDay, 'summary' => $summary, 'location' => $location]);
+        }
+        $raw = "From: Brightside Live <crew@example.com>\r\nSubject: Crew invite: Spring Showcase, Brixton\r\nDate: Mon, 3 Feb 2025 10:00:00 +0000\r\n\r\n"
+            ."Hi, we'd love you on the Spring Showcase at O2 Academy Brixton on 12-13 March 2025.\r\nLoad in 07:00 on 12 March, show day 13 March. Day rate 450.00 GBP.\r\nBrightside Live\r\n";
+        $doc = app(DocumentIntake::class)->store($raw, 'invite.eml', 'message/rfc822', 'gmail', ['from' => 'Brightside Live <crew@example.com>', 'subject' => 'Crew invite: Spring Showcase, Brixton', 'received_at' => '2025-02-03 10:00:00']);
+        app(DocumentReader::class)->save($doc, [
+            'kind' => 'job_invite', 'summary' => 'Brightside Live invite you to crew the Spring Showcase at O2 Academy Brixton on 12–13 March 2025.',
+            'job_link' => ['job_id' => null, 'reason' => null],
+            'new_job' => ['title' => 'Spring Showcase', 'client' => 'Brightside Live', 'starts_on' => '2025-03-12', 'ends_on' => '2025-03-13', 'venue' => 'O2 Academy Brixton', 'postcode' => 'SW9 9SL',
+                'quote' => 'Spring Showcase at O2 Academy Brixton on 12-13 March 2025'],
+            'facts' => [
+                ['field' => 'load_in', 'label' => 'Load-in', 'value' => '07:00', 'date' => '2025-03-12', 'time' => '07:00', 'quote' => 'Load in 07:00 on 12 March', 'page' => null],
+                ['field' => 'rate', 'label' => 'Day rate', 'value' => '£450', 'date' => null, 'time' => null, 'quote' => 'Day rate 450.00 GBP', 'page' => null],
+            ],
+            'po' => null, 'receipt' => null,
+        ], [], 'demo (no AI call)');
+        TravelItem::query()->create(['kind' => 'hotel', 'provider' => 'Premier Inn', 'status' => 'booked', 'starts_on' => '2025-03-11', 'ends_on' => '2025-03-13',
+            'place' => 'Premier Inn London Brixton', 'postcode' => 'SW9 8PQ', 'amount_minor' => 18400, 'currency' => 'GBP', 'source' => 'manual', 'evidence' => []]);
+
+        app(JobFinder::class)->run('2024-25', false);
+        app(Verifier::class)->recheck(200, 0, false);
     }
 
     /** A fictional PO, read as if by the AI (no API call), to show the job sheet and invoice drafting. */

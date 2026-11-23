@@ -3,6 +3,7 @@
 namespace App\Domain\Ai;
 
 use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Verification\Verifier;
 use App\Http\Presenters\Present;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -101,6 +102,12 @@ final class TransactionAdvisor
             } catch (\InvalidArgumentException) {
                 $skipped++;
             }
+        }
+
+        // Every AI suggestion is checked again against the payment and the job's dates.
+        $verifier = app(Verifier::class);
+        foreach ($byId as $tx) {
+            $verifier->transaction($tx);
         }
 
         return ['suggested' => $made, 'skipped' => $skipped];

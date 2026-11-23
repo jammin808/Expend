@@ -73,6 +73,7 @@ export interface Item {
     review_status: 'unreviewed' | 'suggested' | 'confirmed';
     transfer_pair_id?: number | null;
     allocations: Allocation[];
+    check?: import('@/components/check-badge').Check | null;
     merchant_count?: number;
     events?: CalendarEntry[];
     jobs_near?: JobRef[];

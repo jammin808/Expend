@@ -12,6 +12,9 @@ use App\Models\Client;
 use App\Models\Document;
 use App\Models\DocumentFact;
 use App\Models\Invoice;
+use App\Models\JobCandidate;
+use App\Models\TravelItem;
+use App\Models\Verification;
 use App\Models\WorkJob;
 use App\Support\Money;
 use App\Support\UkTaxYear;
@@ -47,7 +50,8 @@ class JobController extends Controller
                 'not_invoiced' => ! $r['invoice'] && $r['status'] !== 'cancelled',
                 default => true,
             })->values(),
-            'counts' => ['no_po' => $rows->where('missing', true)->count(), 'not_invoiced' => $rows->filter(fn ($r) => ! $r['invoice'] && $r['status'] !== 'cancelled')->count()],
+            'counts' => ['no_po' => $rows->where('missing', true)->count(), 'not_invoiced' => $rows->filter(fn ($r) => ! $r['invoice'] && $r['status'] !== 'cancelled')->count(),
+                'possible' => JobCandidate::query()->where('status', 'open')->count()],
             'clients' => Client::query()->orderBy('name')->get(['id', 'name']),
             'filters' => ['year' => $year, 'show' => $show],
         ]);
@@ -88,6 +92,15 @@ class JobController extends Controller
 
         $documents = Document::query()->where('work_job_id', $job->id)->whereNull('parent_id')->withCount('children')->orderByDesc('received_at')->get();
         $invoicedDocs = PoStatus::invoicedDocuments($documents);
+        $docChecks = Verification::forMany('document', $documents->pluck('id'));
+
+        // Stays and journeys linked to this job, and unlinked ones around its dates that you can link.
+        $travel = TravelItem::query()->where('status', '!=', 'cancelled')
+            ->where(fn ($q) => $q->where('work_job_id', $job->id)->orWhere(fn ($q) => $q->whereNull('work_job_id')
+                ->whereDate('starts_on', '<=', $job->ends_on->copy()->addDay())
+                ->whereDate('starts_on', '>=', $job->starts_on->copy()->subDays(3))))
+            ->orderBy('starts_on')->limit(30)->get();
+        $travelChecks = Verification::forMany('travel_item', $travel->pluck('id'));
 
         return Inertia::render('jobs/show', [
             'job' => Present::job($job) + PoStatus::forJobs([$job])[$job->id],
@@ -104,7 +117,14 @@ class JobController extends Controller
                 ->map(fn ($f) => $f->only(['id', 'field', 'label', 'value', 'at_time', 'quote', 'verified', 'verification_note', 'document_id']) + [
                     'on_date' => $f->on_date?->format('Y-m-d'), 'document' => $f->document?->original_name, 'received' => $f->document?->received_at?->format('Y-m-d'),
                 ]),
-            'documents' => $documents->map(fn ($d) => DocumentController::row($d) + ['invoiced' => $invoicedDocs[$d->id] ?? null]),
+            'documents' => $documents->map(fn ($d) => DocumentController::row($d) + ['invoiced' => $invoicedDocs[$d->id] ?? null, 'linked_by' => $d->job_linked_by, 'check' => $docChecks[$d->id] ?? null]),
+            'calendar' => JobFinderController::calendarFor($job),
+            'travel' => $travel->map(fn (TravelItem $t) => [
+                'id' => $t->id, 'kind' => TravelItem::KINDS[$t->kind] ?? $t->kind, 'provider' => $t->provider, 'place' => $t->kind === 'hotel' ? $t->place : trim($t->place.' → '.$t->destination, ' →'),
+                'starts_on' => $t->starts_on->format('Y-m-d'), 'ends_on' => $t->ends_on?->format('Y-m-d'), 'amount_minor' => $t->amount_minor, 'currency' => $t->currency,
+                'linked' => $t->work_job_id === $job->id, 'by' => $t->job_linked_by, 'decision' => $t->decision ? (TravelItem::DECISIONS[$t->decision] ?? $t->decision) : null, 'source' => $t->source,
+                'check' => $travelChecks[$t->id] ?? null,
+            ])->values(),
             'invoices' => Invoice::query()->where('work_job_id', $job->id)->get()->map(fn ($i) => InvoiceController::row($i)),
             'kinds' => Document::KINDS,
             'lookups' => Present::lookups(),

@@ -1,3 +1,4 @@
+import { CheckBadge } from '@/components/check-badge';
 import { DecisionForm, decisionProblem, initialDecision } from '@/components/decision-form';
 import { ItemDrawer } from '@/components/item-drawer';
 import { Money } from '@/components/money';
@@ -325,6 +326,13 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                                                     {suggestion.category ? ` · ${suggestion.category}` : ''}
                                                 </span>
                                                 {suggestion.reason && <span className="text-muted-foreground block">{suggestion.reason}</span>}
+                                                {(suggestion.decided_by === 'ai' || suggestion.decided_by === 'matcher') && (
+                                                    <CheckBadge
+                                                        check={item.check ?? null}
+                                                        subject={{ type: 'transaction', id: item.id }}
+                                                        className="mt-1"
+                                                    />
+                                                )}
                                             </span>
                                         </span>
                                         <Button size="sm" onClick={() => submit(decision, 'accept')}>
