@@ -21,6 +21,8 @@ Route::middleware('auth')->group(function () {
     Route::put('settings/integrations/email', [IntegrationSettingsController::class, 'updateEmail'])->name('integrations.email');
     Route::post('settings/integrations/telegram', [IntegrationSettingsController::class, 'connectTelegram'])->name('integrations.telegram');
     Route::delete('settings/integrations/telegram', [IntegrationSettingsController::class, 'disconnectTelegram'])->name('integrations.telegram.disconnect');
+    Route::put('settings/integrations/mail', [IntegrationSettingsController::class, 'updateMail'])->name('integrations.mail');
+    Route::post('settings/integrations/mail/test', [IntegrationSettingsController::class, 'testMail'])->middleware('throttle:5,1')->name('integrations.mail.test');
     Route::put('settings/integrations/gmail', [IntegrationSettingsController::class, 'updateGmail'])->name('integrations.gmail');
     Route::post('settings/gmail/connect', [IntegrationSettingsController::class, 'connectGmail'])->name('gmail.connect');
     Route::delete('settings/gmail', [IntegrationSettingsController::class, 'disconnectGmail'])->name('gmail.disconnect');

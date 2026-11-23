@@ -9,12 +9,15 @@ use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailLabeller;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Mail\MailboxFetcher;
+use App\Domain\Mail\OutgoingMail;
 use App\Domain\Telegram\Telegram;
 use App\Jobs\SyncGmailLabels;
+use App\Mail\TestEmail;
 use App\Models\GmailLabel;
 use App\Models\Setting;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -48,6 +51,13 @@ class IntegrationSettingsController extends Controller
                 'searches' => collect(GmailScanner::SEARCHES)->map(fn ($s, $key) => [
                     'key' => $key, 'label' => $s['label'], 'query' => GmailScanner::query($key), 'default' => $s['query'],
                 ])->values(),
+            ],
+            'mail' => [
+                'method' => OutgoingMail::method() ?? 'log', 'chosen' => Setting::get('mail_method'),
+                'smtp_host' => Setting::get('smtp_host') ?? 'smtp.hostinger.com', 'smtp_port' => Setting::get('smtp_port') ?? 465,
+                'smtp_username' => Setting::get('smtp_username'), 'smtp_password_set' => Setting::get('smtp_password') !== null,
+                'from_address' => Setting::get('mail_from_address'), 'default_from' => OutgoingMail::from(),
+                'to' => request()->user()->email,
             ],
             'telegram' => [
                 'token_set' => Telegram::token() !== null, 'paired' => Setting::get('telegram_chat_id') !== null,
@@ -231,5 +241,40 @@ class IntegrationSettingsController extends Controller
         SyncGmailLabels::dispatch();
 
         return back()->with('success', 'Updating the “✓ Invoiced” labels in Gmail. It takes a minute or two.');
+    }
+
+    public function updateMail(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'method' => ['required', Rule::in(OutgoingMail::METHODS)],
+            'smtp_host' => 'nullable|string|max:200', 'smtp_port' => 'nullable|integer|in:25,465,587,2525',
+            'smtp_username' => 'nullable|string|max:200', 'smtp_password' => 'nullable|string|max:300',
+            'from_address' => 'nullable|email|max:200',
+        ]);
+        if ($data['method'] === 'smtp' && (empty($data['smtp_host']) || empty($data['smtp_username']) || (empty($data['smtp_password']) && Setting::get('smtp_password') === null))) {
+            return back()->with('error', 'For your mailbox, fill in the server, the mailbox address and its password.');
+        }
+        Setting::put('mail_method', $data['method']);
+        Setting::put('smtp_host', $data['smtp_host'] ?? null);
+        Setting::put('smtp_port', $data['smtp_port'] ?? 465);
+        Setting::put('smtp_username', $data['smtp_username'] ?? null);
+        if (! empty($data['smtp_password'])) {
+            Setting::put('smtp_password', $data['smtp_password']);
+        }
+        Setting::put('mail_from_address', $data['from_address'] ?? null);
+        AuditLog::record('settings.mail', 'Settings', null, collect($data)->except('smtp_password')->all() + ['password_changed' => ! empty($data['smtp_password'])]);
+
+        return back()->with('success', 'Email sending saved. Send yourself a test email to check it arrives.');
+    }
+
+    public function testMail(Request $request): RedirectResponse
+    {
+        try {
+            Mail::to($request->user()->email)->send(new TestEmail);
+        } catch (Throwable $e) {
+            return back()->with('error', 'Couldn’t send: '.str_replace((string) Setting::get('smtp_password'), '••••', $e->getMessage()));
+        }
+
+        return back()->with('success', 'Sent to '.$request->user()->email.'. If it isn’t in your inbox within a few minutes, look in spam.');
     }
 }

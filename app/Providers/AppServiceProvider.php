@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Domain\Ai\AiClient;
 use App\Domain\Ai\AnthropicAiClient;
+use App\Domain\Mail\OutgoingMail;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\ServiceProvider;
 
@@ -27,5 +28,8 @@ class AppServiceProvider extends ServiceProvider
         if ($this->app->isProduction()) {
             URL::forceScheme('https');
         }
+
+        // Sending email is set in Settings › Integrations, so read it when the mailer is first needed.
+        $this->app->afterResolving('mail.manager', fn () => OutgoingMail::apply());
     }
 }

@@ -7,6 +7,7 @@ use App\Domain\Ai\AiUsage;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Mail\MailboxFetcher;
+use App\Domain\Mail\OutgoingMail;
 use App\Domain\Telegram\Telegram;
 use App\Models\AssistantLog;
 use App\Models\GmailLabel;
@@ -24,7 +25,8 @@ use Throwable;
  */
 class CheckIntegrations extends Command
 {
-    protected $signature = 'ledger:check {--telegram-message : Also send a short test message to your paired Telegram chat}';
+    protected $signature = 'ledger:check {--telegram-message : Also send a short test message to your paired Telegram chat}
+        {--email : Also send a test email to your account address}';
 
     protected $description = 'Check the Claude key, Telegram bot, queue and recent errors';
 
@@ -113,7 +115,8 @@ class CheckIntegrations extends Command
         }
 
         $this->newLine();
-        $this->line('Email: '.(MailboxFetcher::configured() ? 'mailbox set' : 'not set up yet'));
+        $this->line('Sending email: '.(OutgoingMail::method() ?? 'from .env ('.config('mail.default').')').', from '.OutgoingMail::from());
+        $this->line('Email forwarding mailbox: '.(MailboxFetcher::configured() ? 'set' : 'not set up yet'));
 
         $failed = DB::table('failed_jobs');
         $lastFailure = (clone $failed)->latest('failed_at')->first();

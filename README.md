@@ -57,6 +57,9 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   green **✓ Invoiced** label, taken off again if the invoice is voided. The app finds it by the Gmail message it
   fetched, by a forwarded email's Message-ID, or by the PO number when every match is in one conversation; it
   never guesses between conversations.
+- **Sending email** (password reset and test emails only): from the web server with no setup, or from your own
+  mailbox (recommended, more reliable), set in Settings › Integrations with a test button. Locked out with no email?
+  `php artisan ledger:reset-link` on the server prints a one-time reset link.
 - **Spreadsheet export** of any year (return figures, every transaction, mileage), for filing or records.
 - **Security**: one account only (registration closes after you sign up), two-factor sign-in with
   recovery codes, strict security headers and content security policy, locked tax years, encrypted
@@ -91,7 +94,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 122 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 126 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint

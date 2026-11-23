@@ -24,6 +24,17 @@ interface Props {
     business: { name: string | null; address: string | null; email: string | null; bank: string | null; prefix: string; terms: number };
     email: { host: string | null; port: number; username: string | null; password_set: boolean; allowed: string };
     telegram: { token_set: boolean; paired: boolean; pairing_code: string | null; webhook: string };
+    mail: {
+        method: string;
+        chosen: string | null;
+        smtp_host: string;
+        smtp_port: number;
+        smtp_username: string | null;
+        smtp_password_set: boolean;
+        from_address: string | null;
+        default_from: string;
+        to: string;
+    };
     gmail: {
         configured: boolean;
         connected: boolean;
@@ -40,7 +51,7 @@ interface Props {
     };
 }
 
-export default function Integrations({ ai, business, email, telegram, gmail }: Props) {
+export default function Integrations({ ai, business, email, telegram, gmail, mail: out }: Props) {
     const aiForm = useForm({
         api_key: '',
         model: ai.model,
@@ -66,6 +77,14 @@ export default function Integrations({ ai, business, email, telegram, gmail }: P
         test: false as boolean,
     });
     const tg = useForm({ token: '' });
+    const send = useForm({
+        method: out.method === 'log' ? 'server' : out.method,
+        smtp_host: out.smtp_host ?? 'smtp.hostinger.com',
+        smtp_port: String(out.smtp_port ?? 465),
+        smtp_username: out.smtp_username ?? '',
+        smtp_password: '',
+        from_address: out.from_address ?? '',
+    });
     const gm = useForm({
         client_id: gmail.client_id ?? '',
         client_secret: '',
@@ -184,6 +203,91 @@ export default function Integrations({ ai, business, email, telegram, gmail }: P
                             </div>
                         </div>
                         <Button disabled={biz.processing}>Save business details</Button>
+                    </form>
+
+                    <form
+                        id="sending"
+                        className="space-y-4"
+                        onSubmit={(e) => (
+                            e.preventDefault(),
+                            send.put('/settings/integrations/mail', { preserveScroll: true, onSuccess: () => send.setData('smtp_password', '') })
+                        )}
+                    >
+                        <HeadingSmall
+                            title="Sending email"
+                            description="Used for password reset links and test emails. The app doesn't send anything else."
+                        />
+                        <div className="space-y-2 text-sm">
+                            {[
+                                ['server', 'From this web server', 'No setup. Some providers put these in spam.'],
+                                ['smtp', 'From your mailbox (recommended)', 'Sent and signed by your email provider, so it arrives reliably.'],
+                                ['off', 'Off', 'Nothing is sent, so password reset won’t work.'],
+                            ].map(([value, label, hint]) => (
+                                <label key={value} className="flex items-start gap-2">
+                                    <input
+                                        type="radio"
+                                        name="mail-method"
+                                        className="mt-1"
+                                        checked={send.data.method === value}
+                                        onChange={() => send.setData('method', value)}
+                                    />
+                                    <span>
+                                        {label} <span className="text-muted-foreground">· {hint}</span>
+                                    </span>
+                                </label>
+                            ))}
+                        </div>
+                        {send.data.method === 'smtp' && (
+                            <div className="grid gap-3 sm:grid-cols-2">
+                                <Input
+                                    placeholder="Server, e.g. smtp.hostinger.com"
+                                    value={send.data.smtp_host}
+                                    onChange={(e) => send.setData('smtp_host', e.target.value)}
+                                />
+                                <Input
+                                    placeholder="Port"
+                                    inputMode="numeric"
+                                    value={send.data.smtp_port}
+                                    onChange={(e) => send.setData('smtp_port', e.target.value)}
+                                />
+                                <Input
+                                    placeholder="Mailbox address"
+                                    autoComplete="off"
+                                    value={send.data.smtp_username}
+                                    onChange={(e) => send.setData('smtp_username', e.target.value)}
+                                />
+                                <Input
+                                    type="password"
+                                    autoComplete="off"
+                                    placeholder={out.smtp_password_set ? 'Password saved (encrypted)' : 'Mailbox password'}
+                                    value={send.data.smtp_password}
+                                    onChange={(e) => send.setData('smtp_password', e.target.value)}
+                                />
+                            </div>
+                        )}
+                        <div className="space-y-1.5">
+                            <Label>From address</Label>
+                            <Input
+                                placeholder={out.default_from}
+                                value={send.data.from_address}
+                                onChange={(e) => send.setData('from_address', e.target.value)}
+                            />
+                        </div>
+                        {Object.values(send.errors).map((e) => (
+                            <p key={e} className="text-sm text-rose-600">
+                                {e}
+                            </p>
+                        ))}
+                        <div className="flex flex-wrap gap-2">
+                            <Button disabled={send.processing}>Save</Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => router.post('/settings/integrations/mail/test', {}, { preserveScroll: true })}
+                            >
+                                Send a test email to {out.to}
+                            </Button>
+                        </div>
                     </form>
 
                     <section id="gmail" className="space-y-4">

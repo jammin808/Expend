@@ -5,9 +5,11 @@ use App\Domain\Calendar\CalendarSync;
 use App\Domain\Mail\MailboxFetcher;
 use App\Jobs\SyncGmailLabels;
 use App\Models\Setting;
+use App\Models\User;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('ledger:verify-audit', function () {
@@ -47,6 +49,21 @@ Artisan::command('ledger:fetch-email', function (MailboxFetcher $fetcher) {
 
     return 0;
 })->purpose('Read new emails from the forwarding mailbox');
+
+Artisan::command('ledger:reset-link', function () {
+    $user = User::query()->first();
+    if (! $user) {
+        $this->error('No account yet.');
+
+        return 1;
+    }
+    $token = Password::broker()->createToken($user);
+    AuditLog::record('auth.reset_link_created', $user, null, null, 'Created on the server with ledger:reset-link', 'server');
+    $this->line(url(route('password.reset', ['token' => $token, 'email' => $user->email], false)));
+    $this->line('Valid for '.config('auth.passwords.users.expire').' minutes, once.');
+
+    return 0;
+})->purpose('Print a one-time password reset link for the owner (for when email can’t be sent)');
 
 // One cron entry on the server runs all of these: * * * * * php artisan schedule:run
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();

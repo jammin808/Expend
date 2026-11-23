@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AuthLayout from '@/layouts/auth-layout';
 
-export default function ForgotPassword({ status }: { status?: string }) {
+export default function ForgotPassword({ status, mailOff }: { status?: string; mailOff?: boolean }) {
     const { data, setData, post, processing, errors } = useForm({
         email: '',
     });
@@ -26,6 +26,11 @@ export default function ForgotPassword({ status }: { status?: string }) {
             <Head title="Forgot password" />
 
             {status && <div className="mb-4 text-center text-sm font-medium text-green-600">{status}</div>}
+            {mailOff && (
+                <div className="mb-4 text-center text-sm text-amber-700">
+                    Sending email is switched off on this site, so no reset link can be sent. It can be switched on in Settings › Integrations.
+                </div>
+            )}
 
             <div className="space-y-6">
                 <form onSubmit={submit}>
