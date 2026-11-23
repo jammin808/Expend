@@ -24,6 +24,7 @@ Route::middleware('auth')->group(function () {
     Route::put('settings/integrations/gmail', [IntegrationSettingsController::class, 'updateGmail'])->name('integrations.gmail');
     Route::post('settings/gmail/connect', [IntegrationSettingsController::class, 'connectGmail'])->name('gmail.connect');
     Route::delete('settings/gmail', [IntegrationSettingsController::class, 'disconnectGmail'])->name('gmail.disconnect');
+    Route::post('settings/gmail/labels', [IntegrationSettingsController::class, 'syncGmailLabels'])->name('gmail.labels');
 
     Route::get('settings/rules', [LedgerSettingsController::class, 'rules'])->name('rules.index');
     Route::patch('settings/rules/{rule}', [LedgerSettingsController::class, 'updateRule'])->name('rules.update');

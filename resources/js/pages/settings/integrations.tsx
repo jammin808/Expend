@@ -32,6 +32,11 @@ interface Props {
         redirect_uri: string;
         last_result: { ok: boolean; message: string; at: string } | null;
         searches: { key: string; label: string; query: string; default: string }[];
+        can_label: boolean;
+        label: string;
+        label_on: boolean;
+        label_status: { at: string; labelled_jobs: number; missing: string[] } | null;
+        labelled: number;
     };
 }
 
@@ -65,6 +70,7 @@ export default function Integrations({ ai, business, email, telegram, gmail }: P
         client_id: gmail.client_id ?? '',
         client_secret: '',
         queries: Object.fromEntries(gmail.searches.map((q) => [q.key, q.query])) as Record<string, string>,
+        label_invoiced: gmail.label_on,
     });
 
     return (
@@ -182,18 +188,50 @@ export default function Integrations({ ai, business, email, telegram, gmail }: P
 
                     <section id="gmail" className="space-y-4">
                         <HeadingSmall
-                            title="Gmail (read-only)"
-                            description="Lets the app search your Gmail for hotel bookings, travel receipts and POs, using narrow searches you can edit. It can only read: it can't send, change or delete anything, and every email it fetches is listed under Stays & travel."
+                            title="Gmail"
+                            description="Lets the app search your Gmail for hotel bookings, travel receipts and POs, using narrow searches you can edit, and put a green “✓ Invoiced” label on a PO email once you’ve invoiced the job. It only ever reads, and adds or removes that one label: it never sends, moves or deletes anything. Every email it fetches is listed under Stays & travel."
                         />
                         {gmail.last_result && (
                             <p className={gmail.last_result.ok ? 'text-sm text-emerald-700' : 'text-sm text-rose-600'}>{gmail.last_result.message}</p>
                         )}
                         {gmail.connected ? (
-                            <div className="flex flex-wrap items-center gap-3 text-sm">
-                                <p className="font-medium text-emerald-700">Connected as {gmail.account}.</p>
-                                <Button variant="ghost" onClick={() => router.delete('/settings/gmail', { preserveScroll: true })}>
-                                    Disconnect
-                                </Button>
+                            <div className="space-y-2 text-sm">
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <p className="font-medium text-emerald-700">Connected as {gmail.account}.</p>
+                                    <Button variant="ghost" onClick={() => router.delete('/settings/gmail', { preserveScroll: true })}>
+                                        Disconnect
+                                    </Button>
+                                </div>
+                                {gmail.can_label ? (
+                                    <div className="flex flex-wrap items-center gap-3">
+                                        <span className="inline-flex items-center rounded bg-[#16a766] px-1.5 py-0.5 text-xs font-medium text-white">
+                                            {gmail.label}
+                                        </span>
+                                        <span className="text-muted-foreground">
+                                            {gmail.labelled} email{gmail.labelled === 1 ? '' : 's'} labelled
+                                            {gmail.label_status ? `, last checked ${gmail.label_status.at.slice(0, 16).replace('T', ' ')}` : ''}
+                                        </span>
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => router.post('/settings/gmail/labels', {}, { preserveScroll: true })}
+                                            disabled={!gmail.label_on}
+                                        >
+                                            Update labels now
+                                        </Button>
+                                    </div>
+                                ) : (
+                                    <p className="text-amber-700 dark:text-amber-400">
+                                        This connection can only read. To get the {gmail.label} label in Gmail, press Connect Gmail again and allow
+                                        the app to change your email (it only adds or removes that label).
+                                    </p>
+                                )}
+                                {!!gmail.label_status?.missing.length && (
+                                    <p className="text-muted-foreground text-xs">
+                                        Invoiced, but the PO email wasn’t found in Gmail: {gmail.label_status.missing.join(', ')}. Link the PO email
+                                        to the job under Documents, or add the PO number on the job.
+                                    </p>
+                                )}
                             </div>
                         ) : (
                             <ol className="text-muted-foreground list-decimal space-y-1.5 pl-5 text-sm">
@@ -212,8 +250,8 @@ export default function Integrations({ ai, business, email, telegram, gmail }: P
                                 </li>
                                 <li>Paste the client ID and secret below, save, then press Connect Gmail.</li>
                                 <li>
-                                    Google warns that the app isn't verified, because it's your own private app: choose Advanced, then continue, and
-                                    allow reading your email.
+                                    Google warns that the app isn't verified, because it's your own private app: choose Advanced, then continue. Allow
+                                    it to view and change your email: the app uses that only to read, and to add or remove its {gmail.label} label.
                                 </li>
                             </ol>
                         )}
@@ -243,6 +281,10 @@ export default function Integrations({ ai, business, email, telegram, gmail }: P
                                     {e}
                                 </p>
                             ))}
+                            <label className="flex items-center gap-2 text-sm">
+                                <Checkbox checked={gm.data.label_invoiced} onCheckedChange={(v) => gm.setData('label_invoiced', !!v)} />
+                                Put a green {gmail.label} label on the PO email in Gmail once the job is invoiced (taken off if the invoice is voided)
+                            </label>
                             <details className="text-sm">
                                 <summary className="text-muted-foreground cursor-pointer">Edit the Gmail searches</summary>
                                 <div className="mt-2 space-y-2">
@@ -264,7 +306,7 @@ export default function Integrations({ ai, business, email, telegram, gmail }: P
                             </details>
                             <div className="flex gap-2">
                                 <Button disabled={gm.processing}>Save</Button>
-                                {gmail.configured && !gmail.connected && (
+                                {gmail.configured && (!gmail.connected || !gmail.can_label) && (
                                     <Button type="button" variant="outline" onClick={() => router.post('/settings/gmail/connect')}>
                                         Connect Gmail
                                     </Button>

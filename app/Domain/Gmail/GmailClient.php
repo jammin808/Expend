@@ -12,14 +12,19 @@ use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
- * Read-only Gmail access through Google's own API and your own Google sign-in client.
+ * Gmail access through Google's own API and your own Google sign-in client.
  *
- * Only the gmail.readonly scope is ever requested, so the app can't send, change or delete mail.
- * The refresh token is stored encrypted; disconnecting revokes it at Google.
+ * The gmail.modify scope is requested: read, and change labels. Google's permission is broad (it can't
+ * delete mail permanently, but it could change mail), so the app's code only ever reads, and adds or
+ * removes its own "✓ Invoiced" label (GmailLabeller). It never sends, moves or deletes anything.
+ * Connections made with read-only access keep working for reading. The refresh token is stored
+ * encrypted; disconnecting revokes it at Google.
  */
 final class GmailClient
 {
-    public const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+    public const SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
+
+    public const READONLY = 'https://www.googleapis.com/auth/gmail.readonly';
 
     private const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
@@ -35,6 +40,12 @@ final class GmailClient
     public static function connected(): bool
     {
         return Setting::get('gmail_refresh_token') !== null;
+    }
+
+    /** Whether the connection allows adding labels (connections made before labels were added are read-only). */
+    public static function canModify(): bool
+    {
+        return self::connected() && in_array(self::SCOPE, (array) Setting::get('gmail_scopes'), true);
     }
 
     public static function redirectUri(): string
@@ -104,11 +115,12 @@ final class GmailClient
             throw new RuntimeException('Google didn’t grant access: '.($response['error_description'] ?? $response['error'] ?? 'no refresh token returned').'.');
         }
         $granted = explode(' ', (string) ($response['scope'] ?? ''));
-        if (! in_array(self::SCOPE, $granted, true)) {
-            throw new RuntimeException('Read-only Gmail access wasn’t granted. Tick the Gmail box on Google’s consent screen and try again.');
+        if (! in_array(self::SCOPE, $granted, true) && ! in_array(self::READONLY, $granted, true)) {
+            throw new RuntimeException('Gmail access wasn’t granted. Tick the Gmail box on Google’s consent screen and try again.');
         }
 
         Setting::put('gmail_refresh_token', $response['refresh_token']);
+        Setting::put('gmail_scopes', array_values(array_intersect($granted, [self::SCOPE, self::READONLY])));
         self::rememberAccess($response);
         $email = (string) (self::get('profile')['emailAddress'] ?? '');
         Setting::put('gmail_account', $email);
@@ -126,7 +138,7 @@ final class GmailClient
                 report($e); // the tokens are still removed below; access can also be removed at myaccount.google.com
             }
         }
-        foreach (['gmail_refresh_token', 'gmail_access_token', 'gmail_access_expires', 'gmail_account'] as $key) {
+        foreach (['gmail_refresh_token', 'gmail_access_token', 'gmail_access_expires', 'gmail_account', 'gmail_scopes'] as $key) {
             Setting::put($key, null);
         }
         AuditLog::record('settings.gmail_disconnected', 'Settings');
@@ -143,6 +155,17 @@ final class GmailClient
             Setting::put('gmail_access_token', null);
             $response = Http::withToken(self::accessToken())->timeout(30)->get(self::API.$path, $query);
         }
+        if ($response->failed()) {
+            throw new RuntimeException('Gmail said: '.($response->json('error.message') ?? 'HTTP '.$response->status()));
+        }
+
+        return $response->json() ?? [];
+    }
+
+    /** POST to a Gmail API path, for example "labels" or "messages/batchModify". Only used for the label. */
+    public static function post(string $path, array $body): array
+    {
+        $response = Http::withToken(self::accessToken())->timeout(30)->asJson()->post(self::API.$path, $body);
         if ($response->failed()) {
             throw new RuntimeException('Gmail said: '.($response->json('error.message') ?? 'HTTP '.$response->status()));
         }

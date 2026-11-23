@@ -3,6 +3,8 @@
 namespace App\Domain\Invoices;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Gmail\GmailLabeller;
+use App\Jobs\SyncGmailLabels;
 use App\Models\Client;
 use App\Models\Document;
 use App\Models\Invoice;
@@ -132,6 +134,9 @@ final class InvoiceService
             Storage::disk('local')->put($path, $pdf);
 
             $invoice->forceFill(['status' => 'issued', 'issued_at' => now(), 'pdf_path' => $path, 'pdf_sha256' => hash('sha256', $pdf)])->save();
+            if ($invoice->work_job_id && GmailLabeller::enabled()) {
+                SyncGmailLabels::dispatch($invoice->work_job_id)->afterCommit();
+            }
             AuditLog::record('invoice.issued', $invoice, null, ['number' => $invoice->number, 'total' => $invoice->total_minor, 'pdf_sha256' => $invoice->pdf_sha256]);
 
             return $invoice->fresh('lines');
@@ -144,6 +149,9 @@ final class InvoiceService
             throw new InvalidArgumentException('Only issued invoices can be voided.');
         }
         $invoice->update(['status' => 'void', 'void_reason' => $reason]);
+        if ($invoice->work_job_id && GmailLabeller::enabled()) {
+            SyncGmailLabels::dispatch($invoice->work_job_id)->afterCommit();
+        }
         AuditLog::record('invoice.voided', $invoice, null, null, $reason);
     }
 

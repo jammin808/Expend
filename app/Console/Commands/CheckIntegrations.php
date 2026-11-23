@@ -9,6 +9,7 @@ use App\Domain\Gmail\GmailClient;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Telegram\Telegram;
 use App\Models\AssistantLog;
+use App\Models\GmailLabel;
 use App\Models\GmailMessage;
 use App\Models\Setting;
 use App\Models\TravelItem;
@@ -94,13 +95,14 @@ class CheckIntegrations extends Command
         }
 
         $this->newLine();
-        $this->line('Gmail (read-only)');
+        $this->line('Gmail');
         if (! GmailClient::connected()) {
             $this->line('  '.(GmailClient::configured() ? 'Google client saved, not connected yet' : 'not set up yet'));
         } else {
             try {
                 $profile = GmailClient::get('profile');
-                $this->line('  Connected: OK, reading '.($profile['emailAddress'] ?? '?'));
+                $this->line('  Connected: OK, '.($profile['emailAddress'] ?? '?').(GmailClient::canModify() ? ', can add the ✓ Invoiced label' : ', read-only (reconnect for the label)'));
+                $this->line('  Emails labelled ✓ Invoiced: '.GmailLabel::query()->count());
             } catch (Throwable $e) {
                 $problems++;
                 $this->line('  Connected: FAILED, '.self::clean($e->getMessage()));

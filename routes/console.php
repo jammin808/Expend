@@ -3,6 +3,7 @@
 use App\Domain\Audit\AuditLog;
 use App\Domain\Calendar\CalendarSync;
 use App\Domain\Mail\MailboxFetcher;
+use App\Jobs\SyncGmailLabels;
 use App\Models\Setting;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
@@ -51,6 +52,8 @@ Artisan::command('ledger:fetch-email', function (MailboxFetcher $fetcher) {
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();
 Schedule::command('ledger:verify-audit')->dailyAt('03:10');
 Schedule::command('ledger:fetch-email')->everyFiveMinutes()->withoutOverlapping();
+// Catch-up for the Gmail "✓ Invoiced" label (POs linked after invoicing, or a run that failed).
+Schedule::job(new SyncGmailLabels)->hourly()->name('gmail-labels')->withoutOverlapping();
 // Shared hosting has no long-running worker: process queued work (document reading, Telegram) every minute.
 Schedule::command('queue:work --stop-when-empty --max-time=240 --tries=1')->everyMinute()->withoutOverlapping();
 

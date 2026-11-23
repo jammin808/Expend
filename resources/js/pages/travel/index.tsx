@@ -356,7 +356,7 @@ export default function Travel({
                         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
                             <p>
                                 <Mail className="mr-2 inline size-4" />
-                                Connect Gmail (read-only) so the app can find your hotel bookings, travel receipts and POs.
+                                Connect Gmail so the app can find your hotel bookings, travel receipts and POs.
                             </p>
                             <Button size="sm" asChild>
                                 <Link href="/settings/integrations#gmail">Set up Gmail</Link>
@@ -367,7 +367,7 @@ export default function Travel({
                             <div className="flex flex-wrap items-center justify-between gap-3">
                                 <p className="text-sm">
                                     <Mail className="mr-2 inline size-4" />
-                                    Gmail: <strong>{gmail.account}</strong> (read-only)
+                                    Gmail: <strong>{gmail.account}</strong>
                                 </p>
                                 <div className="flex flex-wrap gap-2">
                                     <Button

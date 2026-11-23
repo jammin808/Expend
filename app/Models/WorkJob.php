@@ -30,4 +30,9 @@ class WorkJob extends Model
     {
         return $this->hasMany(MileageTrip::class);
     }
+
+    public function invoices(): HasMany
+    {
+        return $this->hasMany(Invoice::class, 'work_job_id');
+    }
 }

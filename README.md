@@ -39,7 +39,7 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   looks things up with read-only tools, cites records, labels suggestions and estimates, and every money
   figure it quotes is checked against your data; anything it can't match is flagged. It can suggest
   decisions for your Inbox but never confirms anything. AI suggestions for a whole tax year are one click.
-- **Gmail (read-only) and Stays & travel**: narrow, editable Gmail searches per tax year find hotel bookings
+- **Gmail and Stays & travel**: narrow, editable Gmail searches per tax year find hotel bookings
   (Booking.com, Hotels.com, Premier Inn, Travelodge, IHG and others), travel receipts and tickets (Uber, Trainline,
   rail operators, airlines, car hire, parking) and POs. Every fetched email is listed in a "what the app read" log.
   Bookings are read from the structured booking data booking sites embed (no AI needed), otherwise by Claude with
@@ -50,6 +50,13 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   same suggestion. TfL, taxis, trains and parking that only appear on statements are suggested from the same job
   days. You decide each one (business, part business by nights, personal, client-booked or recharge), and that
   decision is applied to the payment.
+- **PO tracking**: a job's PO comes from a PO document linked to it (read from email, Gmail, Telegram or upload), a
+  PO number typed on the job, or an invoice. Jobs without one are highlighted, with a "No PO" filter and a count on
+  the Overview, unless marked "No PO needed". Once a job's invoice is issued, the PO email and its attachment get a
+  green tick with the invoice number ("Paid" once paid). With Gmail connected, the PO email in Gmail also gets a
+  green **✓ Invoiced** label, taken off again if the invoice is voided. The app finds it by the Gmail message it
+  fetched, by a forwarded email's Message-ID, or by the PO number when every match is in one conversation; it
+  never guesses between conversations.
 - **Spreadsheet export** of any year (return figures, every transaction, mileage), for filing or records.
 - **Security**: one account only (registration closes after you sign up), two-factor sign-in with
   recovery codes, strict security headers and content security policy, locked tax years, encrypted
@@ -84,7 +91,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 102 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 122 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint
@@ -147,7 +154,8 @@ One-time setup:
    For Telegram, create a bot with @BotFather, paste its token, then send the bot the pairing code shown.
    For Gmail, follow the steps shown in that section: create your own Google Cloud project with the Gmail API, an
    OAuth client of type Web application with the redirect URI shown, publish the consent screen to production
-   (Testing ends access after 7 days), then Connect Gmail. Only the read-only Gmail scope is requested. Then use
+   (Testing ends access after 7 days), then Connect Gmail. The gmail.modify scope is requested so the app can add its ✓ Invoiced label; the
+   code only ever reads, and adds or removes that one label (it never sends, moves or deletes). Then use
    **Stays & travel › Search Gmail** for each tax year. Add your home postcode (Settings › Ledger) and postcodes on
    your jobs so distances can be used.
 10. **First visit.** Open `https://expenses.rohleder.tech/register?code=<SETUP_CODE>`, create your account
@@ -191,7 +199,8 @@ Then load `database.sql` into an empty database. Try this once before you rely o
 | Claude: document reading, assistant and tools, suggestions | `app/Domain/Ai/` |
 | Invoices and PDF | `app/Domain/Invoices/`, `resources/views/pdf/invoice.blade.php` |
 | Email and Telegram intake | `app/Domain/Mail/`, `app/Domain/Telegram/` |
-| Gmail (read-only) | `app/Domain/Gmail/` |
+| Gmail: searches, read log, ✓ Invoiced label | `app/Domain/Gmail/` |
+| PO and invoiced status | `app/Domain/Jobs/PoStatus.php` |
 | Stays and journeys: reading, night-by-night rules, payment matching | `app/Domain/Travel/` |
 | Health check (Claude, Telegram, Gmail, queue, errors) | `php artisan ledger:check` |
 | Screens | `resources/js/pages/` |

@@ -6,9 +6,12 @@ use App\Domain\Ai\AiUsage;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Gmail\GmailClient;
+use App\Domain\Gmail\GmailLabeller;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Telegram\Telegram;
+use App\Jobs\SyncGmailLabels;
+use App\Models\GmailLabel;
 use App\Models\Setting;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -39,6 +42,9 @@ class IntegrationSettingsController extends Controller
             'gmail' => [
                 'configured' => GmailClient::configured(), 'connected' => GmailClient::connected(), 'account' => Setting::get('gmail_account'),
                 'client_id' => Setting::get('google_client_id'), 'redirect_uri' => GmailClient::redirectUri(), 'last_result' => Setting::get('gmail_last_result'),
+                'can_label' => GmailClient::canModify(), 'label' => GmailLabeller::LABEL,
+                'label_on' => Setting::get('gmail_label_invoiced') !== false, 'label_status' => Setting::get('gmail_label_status'),
+                'labelled' => GmailLabel::query()->count(),
                 'searches' => collect(GmailScanner::SEARCHES)->map(fn ($s, $key) => [
                     'key' => $key, 'label' => $s['label'], 'query' => GmailScanner::query($key), 'default' => $s['query'],
                 ])->values(),
@@ -152,6 +158,7 @@ class IntegrationSettingsController extends Controller
             'client_id' => ['nullable', 'string', 'max:300', 'regex:/^[\w.-]+\.apps\.googleusercontent\.com$/'],
             'client_secret' => 'nullable|string|max:300',
             'queries' => 'array', 'queries.*' => 'nullable|string|max:2000',
+            'label_invoiced' => 'boolean',
         ], ['client_id.regex' => 'The client ID ends in .apps.googleusercontent.com. Copy it from the Google Cloud console.']);
 
         Setting::put('google_client_id', $data['client_id'] ? trim($data['client_id']) : null);
@@ -162,7 +169,8 @@ class IntegrationSettingsController extends Controller
             $query = trim((string) ($data['queries'][$key] ?? ''));
             Setting::put('gmail_query_'.$key, $query === '' || $query === GmailScanner::SEARCHES[$key]['query'] ? null : $query);
         }
-        AuditLog::record('settings.gmail', 'Settings', null, ['client_id' => $data['client_id'] ?? null, 'secret_changed' => ! empty($data['client_secret'])]);
+        Setting::put('gmail_label_invoiced', (bool) ($data['label_invoiced'] ?? true));
+        AuditLog::record('settings.gmail', 'Settings', null, ['client_id' => $data['client_id'] ?? null, 'secret_changed' => ! empty($data['client_secret']), 'label_invoiced' => (bool) ($data['label_invoiced'] ?? true)]);
 
         return back()->with('success', 'Gmail settings saved.');
     }
@@ -213,5 +221,15 @@ class IntegrationSettingsController extends Controller
         Setting::put('gmail_last_result', null);
 
         return back()->with('success', 'Gmail disconnected, and the app’s access revoked at Google.');
+    }
+
+    public function syncGmailLabels(): RedirectResponse
+    {
+        if (! GmailLabeller::enabled()) {
+            return back()->with('error', 'Connect Gmail with permission to add labels, and switch the label on, first.');
+        }
+        SyncGmailLabels::dispatch();
+
+        return back()->with('success', 'Updating the “✓ Invoiced” labels in Gmail. It takes a minute or two.');
     }
 }
