@@ -108,6 +108,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('rules/learn', [RuleLearningController::class, 'accept'])->name('rules.learn');
     Route::post('rules/learn/decline', [RuleLearningController::class, 'decline'])->name('rules.decline');
     Route::post('rules/{rule}/undo', [RuleLearningController::class, 'undo'])->name('rules.undo');
+    Route::post('todo/dismiss', [TodoController::class, 'dismiss'])->name('todo.dismiss');
     Route::post('todo/{code}/{id}', [TodoController::class, 'act'])->where('id', '[A-Za-z0-9_:]+')->name('todo.act');
     Route::post('checks/{type}/{id}', [VerificationController::class, 'store'])->whereNumber('id')->name('checks.store');
     Route::get('jobs', [JobController::class, 'index'])->name('jobs.index');

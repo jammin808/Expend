@@ -15,6 +15,7 @@ use App\Models\Category;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\Setting;
+use App\Models\TravelItem;
 use App\Models\User;
 use App\Models\WorkJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -134,5 +135,31 @@ class TodoTest extends TestCase
         $this->artisan('ledger:invoice-nudges')->assertSuccessful();
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'sendMessage') && str_contains($r['text'], "Invoice {$invoice->number}") && $r['reply_markup']['inline_keyboard'][0][0]['callback_data'] === 't|inv_chase|'.$invoice->id);
         $this->assertNotNull($invoice->fresh()->overdue_nudged_at);
+    }
+
+    public function test_money_you_may_be_owed_and_snoozing(): void
+    {
+        $job = WorkJob::query()->create(['title' => 'Gala', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14']);
+        $under = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'total_minor' => 0, 'bill_to_name' => 'Client', 'po_total_minor' => 180000]);
+        app(InvoiceService::class)->updateDraft($under, [], [['description' => 'Show day', 'quantity' => '1', 'unit_price' => '1500.00']]);
+        TravelItem::query()->create(['kind' => 'hotel', 'provider' => 'Premier Inn', 'status' => 'booked', 'starts_on' => '2025-05-13', 'ends_on' => '2025-05-14',
+            'amount_minor' => 8900, 'source' => 'manual', 'evidence' => [], 'work_job_id' => $job->id, 'decision' => 'recharge', 'decided_at' => now()]);
+
+        $list = TodoList::build();
+        $keys = array_column($list['items'], 'key');
+        $this->assertContains('underbilled:'.$under->id, $keys);
+        $this->assertSame(30000, collect($list['items'])->firstWhere('key', 'underbilled:'.$under->id)['amount'], '£1,800 PO, £1,500 invoiced');
+        $this->assertNotEmpty(preg_grep('/^recharge:/', $keys));
+
+        // Snooze hides it for a while; "not relevant" until you undo it.
+        $this->post('/todo/dismiss', ['key' => 'underbilled:'.$under->id, 'days' => 7])->assertSessionHas('success');
+        $this->assertNotContains('underbilled:'.$under->id, array_column(TodoList::build()['items'], 'key'));
+        $this->travel(8)->days();
+        $this->assertContains('underbilled:'.$under->id, array_column(TodoList::build()['items'], 'key'));
+        $this->post('/todo/dismiss', ['key' => 'underbilled:'.$under->id]);
+        $this->travel(400)->days();
+        $this->assertNotContains('underbilled:'.$under->id, array_column(TodoList::build()['items'], 'key'));
+        $this->post('/todo/dismiss', ['key' => 'underbilled:'.$under->id, 'undo' => true]);
+        $this->assertContains('underbilled:'.$under->id, array_column(TodoList::build()['items'], 'key'));
     }
 }

@@ -153,4 +153,21 @@ class CoreHardeningTest extends TestCase
         $this->assertSame([849, 1], $invoice->fresh()->lines()->orderBy('sort')->pluck('amount_minor')->all());
         $this->assertSame(850, $invoice->fresh()->total_minor);
     }
+
+    public function test_restoring_an_undone_card_statement_re_pairs_its_bill_payment(): void
+    {
+        $bank = $this->starling();
+        $amex = Account::query()->create(['name' => 'Amex', 'kind' => 'credit_card', 'provider' => 'amex']);
+        $this->import($bank, 'starling.csv');
+        $card = $this->import($amex, 'amex.csv');
+        $out = BankTransaction::query()->where('description', 'like', '%AMEX PAYMENT%')->sole();
+        $in = BankTransaction::query()->where('description', 'like', 'PAYMENT RECEIVED%')->sole();
+        $this->assertSame($in->id, $out->transfer_pair_id);
+
+        app(Importer::class)->revert($card, 'Wrong file');
+        $this->assertNull($out->fresh()->transfer_pair_id, 'The bank side is freed');
+
+        app(Importer::class)->restore($card->fresh(), 'Right file after all');
+        $this->assertSame([$in->id, $out->id], [$out->fresh()->transfer_pair_id, $in->fresh()->transfer_pair_id], 'Paired again');
+    }
 }

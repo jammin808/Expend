@@ -1,4 +1,5 @@
 import { Money } from '@/components/money';
+import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
 import { cn } from '@/lib/utils';
@@ -127,6 +128,40 @@ export default function Todo({
                                         </div>
                                         <div className="flex shrink-0 items-center gap-2">
                                             {i.amount !== undefined && i.amount !== null && <Money pence={i.amount} className="text-sm" />}
+                                            <span className="flex flex-col items-end text-[11px]">
+                                                <button
+                                                    type="button"
+                                                    className="text-muted-foreground hover:text-foreground"
+                                                    onClick={() => router.post('/todo/dismiss', { key: i.key, days: 7 }, { preserveScroll: true })}
+                                                >
+                                                    Snooze a week
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="text-muted-foreground hover:text-foreground"
+                                                    onClick={() =>
+                                                        router.post(
+                                                            '/todo/dismiss',
+                                                            { key: i.key },
+                                                            {
+                                                                preserveScroll: true,
+                                                                onSuccess: () =>
+                                                                    toast('Marked not relevant.', 'success', {
+                                                                        label: 'Undo',
+                                                                        run: () =>
+                                                                            router.post(
+                                                                                '/todo/dismiss',
+                                                                                { key: i.key, undo: true },
+                                                                                { preserveScroll: true },
+                                                                            ),
+                                                                    }),
+                                                            },
+                                                        )
+                                                    }
+                                                >
+                                                    Not relevant
+                                                </button>
+                                            </span>
                                             {i.actions.map((a) => (
                                                 <Button
                                                     key={a.code}

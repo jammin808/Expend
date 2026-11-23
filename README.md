@@ -24,7 +24,7 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   tax payments, never expenses. A statement whose running balance doesn't add up is **held for review**: its
   rows are kept but count nowhere (no Inbox, totals or tax) until you accept it with a reason or discard it.
   Undoing an import never deletes anything: its rows and your decisions are kept, marked reversed, and the
-  import can be restored. Invoice lines use exact decimal arithmetic (no floating point), and every history
+  import can be restored (card-bill transfers are paired again). Invoice lines use exact decimal arithmetic (no floating point), and every history
   entry is chained through a locked head so simultaneous writes can't fork it and a removed entry is caught.
 - **Jobs** with income, costs, mileage and profit; purchases such as equipment need no job.
 - **Mileage** at each year's HMRC rate (45p a mile before 6 April 2026, 55p from 2026-27, 25p after
@@ -73,7 +73,9 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   unpaid invoices (send a reminder), statements held, failed checks, a filing deadline, invoices to draft or send,
   possible jobs (add, or not a job), payments to decide (accept the suggestion, or personal), merchants ready for a
   rule, stays to decide, jobs with no PO, paid bookings missing from your statements and documents held for approval.
-  The top items show on the Overview. The same list comes to **Telegram every Monday** with buttons that act in the
+  It also finds money you may be owed: an invoice for less than its PO, part-paid invoices past due, stays you
+  decided to recharge to the client, and the same amount charged twice in a day. Any item can be snoozed for a week or
+  marked not relevant (with undo). The top items show on the Overview. The same list comes to **Telegram every Monday** with buttons that act in the
   chat (only from your paired chat); send `/todo` any time. Overdue invoices get a Telegram nudge with a "Send a
   reminder" button.
 - **Learns from your decisions**: once you've decided a merchant the same way twice, it offers "Always do this". The
@@ -151,7 +153,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 159 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 161 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint

@@ -194,10 +194,17 @@ final class Importer
                 if (BankTransaction::query()->where('account_id', $tx->account_id)->where('fingerprint', $tx->fingerprint)->where('occurrence', $tx->occurrence)->exists()) {
                     continue; // imported again from another statement since: that copy stays
                 }
-                $tx->forceFill(['state' => 'active', 'live' => true])->saveQuietly();
+                // Re-pair a card bill or transfer with the same partner, if it's still free; otherwise the pairer looks again.
+                $partner = $tx->transfer_pair_id ? BankTransaction::query()->find($tx->transfer_pair_id) : null;
+                $repair = $partner && $partner->transfer_pair_id === null && $partner->amount_pence === -$tx->amount_pence;
+                $tx->forceFill(['state' => 'active', 'live' => true, 'transfer_pair_id' => $repair ? $partner->id : null])->saveQuietly();
+                if ($repair) {
+                    $partner->forceFill(['transfer_pair_id' => $tx->id])->saveQuietly();
+                }
                 Allocation::withoutGlobalScope('not_voided')->where('bank_transaction_id', $tx->id)->whereNotNull('voided_at')->update(['voided_at' => null]);
                 $restored++;
             }
+            app(TransferPairer::class)->pairAll();
             $batch->update(['status' => 'committed', 'review_note' => 'Restored: '.$reason]);
             AuditLog::record('import.restored', $batch, ['status' => 'reverted'], ['status' => 'committed', 'restored' => $restored], $reason);
 
@@ -245,7 +252,8 @@ final class Importer
             $confirmed = Allocation::query()->whereIn('bank_transaction_id', $ids)->whereNotNull('confirmed_at')->count();
             BankTransaction::withoutGlobalScope('active')->whereIn('transfer_pair_id', $ids)->update(['transfer_pair_id' => null]);
             Allocation::query()->whereIn('bank_transaction_id', $ids)->update(['voided_at' => now()]);
-            BankTransaction::withoutGlobalScope('active')->whereIn('id', $ids)->update(['transfer_pair_id' => null, 'state' => 'reversed', 'live' => null]);
+            // The undone rows keep their pair link on record (so a restore can re-pair them); their partners are freed.
+            BankTransaction::withoutGlobalScope('active')->whereIn('id', $ids)->update(['state' => 'reversed', 'live' => null]);
             $batch->update(['status' => 'reverted', 'review_note' => $reason]);
             AuditLog::record('import.reverted', $batch, ['transactions' => $ids->count(), 'confirmed_decisions_voided' => $confirmed], null, $reason);
         });
