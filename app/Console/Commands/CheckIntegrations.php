@@ -9,6 +9,7 @@ use App\Domain\Gmail\GmailClient;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Mail\OutgoingMail;
 use App\Domain\Telegram\Telegram;
+use App\Mail\TestEmail;
 use App\Models\AssistantLog;
 use App\Models\GmailLabel;
 use App\Models\GmailMessage;
@@ -17,6 +18,7 @@ use App\Models\TravelItem;
 use App\Models\User;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Throwable;
 
 /**
@@ -116,6 +118,15 @@ class CheckIntegrations extends Command
 
         $this->newLine();
         $this->line('Sending email: '.(OutgoingMail::method() ?? 'from .env ('.config('mail.default').')').', from '.OutgoingMail::from());
+        if ($this->option('email') && $user) {
+            try {
+                Mail::to($user->email)->send(new TestEmail);
+                $this->line('  Test email: handed over for delivery to your account address');
+            } catch (Throwable $e) {
+                $problems++;
+                $this->line('  Test email: FAILED, '.self::clean($e->getMessage()));
+            }
+        }
         $this->line('Email forwarding mailbox: '.(MailboxFetcher::configured() ? 'set' : 'not set up yet'));
 
         $failed = DB::table('failed_jobs');

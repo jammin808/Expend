@@ -62,6 +62,14 @@ class OutgoingMailTest extends TestCase
         Notification::assertSentTo($user, ResetPassword::class);
     }
 
+    public function test_the_health_check_can_send_a_test_email(): void
+    {
+        Mail::fake();
+        User::factory()->create(['email' => 'owner@example.com']);
+        $this->artisan('ledger:check', ['--email' => true])->expectsOutputToContain('Test email: handed over');
+        Mail::assertSent(TestEmail::class, fn ($m) => $m->hasTo('owner@example.com'));
+    }
+
     public function test_a_reset_link_can_be_made_on_the_server_when_email_is_unavailable(): void
     {
         User::factory()->create(['email' => 'owner@example.com']);

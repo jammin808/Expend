@@ -94,7 +94,7 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 126 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+php artisan test        # 127 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
                         # documents and grounding, invoices, assistant, Telegram, 2FA, every page
 npx tsc --noEmit        # type-check the front end
 npm run lint
