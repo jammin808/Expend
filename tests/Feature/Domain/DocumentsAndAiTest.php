@@ -266,4 +266,16 @@ class DocumentsAndAiTest extends TestCase
         $this->assertNotNull(MailboxFetcher::holdReason('buyer@client.co.uk', str_replace('@gmail.com>', '@gmail.com.evil.net>', $forwarded)), 'Look-alike domain');
         $this->assertNotNull(MailboxFetcher::holdReason('buyer@client.co.uk', "Authentication-Results: mx; dmarc=pass\r\n"), 'Not forwarded at all');
     }
+
+    public function test_ai_suggestions_respect_the_switch(): void
+    {
+        Setting::put('ai_suggestions', false);
+        try {
+            app(TransactionAdvisor::class)->suggest();
+            $this->fail('Suggestions ran while switched off');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('switched off', $e->getMessage());
+        }
+        $this->assertSame([], $this->ai->requests, 'Nothing is sent to Claude');
+    }
 }

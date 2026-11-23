@@ -32,14 +32,12 @@ class LedgerSettingsController extends Controller
             'overnight_far_miles' => 'required|integer|min:1|max:1000|gte:overnight_near_miles',
             'early_start' => 'required|date_format:H:i',
             'late_finish' => 'required|date_format:H:i',
-            'ai_suggestions' => 'boolean',
-            'ai_extraction' => 'required|in:off,on_demand,on',
             'mileage_threshold_scope' => 'required|in:all_vehicles,per_vehicle',
             'calendar_ics_url' => 'nullable|url|max:1000',
             'clear_calendar' => 'boolean',
         ]);
 
-        foreach (['home_postcode', 'scottish_taxpayer', 'overnight_near_miles', 'overnight_far_miles', 'early_start', 'late_finish', 'ai_suggestions', 'ai_extraction', 'mileage_threshold_scope'] as $key) {
+        foreach (['home_postcode', 'scottish_taxpayer', 'overnight_near_miles', 'overnight_far_miles', 'early_start', 'late_finish', 'mileage_threshold_scope'] as $key) {
             Setting::put($key, $key === 'home_postcode' && $data[$key] ? strtoupper(trim($data[$key])) : $data[$key] ?? null);
         }
         if (! empty($data['calendar_ics_url'])) {

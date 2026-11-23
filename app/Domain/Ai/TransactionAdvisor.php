@@ -7,8 +7,10 @@ use App\Http\Presenters\Present;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
+use App\Models\Setting;
 use App\Models\TaxYear;
 use Illuminate\Support\Collection;
+use RuntimeException;
 
 /**
  * AI suggestions for undecided transactions. Sends only the minimum (date, amount, bank description,
@@ -22,6 +24,9 @@ final class TransactionAdvisor
     /** @return array{suggested:int, skipped:int} */
     public function suggest(?string $taxYear = null, int $limit = 40): array
     {
+        if (! Setting::get('ai_suggestions')) {
+            throw new RuntimeException('AI suggestions are switched off. Turn them on in Settings › Integrations.');
+        }
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
         $txs = BankTransaction::query()->with('account')->where('review_status', 'unreviewed')->whereDoesntHave('allocations')
             ->whereNotIn('tax_year', $locked)->when($taxYear, fn ($q, $y) => $q->where('tax_year', $y))

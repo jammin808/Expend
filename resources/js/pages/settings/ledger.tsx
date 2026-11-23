@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
 import SettingsLayout from '@/layouts/settings/layout';
-import { Head, router, useForm } from '@inertiajs/react';
+import { Head, Link, router, useForm } from '@inertiajs/react';
 
 interface Props {
     settings: Record<string, unknown>;
@@ -21,8 +21,6 @@ export default function LedgerSettings({ settings, calendar }: Props) {
         overnight_far_miles: Number(settings.overnight_far_miles ?? 40),
         early_start: (settings.early_start as string) ?? '08:00',
         late_finish: (settings.late_finish as string) ?? '22:00',
-        ai_suggestions: !!settings.ai_suggestions,
-        ai_extraction: (settings.ai_extraction as string) ?? 'on_demand',
         mileage_threshold_scope: (settings.mileage_threshold_scope as string) ?? 'all_vehicles',
         calendar_ics_url: '',
         clear_calendar: false as boolean,
@@ -122,23 +120,14 @@ export default function LedgerSettings({ settings, calendar }: Props) {
                         </div>
                     </section>
 
-                    <section className="space-y-4">
+                    <section className="space-y-2">
                         <HeadingSmall
-                            title="AI help (coming in a later version)"
-                            description="Your choices are saved now and used once AI suggestions are switched on. AI will only ever suggest; you always make the final decision."
+                            title="AI"
+                            description="Claude reads documents, answers questions and suggests decisions; you always make the final decision."
                         />
-                        <label className="flex items-center gap-2 text-sm">
-                            <Checkbox checked={form.data.ai_suggestions} onCheckedChange={(v) => form.setData('ai_suggestions', !!v)} />
-                            Suggestions (sends only date, amount, bank description and possible jobs)
-                        </label>
-                        <div className="max-w-sm space-y-1.5">
-                            <Label>Reading documents (sends the whole document)</Label>
-                            <NativeSelect value={form.data.ai_extraction} onChange={(e) => form.setData('ai_extraction', e.target.value)}>
-                                <option value="off">Off</option>
-                                <option value="on_demand">On demand, one document at a time</option>
-                                <option value="on">Automatically</option>
-                            </NativeSelect>
-                        </div>
+                        <Link href="/settings/integrations" className="text-sm font-medium underline underline-offset-4">
+                            Set up AI, email and Telegram in Integrations
+                        </Link>
                     </section>
 
                     <section className="space-y-4">
