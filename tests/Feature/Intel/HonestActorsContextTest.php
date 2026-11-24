@@ -8,6 +8,7 @@ use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\MerchantKey;
+use App\Domain\Telegram\Telegram;
 use App\Jobs\FindJobs;
 use App\Models\Account;
 use App\Models\AuditEvent;
@@ -98,7 +99,7 @@ class HonestActorsContextTest extends TestCase
         app(AllocationWriter::class)->decide($tx, AllocationWriter::lines(-50000, 'tax_payment'), 'matcher', false, 'Looks like a payment to HMRC (personal tax, not a business expense)');
 
         $this->withHeader('X-Telegram-Bot-Api-Secret-Token', 'secret')->postJson('/hooks/telegram', ['callback_query' => [
-            'id' => 'q1', 'data' => 't|tx_accept|'.$tx->id,
+            'id' => 'q1', 'data' => Telegram::callbackData('tx_accept', (string) $tx->id),
             'message' => ['message_id' => 7, 'date' => now()->getTimestamp(), 'chat' => ['id' => '42'], 'text' => 'To do'],
         ]])->assertOk();
 

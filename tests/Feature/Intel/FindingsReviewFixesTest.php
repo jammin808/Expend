@@ -14,6 +14,7 @@ use App\Domain\Intel\RefResolver;
 use App\Domain\Telegram\Telegram;
 use App\Domain\Todo\Dismissals;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Models\Account;
@@ -424,7 +425,7 @@ class FindingsReviewFixesTest extends TestCase
         // 08:47: the snooze ended at 07:00, so it's listed with its buttons, and pressing Snooze a week snoozes it.
         $this->at('2025-07-07 08:47:00');
         Telegram::sendTodo('42');
-        $this->assertNotSame('Already dealt with.', $this->press('t|fnd_snooze|'.$finding->id.':later'));
+        $this->assertNotSame('Already dealt with.', $this->press(Telegram::callbackData('fnd_snooze', $finding->id.':later')));
         $this->assertSame('snoozed', $finding->fresh()->state);
         $this->assertSame('2025-07-14 00:00:00', TodoDismissal::query()->where('key', 'no_po:'.$job->id)->value('until')?->format('Y-m-d H:i:s'),
             'A week’s snooze from Telegram is back before the next Monday digest');
@@ -440,7 +441,7 @@ class FindingsReviewFixesTest extends TestCase
         $this->row('2025-06-08', 3000, 105000);
         $this->assertContains($gap->key, array_column(TodoList::build(100)['items'], 'key'));
         $this->assertSame('dismissed', $gap->fresh()->getAttributes()['state'], 'Not recorded as back yet');
-        $this->assertNotSame('Already dealt with.', $this->press('t|fnd_snooze|'.$gap->id.':later', 9));
+        $this->assertNotSame('Already dealt with.', $this->press(Telegram::callbackData('fnd_snooze', $gap->id.':later'), 9));
         $this->assertNotContains($gap->key, array_column(TodoList::build(100)['items'], 'key'));
         $this->assertSame(1, TodoDismissal::query()->where('key', 'like', 'gap:'.$bank->id.':2025-06-02:%')->where('until', '>', now())->count());
 
@@ -459,14 +460,14 @@ class FindingsReviewFixesTest extends TestCase
         AuditEvent::creating(function () use (&$channels) {
             $channels[] = AuditContext::current()['channel'] ?? null;
         });
-        $this->actingAs(User::factory()->create())->post('/todo/fnd_snooze/'.$finding->id.':later')->assertSessionHas('success');
+        $this->actingAs(User::factory()->create())->post('/todo/fnd_snooze/'.$finding->id.':later', ['fp' => Fingerprints::of('fnd_snooze', (string) $finding->id.':later')])->assertSessionHas('success');
         $this->assertSame(['web'], $channels);
 
         $this->telegram();
         $channels = [];
         $finding->forceFill(['state' => 'open'])->save();
         TodoDismissal::query()->delete();
-        $this->press('t|fnd_dismiss|'.$finding->id.':sorted');
+        $this->press(Telegram::callbackData('fnd_dismiss', $finding->id.':sorted'));
         $this->assertSame(['telegram'], $channels);
     }
 

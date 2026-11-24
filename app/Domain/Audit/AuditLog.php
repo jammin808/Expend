@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\DB;
 final class AuditLog
 {
     /**
-     * The setting that turns on recording where each event came from (recordsContext()). Off until turned on: see there.
+     * The setting that turns on recording where each event came from (recordsContext()). On by default from M7: see there.
      */
     public const CONTEXT_SETTING = 'intel_audit_context';
 
@@ -177,18 +177,19 @@ final class AuditLog
 
     /**
      * Whether new events record where they came from: the channel, correlation and run id of the AuditContext, hashed the
-     * second way. Off unless the setting intel_audit_context is on.
+     * second way. On by default from M7 (the setting intel_audit_context, read with its default: Setting::DEFAULTS), and
+     * off only where it was turned off by hand (stored as false).
      *
-     * Every release before this one knows only the first way, and would read an event hashed the second way as a broken
-     * chain (the nightly check's alarm). So this release, the first that reads the second way, writes only the first
-     * way, and redeploying the release before it is still safe (docs/intelligence-cycle.md 3.1: every milestone can be
-     * rolled back). Turn it on once there's no going back past this release; the next release turns it on by default.
-     * A database that reorders JSON keys is the exception: there every event is written the second way regardless, as
-     * no earlier release can verify that database's events anyway (reordersJson()).
+     * Releases before M6 know only the first way, and would read an event hashed the second way as a broken chain (the
+     * nightly check's alarm). M6, the first release that reads the second way, wrote only the first way, so redeploying
+     * the release before it stayed safe. From M7 on, roll back no further than M6 (docs/intelligence-cycle.md 3.1 and
+     * M7). A chain written the first way before this and the second way after verifies as one (verify(), and
+     * deploy/restore-check.sh on a restored copy). A database that reorders JSON keys writes every event the second way
+     * regardless (reordersJson()).
      */
     public static function recordsContext(): bool
     {
-        return (bool) Setting::get(self::CONTEXT_SETTING, false);
+        return (bool) Setting::get(self::CONTEXT_SETTING);
     }
 
     /**

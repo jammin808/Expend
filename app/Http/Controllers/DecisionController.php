@@ -2,15 +2,21 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Intel\Vetoes;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\DecisionService;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\Categoriser;
+use App\Domain\Matching\TransferPairer;
+use App\Domain\Travel\TravelMatcher;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\ManualExpense;
+use App\Models\TravelItem;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 
@@ -35,6 +41,9 @@ class DecisionController extends Controller
             'lines.*.amount_pence' => 'required_with:lines|integer',
             'lines.*.business_use_pct' => 'nullable|integer|min:0|max:100',
             'lines.*.note' => 'nullable|string|max:500',
+            // The lines the page showed (their ids): what you decided differently from is remembered only if it's still that.
+            'shown' => 'nullable|array',
+            'shown.*' => 'integer',
         ];
     }
 
@@ -70,7 +79,7 @@ class DecisionController extends Controller
             return back()->with('error', 'Choose some items first.');
         }
 
-        unset($data['lines']);
+        unset($data['lines'], $data['shown']);
 
         return $this->respond($this->decisions->apply($data, $sources, $includeProtected), $sources->first() instanceof BankTransaction && ! ($data['make_rule'] ?? false) ? $sources->first()->merchant_key : null);
     }
@@ -114,15 +123,79 @@ class DecisionController extends Controller
         return back()->with('success', "Confirmed {$done->count()}.".($learned ? ' '.self::learnedText($learned) : ''));
     }
 
+    /**
+     * Send an item back to the Inbox. Clearing an automatic suggestion ("Not this one", with a reason) remembers it, so
+     * nothing automatic proposes it for this item again (Intel\Vetoes). The Inbox's own Undo (undo) only puts back what
+     * you just did: it remembers nothing, and lifts what your decision remembered.
+     *
+     * Bound to what was shown: the page sends the lines it showed (shown, their ids), and when the item says something
+     * else by now (another suggestion replaced it) nothing is cleared and nothing is remembered. Saying no to one side of
+     * a suggested transfer pair unpairs the two, as deciding it would (TransferPairer::afterYourDecision); saying no to a
+     * stay's payment found by the travel matcher takes it off the stay too (TravelMatcher::notItsPayment).
+     */
     public function clear(Request $request, string $source, int $id): RedirectResponse
     {
+        $data = $request->validate(['reason' => 'nullable|string|max:250', 'reason_code' => ['nullable', Rule::in(array_keys(Vetoes::REASONS))], 'undo' => 'boolean',
+            'shown' => 'nullable|array', 'shown.*' => 'integer']);
+        $item = $this->find($source, $id);
+        $reason = ($data['reason'] ?? null) ?: null;
+        $code = $data['reason_code'] ?? null;
+        $undo = (bool) ($data['undo'] ?? false) || $reason === 'Undo from Inbox';
+        if ($code !== null && $reason === null) {
+            $reason = 'Not this: '.mb_strtolower(Vetoes::REASONS[$code]);
+        }
         try {
-            $this->writer->clear($this->find($source, $id), $request->string('reason')->toString() ?: null);
+            $done = DB::transaction(function () use ($item, $reason, $code, $undo, $data) {
+                $was = $item->allocations()->lockForUpdate()->get();
+                if (! $undo && array_key_exists('shown', $data) && ! Vetoes::isShown($was, $data['shown'])) {
+                    return false;
+                }
+                $this->writer->clear($item, $reason);
+                if ($undo) {
+                    Vetoes::liftSinceLastDecision($item, 'Undone from the Inbox');
+
+                    return true;
+                }
+                $words = $code !== null ? Vetoes::REASONS[$code] : null;
+                Vetoes::fromSuggestion($item, $was, null, $code ?? 'cleared', $words);
+                if ($item instanceof BankTransaction && Vetoes::isOpenSuggestion($was)) {
+                    $this->unlinkWhatItClaimed($item, $was, $code ?? 'cleared', $words);
+                }
+
+                return true;
+            });
         } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
+        if (! $done) {
+            return back()->with('error', self::CHANGED);
+        }
 
-        return request()->boolean('quiet') ? back() : back()->with('success', 'Sent back to the Inbox.');
+        return request()->boolean('quiet') ? back() : back()->with('success', $code !== null ? 'Sent back to the Inbox. That suggestion won’t be made for it again.' : 'Sent back to the Inbox.');
+    }
+
+    /** What a press on an item that says something else by now is told: nothing was done. */
+    public const CHANGED = 'This changed since the page was shown, so nothing was done. Look at it again.';
+
+    /**
+     * After you said no to an automatic suggestion on a payment: what it linked the payment to goes too. One side of a
+     * suggested transfer pair is unpaired from the other (and that pair isn't made again); a stay or journey the travel
+     * matcher found it for no longer claims it.
+     *
+     * @param  Collection<int, Allocation>  $was  the suggestion you said no to
+     */
+    private function unlinkWhatItClaimed(BankTransaction $tx, Collection $was, string $code, ?string $words): void
+    {
+        $tx->refresh();
+        if ($tx->transfer_pair_id && TransferPairer::movesMoney($was)) {
+            app(TransferPairer::class)->afterYourDecision($tx, $code, $words);
+        }
+        if ($was->contains(fn (Allocation $a) => $a->method === 'travel.match')) {
+            $matcher = app(TravelMatcher::class);
+            foreach (TravelItem::query()->whereNull('decided_at')->where('bank_transaction_id', $tx->id)->get() as $stay) {
+                $matcher->notItsPayment($stay, $tx->id, $code, $words);
+            }
+        }
     }
 
     private function find(string $source, int $id): BankTransaction|ManualExpense

@@ -80,7 +80,26 @@ export interface WhyItem {
     history: WhyHistoryEvent[];
 }
 
+/** Something you said no to about it ("Not this one": a veto), which nothing automatic proposes again until lifted. */
+export interface WhySaidNo {
+    id: number;
+    relation: string;
+    /** What kind of link, in plain words */
+    about: string;
+    /** What was said no to, in plain words */
+    what: string;
+    method: string | null;
+    /** The method it holds back, in plain words; null: every automatic method */
+    method_label: string | null;
+    effect: 'block' | 'ask';
+    reason: string | null;
+    at: string | null;
+    /** The fingerprint lifting it is bound to */
+    fp: string | null;
+}
+
 export interface Why {
     ref: string;
     items: WhyItem[];
+    said_no?: WhySaidNo[];
 }

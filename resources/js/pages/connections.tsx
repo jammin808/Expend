@@ -763,10 +763,14 @@ function NodePanel({
                 {n.type === 'candidate' && (
                     <>
                         <div className="flex flex-wrap gap-2">
-                            <Button size="sm" onClick={() => router.post(`/todo/cand_add/${n.id.slice(10)}`, {}, opts)}>
+                            <Button size="sm" onClick={() => router.post(`/todo/cand_add/${n.id.slice(10)}`, { fp: n.data.fp_add }, opts)}>
                                 Add as a job
                             </Button>
-                            <Button size="sm" variant="ghost" onClick={() => router.post(`/todo/cand_dismiss/${n.id.slice(10)}`, {}, opts)}>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => router.post(`/todo/cand_dismiss/${n.id.slice(10)}`, { fp: n.data.fp_dismiss }, opts)}
+                            >
                                 Not a job
                             </Button>
                         </div>

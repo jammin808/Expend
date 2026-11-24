@@ -7,8 +7,10 @@ use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
 use App\Domain\Intel\AuditContext;
 use App\Domain\Jobs\OpportunityRules;
+use App\Domain\Todo\ChangedSince;
 use App\Domain\Todo\Dismissals;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Jobs\ReadDocument;
@@ -111,15 +113,37 @@ final class Telegram
         }
     }
 
-    /** A row of buttons, each [label, todo action code, id], as Telegram takes them: data t|code|id, within 64 bytes. */
+    /**
+     * A row of buttons, each [label, todo action code, id], as Telegram takes them: data t|code|id|fp, within 64 bytes
+     * (callbackData()). A button whose data wouldn't fit is left out rather than cut: a cut id would act on something else.
+     */
     private static function buttons(array $buttons): array
     {
-        return array_map(fn ($b) => ['text' => $b[0], 'callback_data' => self::callback($b[1], (string) $b[2])], $buttons);
+        $row = [];
+        foreach ($buttons as $b) {
+            $data = self::callbackData($b[1], (string) $b[2]);
+            if ($data === null) {
+                report(new \LengthException("A Telegram button for {$b[1]} doesn’t fit in ".self::CALLBACK_BYTES.' bytes, so it was left out.'));
+
+                continue;
+            }
+            $row[] = ['text' => $b[0], 'callback_data' => $data];
+        }
+
+        return $row;
     }
 
-    private static function callback(string $code, string $id): string
+    /**
+     * A button's data: t|code|id, and for an action that decides something, |fp: the fingerprint of the state it's offered
+     * on (Todo\Fingerprints), so a press on something that has changed since is refused. Null when it wouldn't fit in
+     * Telegram's 64 bytes.
+     */
+    public static function callbackData(string $code, string $id): ?string
     {
-        return mb_strcut('t|'.$code.'|'.$id, 0, self::CALLBACK_BYTES, 'UTF-8');
+        $fp = Fingerprints::of($code, $id);
+        $data = 't|'.$code.'|'.$id.($fp !== null ? '|'.$fp : '');
+
+        return strlen($data) <= self::CALLBACK_BYTES ? $data : null;
     }
 
     /**
@@ -146,7 +170,9 @@ final class Telegram
     {
         $buttons = [];
         foreach (Dismissals::reasonsFor($finding->code) as $reason => $label) {
-            $buttons[] = ['text' => $label, 'callback_data' => self::callback('fnd_dismiss', $finding->id.':'.$reason)];
+            if (($data = self::callbackData('fnd_dismiss', $finding->id.':'.$reason)) !== null) {
+                $buttons[] = ['text' => $label, 'callback_data' => $data];
+            }
         }
 
         return array_chunk($buttons, 2);
@@ -214,7 +240,12 @@ final class Telegram
         return (bool) ($sent['ok'] ?? false);
     }
 
-    /** A button press: only from your paired chat, and only the to-do actions. */
+    /**
+     * A button press: only from your paired chat, and only the to-do actions. Its data is t|code|id|fp: a button that
+     * decides something carries the fingerprint of what it was offered on, and is refused when that has changed since
+     * ("This changed since: open it in Expend"). An old button without one (t|code|id) still works for what decides
+     * nothing (a re-check, or "Not relevant…" asking why); for anything else it's refused, with the same advice.
+     */
     public static function handleButton(array $query, TodoActions $actions): void
     {
         $chatId = (string) ($query['message']['chat']['id'] ?? '');
@@ -224,9 +255,15 @@ final class Telegram
 
             return;
         }
-        [$tag, $code, $id] = explode('|', (string) ($query['data'] ?? ''), 3) + [null, null, null];
-        if ($tag !== 't' || ! in_array($code, TodoActions::CODES, true) || $id === null) {
+        [$tag, $code, $id, $fp] = explode('|', (string) ($query['data'] ?? ''), 4) + [null, null, null, null];
+        if ($tag !== 't' || ! in_array($code, TodoActions::CODES, true) || $id === null || $id === '' || ($fp !== null && ! preg_match('/^[0-9a-f]{6}$/', $fp))) {
             self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => 'Unknown button.']);
+
+            return;
+        }
+        if ($fp === null && Fingerprints::decides($code, $id)) {
+            // From a message sent before buttons were bound to what they showed: it may be about something changed since.
+            self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => self::changedText()]);
 
             return;
         }
@@ -260,10 +297,14 @@ final class Telegram
         $offeredAt = is_numeric($query['message']['date'] ?? null) ? Carbon::createFromTimestamp((int) $query['message']['date']) : null;
         try {
             // Your tap, from Telegram: recorded as yours, with where it came from.
-            $result = '✓ '.AuditContext::with('you', fn () => $actions->run($code, $id, $offeredAt), 'telegram');
+            $result = '✓ '.AuditContext::with('you', fn () => $actions->run($code, $id, $offeredAt, $fp), 'telegram');
             Cache::put($press, $result, now()->addMinutes(10));
         } catch (ModelNotFoundException) {
             $result = 'Already dealt with.';
+            Cache::put($press, $result, now()->addMinutes(10));
+        } catch (ChangedSince) {
+            // Nothing was done: the same answer to a second press, which would be refused the same way.
+            $result = '⚠ '.self::changedText();
             Cache::put($press, $result, now()->addMinutes(10));
         } catch (Throwable $e) {
             $result = '⚠ '.$e->getMessage();
@@ -275,6 +316,12 @@ final class Telegram
             'chat_id' => $chatId, 'message_id' => $query['message']['message_id'] ?? 0,
             'text' => mb_substr(($query['message']['text'] ?? '')."\n\n".$result, 0, 4000), 'disable_web_page_preview' => true,
         ]);
+    }
+
+    /** What a press on something changed since it was sent (or on an old button) is told: nothing was done. */
+    public static function changedText(): string
+    {
+        return 'This changed since: open it in Expend. Nothing was done. '.url('/todo');
     }
 
     public static function reply(string|int $chatId, string $text): void

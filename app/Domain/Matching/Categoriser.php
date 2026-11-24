@@ -225,7 +225,7 @@ final class Categoriser
                     if ($tx->allocations->every(fn (Allocation $a) => $a->decided_by === 'rule')) {
                         // Your rule's suggestion: left as it is while the rule still says the same.
                         if ($ruleApplies && $tx->allocations->every(fn (Allocation $a) => (int) $a->merchant_rule_id === $rule->id)
-                            && self::sameLines($tx->allocations, AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, $rule->work_job_id, (int) ($rule->business_pct ?? 100)))) {
+                            && self::sameLines($tx->allocations, AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, Suggester::ruleJobFor($rule, $tx), (int) ($rule->business_pct ?? 100)))) {
                             continue;
                         }
                         $why = "Your rule for {$tx->merchant_key} changed: suggested again";

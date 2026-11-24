@@ -3,7 +3,9 @@
 namespace App\Domain\Ledger;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\Methods;
 use App\Domain\Intel\Provenance;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Matching\Categoriser;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -56,8 +58,11 @@ final class RuleLearner
         $latest = BankTransaction::query()->where('merchant_key', $merchantKey)->where('review_status', 'confirmed')
             ->with('allocations')->latest('posted_on')->latest('id')->limit(self::LOOK_BACK)->get();
 
-        return $this->offerFrom($merchantKey, $latest, fn (?string $direction, string $kind) => $this->waiting($merchantKey, $direction, $kind)->count(),
-            fn (int $id) => Category::query()->find($id)?->name);
+        return $this->offerFrom($merchantKey, $latest, function (?string $direction, string $kind, string $ruleShape) use ($merchantKey) {
+            $ids = $this->waiting($merchantKey, $direction, $kind)->pluck('id');
+
+            return $ids->count() - count(self::saidNoTo($ids, $ruleShape));
+        }, fn (int $id) => Category::query()->find($id)?->name);
     }
 
     /**
@@ -88,12 +93,15 @@ final class RuleLearner
         // What's waiting from each, with whether a transfer was suggested for it (left out unless the rule is one).
         $waiting = $this->waitingAny()->whereIn('merchant_key', $keys)->select(['id', 'merchant_key', 'amount_pence'])
             ->withExists(['allocations as has_transfer' => fn ($a) => $a->where('kind', 'transfer')])->get()->groupBy('merchant_key');
+        // What you said no to for any of them (a rule won't decide those that way): one query.
+        $saidNo = Vetoes::forSubjects('allocation_shape', $waiting->flatten(1)->map(fn (BankTransaction $t) => 'tx:'.$t->id));
         $categories = Category::query()->pluck('name', 'id');
 
         $offers = [];
         foreach ($keys as $key) {
-            $offer = $this->offerFrom($key, $latest[$key] ?? collect(), fn (?string $direction, string $kind) => ($waiting[$key] ?? collect())
-                ->filter(fn (BankTransaction $t) => self::goesWay($direction, $t->amount_pence) && ($kind === 'transfer' || ! $t->has_transfer))->count(),
+            $offer = $this->offerFrom($key, $latest[$key] ?? collect(), fn (?string $direction, string $kind, string $ruleShape) => ($waiting[$key] ?? collect())
+                ->filter(fn (BankTransaction $t) => self::goesWay($direction, $t->amount_pence) && ($kind === 'transfer' || ! $t->has_transfer)
+                    && Vetoes::matching($saidNo->get('tx:'.$t->id) ?? collect(), null, $ruleShape, 'rule.learned')->isEmpty())->count(),
                 fn (int $id) => $categories[$id] ?? null);
             if ($offer) {
                 $offers[] = $offer;
@@ -110,7 +118,8 @@ final class RuleLearner
      * The offer for a merchant from its latest decided payments, if they were all decided by you the same way.
      *
      * @param  Collection<int, BankTransaction>  $latest  its latest confirmed payments, newest first, with their lines
-     * @param  callable(?string, string): int  $waitingCount  how many are waiting that a rule this way, of this kind, would decide
+     * @param  callable(?string, string, string): int  $waitingCount  how many are waiting that a rule this way, of this kind and
+     *                                                                shape (Vetoes::shape()), would decide: never one you said no to that for
      * @param  callable(int): ?string  $categoryName
      */
     private function offerFrom(string $merchantKey, Collection $latest, callable $waitingCount, callable $categoryName): ?array
@@ -130,7 +139,7 @@ final class RuleLearner
         $example = $decided->first();
         $directions = $decided->map(fn (BankTransaction $t) => $t->amount_pence < 0 ? 'out' : 'in')->unique();
         $direction = $directions->count() === 1 ? $directions->first() : null;
-        $waiting = $waitingCount($direction, $shape['kind']);
+        $waiting = $waitingCount($direction, $shape['kind'], self::ruleShape($shape, $direction));
         $category = $shape['category_id'] ? $categoryName((int) $shape['category_id']) : null;
         $what = (Allocation::KINDS[$shape['kind']] ?? $shape['kind']).($category ? ': '.$category : '').($shape['business_pct'] < 100 ? " ({$shape['business_pct']}% business)" : '');
         $name = $example->counterparty ?: $merchantKey;
@@ -145,6 +154,36 @@ final class RuleLearner
             'direction' => $direction,
             'text' => "You've marked {$whose} as {$what} {$decided->count()} times. Always do this".($waiting ? " (and apply it to the {$waiting} waiting)" : '').'?',
         ];
+    }
+
+    /**
+     * The shape (Vetoes::shape()) of what a rule of this kind, category and business share would decide, whatever the
+     * amount: what a veto on a payment is compared with.
+     *
+     * @param  array{kind:string, category_id:?int, business_pct:int}  $shape
+     */
+    private static function ruleShape(array $shape, ?string $direction): string
+    {
+        return Vetoes::shape(AllocationWriter::lines($direction === 'in' ? 10000 : -10000, $shape['kind'], $shape['category_id'], null, (int) $shape['business_pct']));
+    }
+
+    /**
+     * Of these waiting payments, the ones you said no to this for, for a learned rule (or for every automatic method): a
+     * rule wouldn't decide them that way, so they aren't counted as waiting for it.
+     *
+     * @param  Collection<int, int>  $ids
+     * @return array<int, true>
+     */
+    private static function saidNoTo(Collection $ids, string $ruleShape): array
+    {
+        $out = [];
+        foreach (Vetoes::forSubjects('allocation_shape', $ids->map(fn ($id) => 'tx:'.$id)) as $ref => $vetoes) {
+            if (Vetoes::matching($vetoes, null, $ruleShape, 'rule.learned')->isNotEmpty()) {
+                $out[(int) substr($ref, 3)] = true;
+            }
+        }
+
+        return $out;
     }
 
     /** Whether a payment of this amount goes the way given ('out', 'in', or either). */
@@ -218,16 +257,24 @@ final class RuleLearner
         Setting::put('rule_offers_declined', array_values(array_unique([...(array) Setting::get('rule_offers_declined'), $merchantKey])));
     }
 
-    /** Remove a rule and put everything it decided (and you haven't changed since) back in the Inbox. */
+    /**
+     * Remove a rule and put everything it decided (and you haven't changed since) back in the Inbox. Undoing says no to
+     * it: each payment it decided keeps a veto on what the rule made of it, for a rule's method (Intel\Vetoes: a rule
+     * won't decide them that way again; your own decisions and other suggestions aren't held back), and the merchant
+     * isn't offered "Always do this" again (rule_offers_declined).
+     */
     public function undo(MerchantRule $rule): int
     {
         return DB::transaction(function () use ($rule) {
             $undone = 0;
+            $method = Methods::forRule($rule);
             $txIds = Allocation::query()->where('merchant_rule_id', $rule->id)->where('decided_by', 'rule')->distinct()->pluck('bank_transaction_id')->filter();
             foreach (BankTransaction::query()->whereIn('id', $txIds)->with('allocations')->get() as $tx) {
                 if ($tx->allocations->every(fn (Allocation $a) => $a->decided_by === 'rule' && $a->merchant_rule_id === $rule->id)) {
                     try {
                         $this->writer->clear($tx, 'Rule undone');
+                        Vetoes::record('allocation_shape', 'tx:'.$tx->id, null, Vetoes::shape($tx->allocations), $method, 'block', 'rule_undone',
+                            'You undid your rule for '.$rule->merchant_key, Vetoes::shapeParts($tx->allocations));
                         $undone++;
                     } catch (InvalidArgumentException) {
                         // a locked year keeps its figures
@@ -236,6 +283,10 @@ final class RuleLearner
             }
             AuditLog::record('rule.undone', $rule, $rule->toArray(), null, "Undid {$undone} decisions");
             Allocation::query()->where('merchant_rule_id', $rule->id)->update(['merchant_rule_id' => null]);
+            if (! in_array($rule->merchant_key, (array) Setting::get('rule_offers_declined'), true)) {
+                $this->decline($rule->merchant_key);
+                AuditLog::record('rule.offer_declined', $rule, null, ['merchant_key' => $rule->merchant_key], 'You undid the rule, so it won’t be offered again');
+            }
             $rule->delete();
 
             return $undone;

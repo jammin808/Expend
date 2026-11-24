@@ -10,8 +10,10 @@ use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\Grounding;
 use App\Domain\Intel\AuditContext;
 use App\Domain\Intel\Provenance;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Travel\TravelMatcher;
 use App\Domain\Verification\Verifier;
+use App\Jobs\GatherForJob;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
 use App\Models\Client;
@@ -299,7 +301,9 @@ final class JobFinder
     }
 
     /**
-     * Add a possible job's sources to a job you already have, filling only the job's blank details.
+     * Add a possible job's sources to a job you already have, filling only the job's blank details. The job is then
+     * searched again once this is saved (GatherForJob, as when a job is added or its PO, dates or venue are edited):
+     * the PO number, venue, postcode and days it may have gained are what that search goes by.
      *
      * @param  array{linked:int, missed:list<string>}|null  $links  set to what was linked, and what couldn't be
      */
@@ -321,6 +325,9 @@ final class JobFinder
             $links = $this->linkSources($candidate, $job);
             $candidate->update(['status' => 'merged', 'work_job_id' => $job->id, 'decided_at' => now()]);
             $this->followUp($job);
+            if ($job->status !== 'cancelled') {
+                GatherForJob::dispatch($job->id)->afterCommit(); // unique per job: safe beside a search already queued
+            }
 
             return $job;
         });
@@ -431,13 +438,13 @@ final class JobFinder
     /**
      * "Not this job": unlinked by you, and never linked to that job automatically again. Other jobs are still possible.
      * When the entry is on another job by now (you moved it there since), that link stays: only "not this job" is
-     * recorded for the job you said.
+     * recorded for the job you said. $reason: what to keep as why ("Not this job: wrong job"), when you said.
      */
-    public function unlinkCalendar(CalendarEvent $event, ?int $fromJobId = null): CalendarJobLink
+    public function unlinkCalendar(CalendarEvent $event, ?int $fromJobId = null, ?string $reason = null): CalendarJobLink
     {
         $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
         if ($fromJobId && $link->work_job_id && $link->work_job_id !== $fromJobId) {
-            return $this->rejectCalendarFor($event, $fromJobId);
+            return $this->rejectCalendarFor($event, $fromJobId, $reason);
         }
         $reject = $fromJobId ?? $link->work_job_id;
         if ($link->work_job_id && ($was = WorkJob::query()->find($link->work_job_id))) {
@@ -445,7 +452,7 @@ final class JobFinder
         }
 
         return $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false,
-            'rejected' => array_values(array_unique([...($link->rejected ?? []), ...($reject ? [$reject] : [])])) ?: null, 'reason' => 'Not this job'], 'you');
+            'rejected' => array_values(array_unique([...($link->rejected ?? []), ...($reject ? [$reject] : [])])) ?: null, 'reason' => $reason ?? 'Not this job'], 'you');
     }
 
     /**
@@ -469,11 +476,11 @@ final class JobFinder
      * "Not part of this job" for an entry that isn't on it: remembered where every search looks (the job finder and
      * the job's own search), so neither links it to that job. A link to another job, or "not a job", is left as it is.
      */
-    public function rejectCalendarFor(CalendarEvent $event, int $jobId): CalendarJobLink
+    public function rejectCalendarFor(CalendarEvent $event, int $jobId, ?string $reason = null): CalendarJobLink
     {
         $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
         if ($link->work_job_id === $jobId) {
-            return $this->unlinkCalendar($event, $jobId);
+            return $this->unlinkCalendar($event, $jobId, $reason);
         }
         if (in_array($jobId, $link->rejected ?? [], true)) {
             return $link;
@@ -482,7 +489,7 @@ final class JobFinder
 
         return $this->saveCalendarLink($link, $event, $fields + ($link->exists
             ? ['reason' => $link->reason]
-            : ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false, 'reason' => 'Not this job']), 'you');
+            : ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false, 'reason' => $reason ?? 'Not this job']), 'you');
     }
 
     /**
@@ -509,12 +516,13 @@ final class JobFinder
 
     /**
      * "Not part of this job" for a document that isn't on it: remembered on the document (and the rest of its email),
-     * so no search links it to that job. Where it's linked now is left as it is.
+     * so no search links it to that job. Where it's linked now is left as it is. $reason: why not, in plain words (one of
+     * Intel\Vetoes::REASONS), kept in its history.
      */
-    public function rejectDocumentFor(Document $document, WorkJob $job): void
+    public function rejectDocumentFor(Document $document, WorkJob $job, ?string $reason = null): void
     {
         if ($document->work_job_id === $job->id) {
-            $this->linkDocument($document, null, 'you');
+            $this->linkDocument($document, null, 'you', reason: $reason !== null ? 'Not this job: '.mb_strtolower($reason) : null);
 
             return;
         }
@@ -524,7 +532,7 @@ final class JobFinder
             }
             $before = ['job_rejected' => $d->job_rejected];
             $d->update(['job_rejected' => array_values(array_unique([...($d->job_rejected ?? []), $job->id]))]);
-            AuditLog::record('document.job_rejected', $d, $before, ['job_rejected' => $d->job_rejected], 'Not part of '.$job->title);
+            AuditLog::record('document.job_rejected', $d, $before, ['job_rejected' => $d->job_rejected], 'Not part of '.$job->title.($reason !== null ? ' ('.mb_strtolower($reason).')' : ''));
         }
     }
 
@@ -570,15 +578,16 @@ final class JobFinder
      * never changes a link you made, or links to a job you unlinked it from; unlinking it yourself records "not this
      * job". Returns whether it was linked.
      */
-    public function linkDocument(Document $document, ?WorkJob $job, string $by, bool $attachments = true, ?Provenance $why = null): bool
+    public function linkDocument(Document $document, ?WorkJob $job, string $by, bool $attachments = true, ?Provenance $why = null, ?string $reason = null): bool
     {
         if ($by !== 'you' && ($document->job_linked_by === 'you' || ($job && in_array($job->id, $document->job_rejected ?? [], true)))) {
             return false;
         }
         $before = ['work_job_id' => $document->work_job_id, 'job_linked_by' => $document->job_linked_by];
-        DB::transaction(function () use ($document, $job, $by, $attachments, $why, $before) {
+        DB::transaction(function () use ($document, $job, $by, $attachments, $why, $before, $reason) {
             DocumentReader::relink($document, $job?->id, $by, $attachments);
-            AuditLog::record('document.job_linked', $document, $before, ['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : null], $attachments ? null : 'Only this document: other parts of its email are for another job', self::actor($by));
+            AuditLog::record('document.job_linked', $document, $before, ['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : null],
+                $reason ?? ($attachments ? null : 'Only this document: other parts of its email are for another job'), self::actor($by));
             if ($by !== 'you') {
                 ($why ?? new Provenance('jobs.document', ['doc:'.$document->id, $job ? 'job:'.$job->id : null]))
                     ->recordLink('document_job', 'doc:'.$document->id, $job ? 'job:'.$job->id : null);
@@ -638,15 +647,15 @@ final class JobFinder
         return $out;
     }
 
-    public function linkTravel(TravelItem $item, ?WorkJob $job, string $by, ?Provenance $why = null): void
+    public function linkTravel(TravelItem $item, ?WorkJob $job, string $by, ?Provenance $why = null, ?string $reason = null): void
     {
         if ($item->job_linked_by === 'you' && $by !== 'you') {
             return;
         }
         $before = $item->only(['work_job_id', 'job_linked_by']);
-        DB::transaction(function () use ($item, $job, $by, $why, $before) {
+        DB::transaction(function () use ($item, $job, $by, $why, $before, $reason) {
             $item->update(['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : ($by === 'you' ? 'you' : null)]);
-            AuditLog::record('travel.job_linked', $item, $before, $item->only(['work_job_id', 'job_linked_by']), null, self::actor($by));
+            AuditLog::record('travel.job_linked', $item, $before, $item->only(['work_job_id', 'job_linked_by']), $reason, self::actor($by));
             if ($by !== 'you') {
                 ($why ?? new Provenance('jobs.travel', ['travel:'.$item->id, $job ? 'job:'.$job->id : null]))
                     ->recordLink('travel_job', 'travel:'.$item->id, $job ? 'job:'.$job->id : null);
@@ -687,12 +696,13 @@ final class JobFinder
                 }
             });
 
-        // Only drafts: an issued invoice can't be changed. One you said isn't this job's isn't linked to it again.
+        // Only drafts: an issued invoice can't be changed. One you said isn't this job's isn't linked to it again: by the
+        // job's own list (job_finds rejected) or a veto (Intel\Vetoes, which reads that list too).
         $invoices = 0;
         if ($po = self::normalisePo($job->po_number)) {
             $rejected = JobFind::query()->where('work_job_id', $job->id)->where('type', 'invoice')->where('status', 'rejected')->pluck('ref')->map(fn ($r) => (int) $r)->all();
             foreach (Invoice::query()->whereNull('work_job_id')->whereNotNull('po_number')->where('status', 'draft')->whereNotIn('id', $rejected ?: [0])->get() as $invoice) {
-                if (self::normalisePo($invoice->po_number) !== $po) {
+                if (self::normalisePo($invoice->po_number) !== $po || ! Vetoes::allows('invoice_job', 'inv:'.$invoice->id, 'job:'.$job->id, 'jobs.invoice_po')) {
                     continue;
                 }
                 try {

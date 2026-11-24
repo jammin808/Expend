@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Mileage\JobTrips;
 use App\Domain\Tax\MileageCalculator;
 use App\Domain\Tax\TaxParameters;
+use App\Domain\Todo\TodoList;
 use App\Models\MileageTrip;
 use App\Models\Setting;
 use App\Models\TaxYear;
@@ -36,6 +38,7 @@ class MileageController extends Controller
             'total_miles' => $result['total_miles'],
             'vehicles' => Vehicle::query()->orderBy('name')->get(['id', 'name', 'type', 'method', 'registration']),
             'fromJobs' => JobTrips::proposals($year),
+            'notDriven' => JobTrips::leftOut($year),
             'homePostcode' => Setting::get('home_postcode'),
             'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on', 'postcode', 'location'])
                 ->map(fn ($j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'postcode' => $j->postcode, 'location' => $j->location]),
@@ -64,6 +67,28 @@ class MileageController extends Controller
         AuditLog::record('mileage.from_jobs', 'Mileage', null, ['year' => $data['year'], 'vehicle_id' => $vehicle->id, 'jobs' => $data['job_ids'], 'trips' => $added]);
 
         return back()->with('success', "Added {$added} ".($added === 1 ? 'trip' : 'trips')." on {$vehicle->name}. The distances are estimates from postcodes: correct any that differ from your route.");
+    }
+
+    /**
+     * "Didn't drive": this job had no mileage to claim (you went another way, or weren't there). Remembered (a veto on
+     * the job's mileage, audited), so neither this page nor the to-do list offers it again until you put it back.
+     */
+    public function notDriven(Request $request): RedirectResponse
+    {
+        $data = $request->validate(['job_id' => 'required|integer|exists:work_jobs,id', 'note' => 'nullable|string|max:200']);
+        $job = WorkJob::query()->findOrFail($data['job_id']);
+        Vetoes::record('mileage_day', 'job:'.$job->id, null, reasonCode: 'no_drive', reason: ($data['note'] ?? null) ?: 'You didn’t drive');
+        TodoList::forget();
+
+        return back()->with('success', "OK: no mileage for {$job->title}. It won’t be offered again. Put it back from the list below if you did drive.");
+    }
+
+    /** Put a job you said you didn't drive to back on the list of jobs to add mileage for. Audited. */
+    public function putBack(WorkJob $job): RedirectResponse
+    {
+        $lifted = Vetoes::liftMileage($job->id, 'Put back from the Mileage page');
+
+        return back()->with('success', $lifted ? "Put back: {$job->title} can have mileage again." : "{$job->title} wasn’t left out.");
     }
 
     public function storeTrip(Request $request): RedirectResponse

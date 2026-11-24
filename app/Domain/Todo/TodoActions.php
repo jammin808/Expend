@@ -7,6 +7,7 @@ use App\Domain\Documents\AiConfig;
 use App\Domain\Intel\AuditContext;
 use App\Domain\Intel\DetectorLevels;
 use App\Domain\Intel\Detectors\TravelUnclaimed;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Jobs\JobCreator;
@@ -36,6 +37,7 @@ use App\Models\TaxYear;
 use App\Models\TodoDismissal;
 use App\Models\TravelItem;
 use App\Models\Verification;
+use App\Models\Veto;
 use App\Models\WorkJob;
 use App\Support\Money;
 use Carbon\CarbonInterface;
@@ -50,11 +52,14 @@ use InvalidArgumentException;
  * Every action is safe to repeat: a Telegram button stays pressable after the item's been dealt with (in the app, or
  * by pressing it twice while the first press waits its turn), so each one checks the item still needs it. One that's
  * been dealt with says so (a ModelNotFoundException shows as "Already dealt with") and changes nothing.
+ *
+ * Each deciding action is bound to what was shown (M7): the button carries a fingerprint of the state it was offered on
+ * (Fingerprints), and a press on something changed since is refused with a plain message (ChangedSince).
  */
 final class TodoActions
 {
     public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'tx_tax', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
-        'opp_add', 'opp_decline', 'opp_dismiss', 'fnd_snooze', 'fnd_dismiss', 'trips_add', 'det_raise', 'det_lower'];
+        'opp_add', 'opp_decline', 'opp_dismiss', 'fnd_snooze', 'fnd_dismiss', 'trips_add', 'det_raise', 'det_lower', 'veto_lift'];
 
     /** How long "Snooze a week" snoozes for. */
     public const SNOOZE_DAYS = 7;
@@ -67,10 +72,14 @@ final class TodoActions
     /**
      * @param  CarbonInterface|null  $offeredAt  when the button was offered (a Telegram message's date), so a press
      *                                           can tell something done since then from something done before
+     * @param  string|null  $fp  the fingerprint of what the button was offered on (Fingerprints): a press on something
+     *                           changed since is refused (ChangedSince), and nothing is done
      * @return string what happened, for a message
      */
-    public function run(string $code, string $id, ?CarbonInterface $offeredAt = null): string
+    public function run(string $code, string $id, ?CarbonInterface $offeredAt = null, ?string $fp = null): string
     {
+        Fingerprints::check($code, $id, $fp);
+
         return match ($code) {
             'rule_make' => $this->ruleMake((int) $id),
             'rule_no' => $this->ruleNo((int) $id),
@@ -88,16 +97,32 @@ final class TodoActions
             'inv_chase' => $this->mailer->send(Invoice::query()->findOrFail((int) $id), null, true, once: true, offeredAt: $offeredAt),
             'inv_send' => $this->mailer->send(Invoice::query()->findOrFail((int) $id), once: true, offeredAt: $offeredAt),
             'transfers_ok' => $this->transfersOk((int) $id, $offeredAt),
-            'opp_add' => $this->opportunityAdd((int) $id, $offeredAt),
-            'opp_decline' => $this->opportunityDecide((int) $id, 'decline', $offeredAt),
-            'opp_dismiss' => $this->opportunityDecide((int) $id, 'dismiss', $offeredAt),
+            'opp_add' => $this->opportunityAdd((int) $id, $offeredAt, $fp !== null),
+            'opp_decline' => $this->opportunityDecide((int) $id, 'decline', $offeredAt, $fp !== null),
+            'opp_dismiss' => $this->opportunityDecide((int) $id, 'dismiss', $offeredAt, $fp !== null),
             'fnd_snooze' => $this->findingHide($id, true),
             'fnd_dismiss' => $this->findingHide($id, false),
             'trips_add' => $this->tripsAdd($id),
             'det_raise' => DetectorLevels::raise(self::detectorCode($id)),
             'det_lower' => DetectorLevels::lower(self::detectorCode($id)),
+            'veto_lift' => $this->vetoLift((int) $id),
             default => throw new InvalidArgumentException('Unknown action.'),
         };
+    }
+
+    /**
+     * Lift a "Not this one": what it held back may be suggested again (Intel\Vetoes::lift, audited as yours). One lifted
+     * already says so.
+     */
+    private function vetoLift(int $id): string
+    {
+        $veto = Veto::query()->findOrFail($id);
+        if (! $veto->isActive()) {
+            throw (new ModelNotFoundException)->setModel(Veto::class, [$id]);
+        }
+        Vetoes::lift($veto, 'Lifted by you');
+
+        return 'Lifted: Expend may suggest it again.';
     }
 
     /**
@@ -350,10 +375,13 @@ final class TodoActions
     /**
      * Make an opportunity a job with the details read from its emails (you said yes, or it's booked). A Telegram button
      * pressed after the opportunity changed (a later email moved its dates) does nothing: it's checked in the app first.
+     *
+     * @param  bool  $bound  the press carried a fingerprint of what it was shown on (already checked: Fingerprints), so
+     *                       a follow-up email that changed nothing shown doesn't refuse it
      */
-    private function opportunityAdd(int $id, ?CarbonInterface $offeredAt): string
+    private function opportunityAdd(int $id, ?CarbonInterface $offeredAt, bool $bound = false): string
     {
-        $o = $this->openOpportunity($id, $offeredAt);
+        $o = $this->openOpportunity($id, $offeredAt, $bound);
         if (! in_array($o->status, ['offered', 'confirmed'], true)) {
             throw new InvalidArgumentException('It isn’t offered or booked yet: open it under Jobs › Enquiries & offers to add it as a job.');
         }
@@ -372,9 +400,9 @@ final class TodoActions
     }
 
     /** Record that you said no to an opportunity, or that it isn't work. Nothing is sent to anyone. */
-    private function opportunityDecide(int $id, string $what, ?CarbonInterface $offeredAt): string
+    private function opportunityDecide(int $id, string $what, ?CarbonInterface $offeredAt, bool $bound = false): string
     {
-        $o = $this->openOpportunity($id, $offeredAt);
+        $o = $this->openOpportunity($id, $offeredAt, $bound);
         $by = $offeredAt ? 'telegram' : 'you';
         if ($what === 'decline') {
             $this->opportunities->decline($o, 'From the to-do list', $by);
@@ -386,14 +414,17 @@ final class TodoActions
         return "Dismissed: {$o->title} isn’t work.";
     }
 
-    /** An opportunity still waiting on you, unchanged since the button was offered (a Telegram message's date). */
-    private function openOpportunity(int $id, ?CarbonInterface $offeredAt): Opportunity
+    /**
+     * An opportunity still waiting on you, unchanged since the button was offered: what it shows, by the button's
+     * fingerprint ($bound, checked already); or, for a press without one, not saved at all since the message's date.
+     */
+    private function openOpportunity(int $id, ?CarbonInterface $offeredAt, bool $bound = false): Opportunity
     {
         $o = Opportunity::query()->findOrFail($id);
         if (! $o->isOpen()) {
             throw (new ModelNotFoundException)->setModel(Opportunity::class, [$id]); // decided, a job, or closed since
         }
-        if ($offeredAt && $o->updated_at && $o->updated_at->gt($offeredAt)) {
+        if (! $bound && $offeredAt && $o->updated_at && $o->updated_at->gt($offeredAt)) {
             throw new InvalidArgumentException('It’s changed since this message. Open it in Expend to check: '.url('/opportunities/'.$o->id));
         }
 

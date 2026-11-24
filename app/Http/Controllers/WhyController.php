@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Domain\Intel\Methods;
 use App\Domain\Intel\Provenance;
 use App\Domain\Intel\Ref;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Jobs\JobFinder;
+use App\Domain\Todo\Fingerprints;
 use App\Models\Allocation;
 use App\Models\AuditEvent;
 use App\Models\BankTransaction;
@@ -35,7 +37,8 @@ use Illuminate\Support\Collection;
  * method its maker and reason show (Methods::of), said as recognised rather than recorded.
  *
  * Refs: tx: and exp: (a line's decision), cal: (a calendar entry on a job), doc: (a document on a job), travel: (a
- * stay or journey: its job and its payment) and inv: (an invoice on a job).
+ * stay or journey: its job and its payment) and inv: (an invoice on a job). With each, what you've said no to about it
+ * (said_no: Intel\Vetoes), which the panel lets you lift.
  */
 class WhyController extends Controller
 {
@@ -54,7 +57,8 @@ class WhyController extends Controller
         'transfer.paired' => 'Paired as a transfer', 'transfer.unpaired' => 'Unpaired', 'transfer.kept' => 'Pair kept', 'calendar.linked' => 'Link changed',
         'calendar.link_rekeyed' => 'Matched to its entry again', 'calendar.link_removed' => 'Link removed', 'document.job_linked' => 'Job link changed',
         'travel.job_linked' => 'Job link changed', 'travel.decided' => 'Decided', 'invoice.job_linked' => 'Put on a job', 'rule.learned' => 'Rule learned',
-        'rule.saved' => 'Rule saved', 'rule.undone' => 'Rule undone',
+        'rule.saved' => 'Rule saved', 'rule.undone' => 'Rule undone', 'rule.offer_declined' => 'Rule not offered again',
+        'veto.recorded' => 'Said “not this”', 'veto.lifted' => '“Not this” lifted', 'travel.payment_unlinked' => 'Payment unlinked',
     ];
 
     public function show(Request $request): JsonResponse
@@ -88,7 +92,13 @@ class WhyController extends Controller
             default => null,
         };
 
-        return $items === null ? null : ['ref' => $ref, 'items' => $items];
+        if ($items === null) {
+            return null;
+        }
+        // What you've said no to about it (Intel\Vetoes), each liftable from the panel (the veto_lift to-do action).
+        $saidNo = array_map(fn (array $v) => $v + ['fp' => Fingerprints::of('veto_lift', (string) $v['id'])], Vetoes::about($ref));
+
+        return ['ref' => $ref, 'items' => $items, 'said_no' => $saidNo];
     }
 
     // ---------------------------------------------------------------- a line's decision

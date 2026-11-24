@@ -5,6 +5,7 @@ namespace App\Domain\Matching;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Intel\AuditContext;
 use App\Domain\Intel\Provenance;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Ledger\AllocationWriter;
 use App\Models\Account;
 use App\Models\Allocation;
@@ -28,7 +29,8 @@ use InvalidArgumentException;
  * (your name, a savings pot, a top-up of another account of yours, another account of yours named on it).
  *
  * Same amount on nearby days is never enough: both lines have to show it's your money, and a line that names
- * somebody else as the payer or payee is never paired. Your rules and the other matchers' suggestions are never
+ * somebody else as the payer or payee is never paired. Two lines you unpaired (by deciding one side isn't a
+ * transfer), and a line whose transfer suggestion you cleared or changed, are never paired again (Intel\Vetoes). Your rules and the other matchers' suggestions are never
  * replaced, except an invoice matched on the amount alone to money the line itself shows is your own (the invoice is
  * then left open for the client's payment); and every suggestion is only a suggestion until you confirm it.
  */
@@ -48,6 +50,9 @@ final class TransferPairer
 
     /** How a one-sided suggestion of this class starts (OwnAccounts::reason, the earlier wording included). */
     public const ONE_SIDED_REASONS = ['Paid to you (your own name)', 'Paid in by you (your own name)', 'A top-up', 'A savings pot, exchange', 'A payment towards this card', 'Paid to your ', 'Paid in from your ', 'Names ', 'Money added to this account', 'Moved to ', 'Moved from '];
+
+    /** How the history says you unpaired a line (by deciding it, or saying "Not this" to its transfer suggestion). */
+    public const UNPAIRED_BY_YOU = 'You decided it isn’t a transfer';
 
     /** Suggestions of this class that a run took back because they no longer hold (for a message). */
     public int $cleared = 0;
@@ -106,12 +111,19 @@ final class TransferPairer
             }
         }
         $day = fn ($r) => intdiv((int) strtotime(substr((string) $r->posted_on, 0, 10).' 00:00:00 UTC'), 86400);
+        // What you said no to: two payments you said aren't one transfer, and payments you said aren't a transfer at all
+        // (a transfer suggestion you cleared or changed). Neither is paired again.
+        $vetoedPairs = Vetoes::vetoedPairs();
+        // Only for what automation would propose: a line you've since decided (or accepted) as a transfer yourself is
+        // still linked to its other side.
+        $notTransfers = $this->notTransfers($slim->pluck('id')->all(), open: true);
+        $slim = $slim->reject(fn ($r) => isset($notTransfers[(int) $r->id]))->values();
         $outs = $slim->where('amount_pence', '<', 0)->groupBy(fn ($r) => -$r->amount_pence);
         $pairs = [];
         foreach ($slim->where('amount_pence', '>', 0) as $in) {
             foreach ($outs[$in->amount_pence] ?? [] as $out) {
                 $days = abs($day($in) - $day($out));
-                if ($out->account_id !== $in->account_id && $days <= self::WINDOW_DAYS) {
+                if ($out->account_id !== $in->account_id && $days <= self::WINDOW_DAYS && ! isset($vetoedPairs[min((int) $in->id, (int) $out->id).'|'.max((int) $in->id, (int) $out->id)])) {
                     $pairs[] = [(int) $in->id, (int) $out->id, $days];
                 }
             }
@@ -191,6 +203,35 @@ final class TransferPairer
         }
 
         return $paired;
+    }
+
+    /**
+     * Of these lines, the ones whose transfer suggestion you cleared or changed (a veto on the shape of a transfer for
+     * pairing, or for every automatic method): they're never paired. With $open, only those still open: a veto holds
+     * back what automation proposes, never a decision you've made (or accepted) since, so a line you decided as a
+     * transfer yourself is paired with its other side all the same.
+     *
+     * @param  list<int|string>  $ids
+     * @return array<int, true>
+     */
+    private function notTransfers(array $ids, bool $open = false): array
+    {
+        $shape = Vetoes::shape(AllocationWriter::lines(-1, 'transfer'));
+        $out = [];
+        foreach (Vetoes::forSubjects('allocation_shape', array_map(fn ($id) => 'tx:'.$id, $ids)) as $ref => $vetoes) {
+            if (Vetoes::matching($vetoes, null, $shape, 'transfer.pair')->isNotEmpty()) {
+                $out[(int) substr($ref, 3)] = true;
+            }
+        }
+        if ($open && $out !== []) {
+            $yours = Allocation::query()->whereIn('bank_transaction_id', array_keys($out))->where(fn ($a) => $a->where('is_manual', true)->orWhereNotNull('confirmed_at'))
+                ->distinct()->pluck('bank_transaction_id');
+            foreach ($yours as $id) {
+                unset($out[(int) $id]);
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -367,8 +408,9 @@ final class TransferPairer
                         $reason .= '. It had been matched to invoice '.($invoices[$invoiceId] ?? '#'.$invoiceId).' for the same amount; that invoice is left open for the client’s payment';
                     }
                     try {
+                        // Over an invoice match on purpose (it outranks a transfer otherwise): see above.
                         $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'transfer'), 'matcher', false, $reason, null,
-                            new Provenance('transfer.one_sided', $invoiceId ? ['inv:'.$invoiceId] : []));
+                            new Provenance('transfer.one_sided', $invoiceId ? ['inv:'.$invoiceId] : []), supersede: $invoiceId !== null);
                     } catch (InvalidArgumentException) {
                         // locked, or decided by you meanwhile
                     }
@@ -444,9 +486,10 @@ final class TransferPairer
     /**
      * After you decide one side of a pair: deciding it's a transfer confirms the other side too (if it was only
      * suggested); deciding it's something else breaks the pair and puts the other side back to be decided. A side in
-     * a locked year is never changed: the pair is left as it is until that year is unlocked.
+     * a locked year is never changed: the pair is left as it is until that year is unlocked. Saying "Not this" to one
+     * side's transfer suggestion does the same as deciding it isn't one ($reasonCode and $reason: why, for the veto).
      */
-    public function afterYourDecision(BankTransaction $tx): void
+    public function afterYourDecision(BankTransaction $tx, string $reasonCode = 'unpaired', ?string $reason = null): void
     {
         if (! $tx->transfer_pair_id) {
             return;
@@ -484,11 +527,15 @@ final class TransferPairer
 
             return;
         }
-        DB::transaction(function () use ($tx, $partner, $partnerSuggested) {
+        DB::transaction(function () use ($tx, $partner, $partnerSuggested, $reasonCode, $reason) {
             $tx->forceFill(['transfer_pair_id' => null])->saveQuietly();
             $partner->forceFill(['transfer_pair_id' => null])->saveQuietly();
-            AuditLog::record('transfer.unpaired', $tx, ['transfer_pair_id' => $partner->id], ['transfer_pair_id' => null], 'You decided it isn’t a transfer');
+            AuditLog::record('transfer.unpaired', $tx, ['transfer_pair_id' => $partner->id], ['transfer_pair_id' => null], self::UNPAIRED_BY_YOU);
             AuditLog::record('transfer.unpaired', $partner, ['transfer_pair_id' => $tx->id], ['transfer_pair_id' => null], 'You decided its other side isn’t a transfer');
+            // Remembered, so the two are never paired again (even if you later send this side back to the Inbox). The
+            // Inbox's Undo of this decision takes it back (Vetoes::liftSinceLastDecision).
+            [$a, $b] = Vetoes::pairRefs($tx->id, $partner->id);
+            Vetoes::record('transfer_pair', $a, $b, reasonCode: $reasonCode, reason: $reason);
             if ($partnerSuggested) {
                 // The matcher takes back its own suggestion because of your decision: recorded as the matcher's.
                 $this->writer->clear($partner, 'Its other side was decided as not a transfer', 'matcher');

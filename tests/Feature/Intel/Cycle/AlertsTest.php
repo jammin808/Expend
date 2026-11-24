@@ -4,6 +4,7 @@ namespace Tests\Feature\Intel\Cycle;
 
 use App\Domain\Intel\Cycle\CycleContext;
 use App\Domain\Intel\Cycle\Steps\RecommendAlerts;
+use App\Domain\Telegram\Telegram;
 use App\Domain\Todo\Dismissals;
 use App\Models\Finding;
 use App\Models\Setting;
@@ -84,8 +85,9 @@ class AlertsTest extends TestCase
 
         [$first, $second] = $this->sends();
         $this->assertStringStartsWith('⚠ Tax return 2025-26', $first['text'], 'Due within a week: first');
-        $this->assertSame(['t|fnd_snooze|'.$deadline->id.':later'], $this->callbacks($first), 'Snooze only: “Not relevant” would hide it for good');
-        $this->assertSame(['t|fnd_snooze|'.$dupe->id.':later', 't|fnd_dismiss|'.$dupe->id], $this->callbacks($second));
+        // Snooze carries the fingerprint of the finding as sent (M7); Not relevant… only asks why.
+        $this->assertSame([Telegram::callbackData('fnd_snooze', $deadline->id.':later')], $this->callbacks($first), 'Snooze only: “Not relevant” would hide it for good');
+        $this->assertSame([Telegram::callbackData('fnd_snooze', $dupe->id.':later'), 't|fnd_dismiss|'.$dupe->id], $this->callbacks($second));
     }
 
     public function test_the_urgent_and_the_new_come_first_and_the_long_known_isnt_sent_when_alerts_start(): void

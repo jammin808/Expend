@@ -7,6 +7,7 @@ use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Matching\OwnAccounts;
 use App\Domain\Matching\TransferPairer;
+use App\Domain\Todo\Fingerprints;
 use App\Http\Presenters\Present;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -97,7 +98,10 @@ class ConnectionsController extends Controller
         foreach (JobCandidate::query()->where('status', 'open')->whereDate('ends_on', '>=', $f)->whereDate('starts_on', '<=', $t)->get() as $c) {
             $id = 'candidate:'.$c->id;
             $nodes[$id] = ['id' => $id, 'type' => 'candidate', 'label' => $c->title, 'sub' => 'Possible job: '.($c->client_name ?? 'from '.count($c->sources).' sources'),
-                'date' => $c->starts_on->format('Y-m-d'), 'end' => $c->ends_on->format('Y-m-d'), 'href' => '/jobs/finder', 'flags' => ['possible_job'], 'data' => ['sources' => $c->sourceKeys()]];
+                'date' => $c->starts_on->format('Y-m-d'), 'end' => $c->ends_on->format('Y-m-d'), 'href' => '/jobs/finder', 'flags' => ['possible_job'], 'data' => ['sources' => $c->sourceKeys(),
+                    // "Add as a job" and "Not a job" are bound to the possible job as shown here (Todo\Fingerprints): pressed
+                    // after its dates or details changed, they're refused with a message and nothing is done.
+                    'fp_add' => Fingerprints::of('cand_add', (string) $c->id), 'fp_dismiss' => Fingerprints::of('cand_dismiss', (string) $c->id)]];
         }
 
         // Calendar entries: linked ones, and any that look like work but aren't set up as a job.

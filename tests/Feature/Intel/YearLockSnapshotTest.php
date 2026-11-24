@@ -92,16 +92,17 @@ class YearLockSnapshotTest extends TestCase
         $e = $this->lockEvent();
         $s = $e->after['snapshot'];
         $this->assertSame(['you', null], [$e->actor, $e->reason]);
-        $this->assertSame(YearChecks::figures(ReturnSummary::for('2025-26')), $s['figures']);
-        $this->assertSame(['turnover_pence' => 3_000_000, 'other_income_pence' => 0, 'allowable_expenses_pence' => 40_000, 'disallowable_expenses_pence' => 0, 'mileage_pence' => 0,
-            'net_profit_pence' => 2_960_000], $s['figures']);
+        // Written from the web with where it came from (audit hash v2, on since M7), so stored with its keys in order.
+        $this->assertSame(AuditLog::canonical(YearChecks::figures(ReturnSummary::for('2025-26'))), $s['figures']);
+        $this->assertSame(AuditLog::canonical(['turnover_pence' => 3_000_000, 'other_income_pence' => 0, 'allowable_expenses_pence' => 40_000, 'disallowable_expenses_pence' => 0, 'mileage_pence' => 0,
+            'net_profit_pence' => 2_960_000]), $s['figures']);
         $path = storage_path('app/private/'.$s['export']['file']);
         $this->assertFileExists($path);
         $this->assertSame(hash_file('sha256', $path), $s['export']['sha256']);
         $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $s['export']['sha256']);
         $this->assertSame([$open['open'], $open['digest']], [$s['findings']['open'], $s['findings']['digest']]);
         $checks = collect(YearChecks::checks('2025-26', ReturnSummary::for('2025-26')))->mapWithKeys(fn ($c) => [$c['key'] => $c['status']])->all();
-        $this->assertSame($checks, $s['checks']);
+        $this->assertSame(AuditLog::canonical($checks), $s['checks']);
         $this->assertNotContains('fail', $s['checks']);
         $this->assertSame(AuditLog::hashFor($e), $e->hash, 'Kept in the hash chain');
         $this->assertTrue(AuditLog::verify()['ok']);
@@ -128,7 +129,7 @@ class YearLockSnapshotTest extends TestCase
         $e = $this->lockEvent();
         $this->assertSame(['Filed with the accountant’s figures', ['undecided']], [$e->reason, $e->after['failing']]);
         $this->assertSame('fail', $e->after['snapshot']['checks']['undecided']);
-        $this->assertSame(['unreviewed' => 1, 'suggested' => 0, 'manual_unreviewed' => 0], $e->after['snapshot']['pending']);
+        $this->assertSame(AuditLog::canonical(['unreviewed' => 1, 'suggested' => 0, 'manual_unreviewed' => 0]), $e->after['snapshot']['pending']);
 
         // Unlocking: a reason, as before, and a bare event.
         $this->post('/years/2025-26/lock')->assertSessionHasErrors('reason');

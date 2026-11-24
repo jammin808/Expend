@@ -2,6 +2,7 @@
 
 namespace App\Domain\Intel;
 
+use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\TransferPairer;
 use App\Models\Allocation;
@@ -62,6 +63,17 @@ final class Methods
     public static function has(string $method): bool
     {
         return isset(self::REGISTRY[$method]) || preg_match('/^detector\.[a-z0-9_.]{1,31}$/', $method) === 1;
+    }
+
+    /**
+     * The one order of precedence over open suggestions (docs/intelligence-cycle.md 4.2, rule 4): whether a suggestion
+     * by method $a (made by $aBy) outranks one by $b. You > rule > matcher (invoice > HMRC > transfer > pattern >
+     * categoriser, with the assistant's proposal from your words) > the background AI. Kept with the writer that
+     * enforces it (AllocationWriter::PRECEDENCE).
+     */
+    public static function outranks(?string $a, string $aBy, ?string $b, string $bBy): bool
+    {
+        return AllocationWriter::outranks($a, $aBy, $b, $bBy);
     }
 
     /** @return list<string> */

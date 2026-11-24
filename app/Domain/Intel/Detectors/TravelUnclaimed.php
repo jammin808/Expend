@@ -7,6 +7,7 @@ use App\Domain\Intel\Coverage;
 use App\Domain\Intel\Cycle\CycleContext;
 use App\Domain\Intel\FindingDraft;
 use App\Domain\Intel\Grades;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Mileage\JobTrips;
 use App\Domain\Tax\TaxParameters;
 use App\Domain\Todo\TodoList;
@@ -86,7 +87,10 @@ final class TravelUnclaimed implements Detector
     }
 
     /**
-     * The jobs you said had no mileage to claim (dismissals kept as TodoList::MILEAGE_JOB.{job}:{set}).
+     * The jobs you said had no mileage to claim: dismissals kept as TodoList::MILEAGE_JOB.{job}:{set}, and the whole jobs
+     * you said you didn't drive to (a mileage_day veto: Intel\Vetoes::notDriven()). Trips already leave those out
+     * (JobTrips::proposals); this keeps them out of the "may have mileage" count too, while postcodes are still being
+     * looked up.
      *
      * @param  array<string, true>  $hidden  keys you snoozed or marked not relevant
      * @return array<int, true>
@@ -98,6 +102,9 @@ final class TravelUnclaimed implements Detector
             if (str_starts_with($k, TodoList::MILEAGE_JOB)) {
                 $excluded[(int) substr($k, strlen(TodoList::MILEAGE_JOB))] = true;
             }
+        }
+        foreach (array_keys(Vetoes::notDriven()['jobs']) as $jobId) {
+            $excluded[(int) $jobId] = true;
         }
         ksort($excluded);
 

@@ -11,6 +11,7 @@ use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\Suggester;
 use App\Domain\Telegram\Telegram;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Domain\Verification\Verifier;
@@ -188,7 +189,7 @@ class ReviewFixesIntegrationTest extends TestCase
         $this->assertSame([], $sent[$part->number]['buttons'], 'The reminder says no payment has been seen, so it isn’t offered');
         $this->assertStringContainsString('waiting in the Inbox', $sent[$waiting->number]['text']);
         $this->assertSame([], $sent[$waiting->number]['buttons']);
-        $this->assertSame(['t|inv_chase|'.$unpaid->id], $sent[$unpaid->number]['buttons']);
+        $this->assertSame([Telegram::callbackData('inv_chase', (string) $unpaid->id)], $sent[$unpaid->number]['buttons']);
         $this->assertNull($paid->fresh()->overdue_nudged_at);
     }
 
@@ -410,7 +411,7 @@ class ReviewFixesIntegrationTest extends TestCase
         $item = fn () => collect(TodoList::build()['items'])->firstWhere('key', 'invoice_overdue:'.$invoice->id);
         $this->assertSame(['inv_chase'], array_column($item()['actions'], 'code'));
 
-        $this->post("/todo/inv_chase/{$invoice->id}")->assertSessionHas('success');
+        $this->post("/todo/inv_chase/{$invoice->id}", ['fp' => Fingerprints::of('inv_chase', (string) $invoice->id)])->assertSessionHas('success');
         $this->assertSame([], $item()['actions']);
         $this->assertStringContainsString('Reminder sent 20 Nov 2026, 10:00.', $item()['detail']);
 

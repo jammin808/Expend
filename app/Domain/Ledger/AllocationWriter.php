@@ -4,13 +4,16 @@ namespace App\Domain\Ledger;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Intel\AuditContext;
+use App\Domain\Intel\Methods;
 use App\Domain\Intel\Provenance;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Matching\TransferPairer;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\ManualExpense;
 use App\Models\TaxYear;
+use App\Models\Veto;
 use App\Support\Money;
 use App\Support\UkTaxYear;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -29,7 +32,14 @@ use InvalidArgumentException;
  *    checked and replaced, so the guard above always sees the latest decision;
  *  - an automatic writer says why: its Provenance (the method, its score, the evidence and runner-ups) is stored with
  *    the lines, and confirming a line records who confirmed it (confirmed_by), so accepting a suggestion is told
- *    apart from making one.
+ *    apart from making one;
+ *  - automation never proposes what you said no to (Intel\Vetoes): a suggestion of the shape you cleared or changed
+ *    (its kind, category, business share and job), or an invoice you said a payment isn't for, is refused for the
+ *    method the veto names (or every automatic method). An 'ask' veto lets it be proposed, never confirmed on its own;
+ *  - one order of precedence over open suggestions (outranks()): you > rule > matcher (invoice > HMRC > transfer >
+ *    pattern > categoriser, with the assistant's proposal from your own words) > the background AI. An automatic writer
+ *    never replaces a suggestion that outranks its own; one that ranks the same or lower is replaced as before. Why a
+ *    write was refused is kept for the message ($refused).
  *
  * Deciding what a line already says changes nothing and records nothing (a nightly pass that comes to the same
  * suggestion again leaves no trace).
@@ -37,11 +47,71 @@ use InvalidArgumentException;
 final class AllocationWriter
 {
     /**
+     * Precedence of the methods that write suggestions (docs/intelligence-cycle.md 4.2, rule 4): higher outranks lower.
+     * You are above all of them (OWNER), a rule above every matcher, the AI below. Matchers: an invoice of the same
+     * amount, then HMRC, then money moving between your accounts, then patterns (fines, car hire, travel, a stay's own
+     * payment, a job's costs), then the categoriser's guesses. A method not listed ranks as its maker does (MAKERS).
+     */
+    public const PRECEDENCE = [
+        'rule.learned' => 6, 'rule.owner' => 6,
+        'suggest.invoice' => 5,
+        'suggest.hmrc' => 4,
+        'transfer.pair' => 3, 'transfer.one_sided' => 3, 'transfer.partner' => 3, 'revolut.exchange' => 3,
+        'suggest.penalty' => 2, 'suggest.car_hire' => 2, 'suggest.travel' => 2, 'travel.match' => 2, 'jobs.gather' => 2,
+        'categorise.merchant' => 1, 'categorise.similar' => 1, 'categorise.bank_learned' => 1, 'categorise.hint' => 1, 'categorise.bank_hint' => 1,
+        // The assistant proposes what you told it in the chat ("that Pret was lunch on the Leeds job"): it replaces a
+        // guess (the categoriser's or the AI's), never a matcher's finding, a rule's, or yours. The background AI is last.
+        'ai.assistant' => 1,
+        'ai.advisor' => 0,
+    ];
+
+    /** Why the last automatic write was refused (decide() returned false), for a message; null when it wasn't. */
+    public const REFUSED_WORDS = [
+        'yours' => 'you have already decided or confirmed this transaction',
+        'vetoed' => 'you said no to that for this transaction before',
+        'outranked' => 'a stronger suggestion is waiting for it (a matcher’s or a rule’s), for you to accept or change',
+    ];
+
+    /** Why the last call to decide() was refused: 'yours', 'vetoed' or 'outranked' (REFUSED_WORDS), or null. */
+    public ?string $refused = null;
+
+    /** Your own decisions: above every method. */
+    public const OWNER = 7;
+
+    /** The rank of a line whose method isn't known, by who made it. */
+    private const MAKERS = ['you' => self::OWNER, 'rule' => 6, 'policy' => 2, 'matcher' => 1, 'ai' => 0];
+
+    /**
+     * The precedence of a method (or, when it isn't known, of whoever made the line).
+     */
+    public static function rank(?string $method, string $decidedBy): int
+    {
+        if ($decidedBy === 'you') {
+            return self::OWNER;
+        }
+        if ($decidedBy === 'rule') {
+            return self::PRECEDENCE['rule.owner'];
+        }
+
+        return $method !== null && isset(self::PRECEDENCE[$method]) ? self::PRECEDENCE[$method] : (self::MAKERS[$decidedBy] ?? 0);
+    }
+
+    /** Whether a suggestion by $a outranks one by $b (Methods' names; the makers' when not known). */
+    public static function outranks(?string $a, string $aBy, ?string $b, string $bBy): bool
+    {
+        return self::rank($a, $aBy) > self::rank($b, $bBy);
+    }
+
+    /**
      * @param  list<array{kind:string, category_id?:?int, work_job_id?:?int, amount_pence:int, business_use_pct?:?int, note?:?string}>  $lines
      * @param  Provenance|null  $provenance  why an automatic writer proposes this (every automatic writer gives one);
      *                                       null for your own decisions
+     * @param  bool  $supersede  an automatic writer replacing a suggestion that outranks it on purpose, for a reason of
+     *                           its own (TransferPairer: an invoice matched on the amount alone to money the line shows is
+     *                           your own). Never over your decisions, anything confirmed, or a veto
      * @return bool true when the line now says this (written now, or it already did); false when skipped because
-     *              automation tried to touch a protected decision
+     *              automation tried to touch a protected decision, propose what you said no to, or replace a
+     *              suggestion that outranks it
      */
     public function decide(
         BankTransaction|ManualExpense $source,
@@ -51,17 +121,44 @@ final class AllocationWriter
         ?string $reason = null,
         ?int $ruleId = null,
         ?Provenance $provenance = null,
+        bool $supersede = false,
     ): bool {
+        $this->refused = null;
         $amount = $source->amount_pence;
         $taxYear = $this->taxYearOf($source);
         $this->assertUnlocked($taxYear);
         $this->assertLines($lines, $amount);
+        $method = $decidedBy === 'you' ? null : ($provenance?->method ?? Methods::legacy($decidedBy, (string) $reason, null, $ruleId));
+        if ($decidedBy !== 'you') {
+            // What you said no to is never proposed again by automation; an 'ask' veto lets it be proposed, never confirmed.
+            $vetoed = $this->vetoed($source, $lines, $method, $decidedBy !== 'you' && $confirm);
+            if ($vetoed === 'block') {
+                $this->refused = 'vetoed';
 
-        $done = DB::transaction(function () use ($source, $lines, $decidedBy, $confirm, $reason, $ruleId, $taxYear, $provenance) {
+                return false;
+            }
+            if ($vetoed === 'ask') {
+                $confirm = false;
+            }
+        }
+
+        $done = DB::transaction(function () use ($source, $lines, $decidedBy, $confirm, $reason, $ruleId, $taxYear, $provenance, $method, $supersede) {
             $existing = $this->lockedAllocations($source, $status);
 
             if ($decidedBy !== 'you' && $existing->contains(fn (Allocation $a) => $a->is_manual || $a->confirmed_at !== null)) {
+                $this->refused = 'yours';
+
                 return false;
+            }
+            if ($decidedBy !== 'you' && ! $supersede && $existing->isNotEmpty()) {
+                // An open suggestion that outranks this one stays (a rule's over a matcher's, an invoice match over a guess).
+                $have = $existing->first();
+                $haveMethod = $have->decided_by === 'rule' ? null : Methods::of($have)['method']; // a rule ranks as a rule, whichever
+                if (self::outranks($haveMethod, (string) $have->decided_by, $method, $decidedBy)) {
+                    $this->refused = 'outranked';
+
+                    return false;
+                }
             }
             if ($this->unchanged($status, $existing, $lines, $decidedBy, $confirm, $reason, $ruleId)) {
                 return true; // already says exactly this: nothing to write, nothing to record
@@ -111,6 +208,35 @@ final class AllocationWriter
         }
 
         return $done;
+    }
+
+    /**
+     * Whether a veto holds back this automatic write: 'block' (never propose it), 'ask' (propose it, never confirm it on
+     * its own), or null. Its shape (what each line is) against what you cleared or changed, and the invoice it would be
+     * matched to against an invoice you said it isn't for.
+     *
+     * @param  list<array<string, mixed>>  $lines
+     */
+    private function vetoed(BankTransaction|ManualExpense $source, array $lines, ?string $method, bool $acting): ?string
+    {
+        // One query for everything said about this line (usually nothing).
+        $vetoes = Veto::query()->active()->where('subject_ref', ($source instanceof BankTransaction ? 'tx:' : 'exp:').$source->getKey())
+            ->whereIn('relation', ['allocation_shape', 'invoice_payment'])->get();
+        if ($vetoes->isEmpty()) {
+            return null;
+        }
+        $shapes = $vetoes->where('relation', 'allocation_shape');
+        $shape = Vetoes::shape($lines);
+        if (Vetoes::matching($shapes, null, $shape, $method)->isNotEmpty()) {
+            return 'block';
+        }
+        foreach (array_unique(array_filter(array_map(fn ($l) => $l['invoice_id'] ?? null, $lines))) as $invoiceId) {
+            if (Vetoes::matching($vetoes->where('relation', 'invoice_payment'), 'inv:'.$invoiceId, null, $method)->isNotEmpty()) {
+                return 'block';
+            }
+        }
+
+        return $acting && Vetoes::matching($shapes, null, $shape, $method, true)->isNotEmpty() ? 'ask' : null;
     }
 
     /** One side of a transfer pair decided by you settles the other side (see TransferPairer::afterYourDecision). */

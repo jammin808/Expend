@@ -4,6 +4,7 @@ namespace App\Domain\Matching;
 
 use App\Domain\Intel\Methods;
 use App\Domain\Intel\Provenance;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\RuleLearner;
@@ -14,13 +15,16 @@ use App\Models\Invoice;
 use App\Models\MerchantRule;
 use App\Models\TaxYear;
 use App\Models\TravelItem;
+use App\Models\WorkJob;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
 
 /**
  * Pre-fills suggestions for items you haven't decided. Never touches anything you've set or confirmed
- * (AllocationWriter enforces that), and only confirms on its own when you switched a rule to auto-confirm.
+ * (AllocationWriter enforces that), never proposes what you said no to (Intel\Vetoes, also in AllocationWriter), and
+ * only confirms on its own when you switched a rule to auto-confirm. A rule's job is used only within that job's dates
+ * (ruleJobFor()).
  */
 final class Suggester
 {
@@ -67,6 +71,8 @@ final class Suggester
     public function suggestFor(Collection $transactions, bool $match = true, bool $guess = true): int
     {
         $rules = MerchantRule::query()->get()->keyBy('merchant_key');
+        // The jobs rules carry, with their days: a rule's job goes only on payments on or beside its days (ruleJobFor()).
+        $ruleJobs = WorkJob::query()->whereIn('id', $rules->pluck('work_job_id')->filter()->unique()->values()->all() ?: [0])->with('days')->get()->keyBy('id');
         $penalty = Category::query()->where('code', 'travel_penalties')->value('id');
         $carHire = Category::query()->where('code', 'travel_car_hire')->value('id');
         $made = 0;
@@ -81,6 +87,8 @@ final class Suggester
         if ($match && $transactions instanceof EloquentCollection) {
             $transactions->loadMissing('account'); // OwnAccounts::reason() reads each line's account
         }
+        // The invoices you said a payment isn't for (Intel\Vetoes), for the money coming in: one query for them all.
+        $notFor = $match ? Vetoes::forSubjects('invoice_payment', $transactions->filter(fn ($t) => $t->amount_pence > 0)->map(fn ($t) => 'tx:'.$t->id)) : collect();
 
         foreach ($transactions as $tx) {
             if (in_array($tx->tax_year, $locked, true) || $tx->allocations()->exists() || (! $match && $tx->transfer_pair_id)) {
@@ -95,26 +103,35 @@ final class Suggester
                     // Only an invoice nothing has come in for yet (counted as everywhere else: payments linked to it,
                     // and income recorded for its job).
                     $received ??= InvoicePayments::received($openInvoices);
+                    // Never one you said this payment isn't for: another invoice of the same amount is tried instead.
+                    $vetoed = $notFor->get('tx:'.$tx->id) ?? collect();
                     $candidates = $openInvoices->filter(fn ($i) => $i->total_minor === $tx->amount_pence && ($received[$i->id]['paid'] ?? 0) === 0
-                        && (! $i->issue_date || $tx->posted_on->gte($i->issue_date->copy()->subDays(3))))->values();
+                        && (! $i->issue_date || $tx->posted_on->gte($i->issue_date->copy()->subDays(3)))
+                        && Vetoes::matching($vetoed, 'inv:'.$i->id, null, 'suggest.invoice')->isEmpty())->values();
                     if ($invoice = $candidates->first()) {
                         $lines = AllocationWriter::lines($tx->amount_pence, 'business_income', $turnover, $invoice->work_job_id);
                         $lines[0]['invoice_id'] = $invoice->id;
                         // Its score is how many unpaid invoices were for this amount; the others are its runner-ups.
                         $why = new Provenance('suggest.invoice', ['inv:'.$invoice->id, $invoice->work_job_id ? 'job:'.$invoice->work_job_id : null], $candidates->count(),
                             $candidates->slice(1)->map(fn ($i) => ['ref' => 'inv:'.$i->id, 'score' => null]));
-                        $made += (int) $this->writer->decide($tx, $lines, 'matcher', false, "Matches invoice {$invoice->number} for ".Money::format($invoice->total_minor), null, $why);
+                        if ($this->writer->decide($tx, $lines, 'matcher', false, "Matches invoice {$invoice->number} for ".Money::format($invoice->total_minor), null, $why)) {
+                            $made++;
 
-                        continue;
+                            continue;
+                        }
+                        // Refused (what you said no to): your rule, the other matchers and the guess have their turn.
                     }
                 }
 
                 if (($rule = $rules->get($tx->merchant_key)) && RuleLearner::appliesTo($rule, $tx->amount_pence)) {
-                    $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, $rule->work_job_id, $rule->business_pct);
-                    $made += (int) $this->writer->decide($tx, $lines, 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}", $rule->id,
-                        new Provenance($ruleMethods[$rule->id] ??= Methods::forRule($rule), ['rule:'.$rule->id]));
+                    $jobId = self::ruleJobFor($rule, $tx, $ruleJobs->get((int) $rule->work_job_id));
+                    $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, $jobId, $rule->business_pct);
+                    if ($this->writer->decide($tx, $lines, 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}", $rule->id,
+                        new Provenance($ruleMethods[$rule->id] ??= Methods::forRule($rule), ['rule:'.$rule->id, $jobId ? 'job:'.$jobId : null]))) {
+                        $made++;
+                    }
 
-                    continue;
+                    continue; // your rule covers it: refused (you said no to it), it's left for you, never guessed
                 }
                 if (! $own) {
                     $found = null;
@@ -147,6 +164,35 @@ final class Suggester
         }
 
         return $made;
+    }
+
+    /**
+     * The job a rule puts a payment on: the rule's job, only for a payment on one of that job's days or the day either
+     * side (travel there and back), and only when no other job is worked that day. A rule saved with a job (Inbox "Always
+     * do this" with a job chosen) would otherwise put every later payment from that merchant on that one job. The days
+     * between a rig and a de-rig weeks later aren't near it (WorkJob::isNear()); a day you worked another job is that
+     * job's or neither's, never the rule's (as the Categoriser's onlyJob()). Otherwise, or once the job is cancelled,
+     * the rule still applies, with no job.
+     *
+     * @param  WorkJob|null  $job  the rule's job, when already loaded (with its days)
+     */
+    public static function ruleJobFor(MerchantRule $rule, BankTransaction $tx, ?WorkJob $job = null): ?int
+    {
+        if (! $rule->work_job_id) {
+            return null;
+        }
+        $job ??= WorkJob::query()->with('days')->find($rule->work_job_id);
+        if (! $job || ! $job->starts_on || ! $job->ends_on || $job->status === 'cancelled') {
+            return null;
+        }
+        $day = $tx->effectiveDate()->format('Y-m-d');
+        if (! $job->isNear($day, 1)) {
+            return null;
+        }
+        $others = WorkJob::query()->whereKeyNot($job->id)->where('status', '!=', 'cancelled')->whereDate('starts_on', '<=', $day)->whereDate('ends_on', '>=', $day)
+            ->with('days')->get()->contains(fn (WorkJob $j) => $j->worksOn($day));
+
+        return $others ? null : (int) $job->id;
     }
 
     /** TfL, taxis, trains and parking from the statement alone: business on a job's travel days, personal otherwise. */

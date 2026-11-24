@@ -2,6 +2,7 @@
 
 namespace App\Domain\Mileage;
 
+use App\Domain\Intel\Vetoes;
 use App\Domain\Travel\Places;
 use App\Models\MileageTrip;
 use App\Models\Setting;
@@ -17,8 +18,9 @@ use Illuminate\Support\Collection;
  * Mileage from your jobs: a return trip from home to each venue you drove to. The distance is an estimate (the
  * straight line between postcodes, times 1.25 for roads), so each trip says so and can be corrected. Left out:
  * jobs reached by train, plane, coach or hire car (a hire car's cost and fuel are claimed instead, never mileage on
- * top), jobs with mileage already, jobs without a venue postcode, jobs whose last day is still to come, and days in a
- * locked tax year (a locked year's figures never change).
+ * top), jobs with mileage already, jobs without a venue postcode, jobs whose last day is still to come, days in a
+ * locked tax year (a locked year's figures never change), and jobs or days you said you didn't drive to (the Mileage
+ * page's "Didn't drive", or "Not relevant" on the to-do list's mileage: Intel\Vetoes::notDriven()).
  */
 final class JobTrips
 {
@@ -82,13 +84,24 @@ final class JobTrips
         $jobs = WorkJob::query()->where('status', '!=', 'cancelled')->whereNotNull('postcode')
             ->whereDate('starts_on', '<=', $year->endsOn()->format('Y-m-d'))->whereDate('ends_on', '>=', $year->startsOn()->format('Y-m-d'))
             ->whereDoesntHave('mileageTrips')->with('days')->orderBy('starts_on')->get();
+        // Jobs (or days) you said you didn't drive to: never offered again until you put them back.
+        $notDriven = Vetoes::notDriven();
         $out = [];
         foreach ($jobs as $job) {
+            if (isset($notDriven['jobs'][$job->id])) {
+                continue;
+            }
             $dates = $job->workDates();
             // Offered once the last day is done: a trip is never dated in the future, and adding the first days of
             // a job that's still under way would stop its later days (a de-rig to come) from ever being offered.
             if ($dates === [] || end($dates) > $today) {
                 continue;
+            }
+            if (isset($notDriven['days'][$job->id])) {
+                $dates = array_values(array_filter($dates, fn ($d) => ! isset($notDriven['days'][$job->id][$d])));
+                if ($dates === []) {
+                    continue;
+                }
             }
             $travel = self::travelFor($job, $dates);
             if ($travel['journey']) {
@@ -135,6 +148,25 @@ final class JobTrips
         }
 
         return $out;
+    }
+
+    /**
+     * The jobs with days in this year that you said you didn't drive to (the Mileage page's "Didn't drive", or "Not
+     * relevant" on the to-do list's mileage), so the page can list them with "Put back".
+     *
+     * @return list<array{job_id:int, title:string, starts_on:string, postcode:?string}>
+     */
+    public static function leftOut(string $taxYear): array
+    {
+        $jobs = array_keys(Vetoes::notDriven()['jobs']);
+        if ($jobs === []) {
+            return [];
+        }
+        $year = UkTaxYear::fromLabel($taxYear);
+
+        return WorkJob::query()->whereIn('id', $jobs)->whereDate('starts_on', '<=', $year->endsOn()->format('Y-m-d'))->whereDate('ends_on', '>=', $year->startsOn()->format('Y-m-d'))
+            ->orderBy('starts_on')->get(['id', 'title', 'starts_on', 'postcode'])
+            ->map(fn (WorkJob $j) => ['job_id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'postcode' => $j->postcode])->all();
     }
 
     /** Add the trips for the jobs you ticked. Days in a locked tax year are never added. @return int trips added */

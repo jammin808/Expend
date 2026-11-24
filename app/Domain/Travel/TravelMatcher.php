@@ -4,12 +4,14 @@ namespace App\Domain\Travel;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Intel\Provenance;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\OwnAccounts;
 use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\TaxYear;
 use App\Models\TravelItem;
+use App\Models\Veto;
 use App\Support\Money;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -18,7 +20,8 @@ use Illuminate\Support\Facades\DB;
  * Proposes what each stay or journey is: lines it up with your jobs night by night (TravelDays), finds the
  * payment in your statements, and spots client-booked stays. The proposal is saved on the stay and, when a
  * payment is found, as an unconfirmed suggestion on that payment, which never overwrites anything you've
- * decided. Your own decision is applied by decide().
+ * decided. Your own decision is applied by decide(). A payment you said isn't a stay's (booked by the client, or
+ * "Not this one") is never found for it again (Intel\Vetoes).
  */
 final class TravelMatcher
 {
@@ -47,7 +50,7 @@ final class TravelMatcher
             return;
         }
 
-        $payment = $item->transaction ?? $this->findPayment($item);
+        $payment = $item->transaction && ! in_array((int) $item->bank_transaction_id, self::notItsPayments($item), true) ? $item->transaction : $this->findPayment($item);
         $verdicts = $item->kind === 'hotel'
             ? array_map(fn ($night) => ['date' => $night] + $this->days->night($night), $item->nights())
             : [['date' => $item->starts_on->format('Y-m-d')] + $this->days->day($item->starts_on->format('Y-m-d'))];
@@ -149,6 +152,8 @@ final class TravelMatcher
                     $this->writer->clear($payment, 'Not this stay’s payment: booked by the client', 'matcher');
                 }
                 $item->bank_transaction_id = null;
+                // Remembered, so that payment is never found for it again (if you reopen the stay, say).
+                Vetoes::record('travel_payment', 'travel:'.$item->id, 'tx:'.$payment->id, reasonCode: 'client_booked');
                 $outcome = 'unlinked';
             } elseif ($payment && $payment->allocations()->get()->contains(fn ($a) => $a->is_manual)) {
                 // Only a decision you made on the payment itself is kept (see above).
@@ -189,7 +194,9 @@ final class TravelMatcher
         $from = ($booked->lt($item->starts_on) ? $booked : CarbonImmutable::parse($item->starts_on))->subDays(3);
         $to = CarbonImmutable::parse($item->ends_on ?? $item->starts_on)->addDays(10);
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
-        $taken = TravelItem::query()->whereNotNull('bank_transaction_id')->where('id', '!=', $item->id)->pluck('bank_transaction_id');
+        $taken = TravelItem::query()->whereNotNull('bank_transaction_id')->where('id', '!=', $item->id)->pluck('bank_transaction_id')
+            // and payments you said aren't this one's (Intel\Vetoes)
+            ->merge(self::notItsPayments($item));
 
         // A payment with a part that's spending: a stay paid together with a top-up is still found.
         $base = fn () => OwnAccounts::scopeWithSpendingLines(BankTransaction::query())->where('amount_pence', '<', 0)
@@ -243,6 +250,46 @@ final class TravelMatcher
         $match = $named($base(), self::MERCHANT_WORDS[$item->provider] ?? [strtoupper($item->provider)])->limit(2)->get();
 
         return $match->count() === 1 ? $match->first() : null;
+    }
+
+    /**
+     * You said a payment isn't this stay's or journey's ("Not this one" on the link at /intel/proposals, or on the
+     * payment's suggestion in the Inbox): the stay no longer points at it, the matcher takes back its own suggestion on
+     * the payment (unless it's gone already, or is yours), and it's remembered, so that payment is never found for it
+     * again. Audited, as the surrounding AuditContext's actor ('you' outside one). A stay you've decided is left alone;
+     * a payment in a locked year can't be changed (refused, and nothing is unlinked).
+     *
+     * @return bool whether it was unlinked (false when the stay no longer points at that payment, or is decided)
+     */
+    public function notItsPayment(TravelItem $item, int $txId, ?string $reasonCode = null, ?string $reason = null): bool
+    {
+        return DB::transaction(function () use ($item, $txId, $reasonCode, $reason) {
+            $item = TravelItem::query()->whereKey($item->id)->lockForUpdate()->first();
+            if (! $item || (int) $item->bank_transaction_id !== $txId || $item->decided_at !== null) {
+                return false;
+            }
+            $item->update(['bank_transaction_id' => null]);
+            AuditLog::record('travel.payment_unlinked', $item, ['bank_transaction_id' => $txId], ['bank_transaction_id' => null], $reason ?? 'Not its payment');
+            $tx = BankTransaction::query()->with('allocations')->find($txId);
+            if ($tx && $tx->allocations->isNotEmpty()
+                && $tx->allocations->every(fn ($a) => ! $a->is_manual && $a->confirmed_at === null && $a->decided_by === 'matcher')) {
+                $this->writer->clear($tx, 'Not the payment for '.($item->place ?: $item->provider), 'matcher');
+            }
+            Vetoes::record('travel_payment', 'travel:'.$item->id, 'tx:'.$txId, reasonCode: $reasonCode, reason: $reason);
+
+            return true;
+        });
+    }
+
+    /**
+     * The payments you said aren't this stay's or journey's (it was booked by the client, or "Not this one").
+     *
+     * @return list<int>
+     */
+    public static function notItsPayments(TravelItem $item): array
+    {
+        return Veto::query()->active()->where('relation', 'travel_payment')->where('subject_ref', 'travel:'.$item->id)->pluck('object_ref')
+            ->map(fn ($r) => preg_match('/^tx:(\d+)$/', (string) $r, $m) ? (int) $m[1] : null)->filter()->values()->all();
     }
 
     private function lines(TravelItem $item, int $amount, string $kind, ?int $jobId, int $businessNights, ?string $note = null): array

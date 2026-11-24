@@ -4,6 +4,7 @@ namespace Tests\Feature\Intel\Detectors;
 
 use App\Domain\Intel\DetectorLevels;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoList;
 use App\Models\AuditEvent;
 use App\Models\Client;
@@ -83,7 +84,7 @@ class LevelsAndActionsTest extends TestCase
         $this->assertSame(['items' => [], 'counts' => []], $more, 'Nothing else found by the new checks here');
 
         // Raised from the page: with the rest of the list, at its own severity, and audited as yours.
-        $this->post('/todo/det_raise/job:closeout')->assertSessionHas('success');
+        $this->post('/todo/det_raise/job:closeout', ['fp' => Fingerprints::of('det_raise', 'job:closeout')])->assertSessionHas('success');
         $this->assertSame('raised', DetectorLevels::levelOf('job.closeout'));
         $list = TodoList::build();
         $item = collect($list['items'])->firstWhere('key', 'closeout:'.$job->id);
@@ -94,9 +95,9 @@ class LevelsAndActionsTest extends TestCase
         $this->assertSame(['you', ['code' => 'job.closeout', 'level' => 'raised']], [$event->actor, $event->after]);
 
         // And lowered again.
-        $this->post('/todo/det_lower/job:closeout')->assertSessionHas('success');
+        $this->post('/todo/det_lower/job:closeout', ['fp' => Fingerprints::of('det_lower', 'job:closeout')])->assertSessionHas('success');
         $this->assertTrue(DetectorLevels::belowFold('job.closeout'));
-        $this->post('/todo/det_raise/todo:nothing')->assertSessionHas('error');
+        $this->post('/todo/det_raise/todo:nothing', ['fp' => Fingerprints::of('det_raise', 'todo:nothing')])->assertSessionHas('error');
     }
 
     public function test_more_than_one_in_ten_dismissed_as_wrong_demotes_a_detector(): void
@@ -139,7 +140,7 @@ class LevelsAndActionsTest extends TestCase
         $this->assertSame(1, AuditEvent::query()->where('action', 'detector.demoted')->count());
 
         // Raising it again starts afresh: what you'd seen when you raised it doesn't count.
-        $this->post('/todo/det_raise/job:closeout')->assertSessionHas('success');
+        $this->post('/todo/det_raise/job:closeout', ['fp' => Fingerprints::of('det_raise', 'job:closeout')])->assertSessionHas('success');
         $this->assertSame('raised', DetectorLevels::levelOf('job.closeout'));
         FindingsRegistry::sync();
         $this->assertSame('raised', DetectorLevels::levelOf('job.closeout'));
@@ -170,12 +171,12 @@ class LevelsAndActionsTest extends TestCase
         $this->assertSame(0, MileageTrip::query()->count());
 
         $item = collect(TodoList::build()['items'])->first(fn ($i) => str_starts_with($i['key'], 'mileage:2026-27:'));
-        $this->post('/todo/'.$item['actions'][0]['code'].'/'.$item['actions'][0]['id'])->assertSessionHas('success');
+        $this->post('/todo/'.$item['actions'][0]['code'].'/'.$item['actions'][0]['id'], ['fp' => Fingerprints::of($item['actions'][0]['code'], $item['actions'][0]['id'])])->assertSessionHas('success');
         $this->assertSame(2, MileageTrip::query()->where('vehicle_id', $van->id)->count());
         $this->assertSame(['mileage.from_jobs', 'you'], [AuditEvent::query()->latest('id')->value('action'), AuditEvent::query()->latest('id')->value('actor')]);
         $this->assertNull(collect(TodoList::build()['items'])->first(fn ($i) => str_starts_with($i['key'], 'mileage:2026-27:')), 'Claimed');
         // Pressed again (a Telegram button stays): already dealt with.
-        $this->post('/todo/'.$item['actions'][0]['code'].'/'.$item['actions'][0]['id'])->assertSessionHas('error', 'That’s already been dealt with.');
+        $this->post('/todo/'.$item['actions'][0]['code'].'/'.$item['actions'][0]['id'], ['fp' => Fingerprints::of($item['actions'][0]['code'], $item['actions'][0]['id'])])->assertSessionHas('error', 'That’s already been dealt with.');
         $this->assertSame(2, MileageTrip::query()->count());
 
         // Two vehicles on simplified mileage: which one is yours to say, on the Mileage page.
@@ -214,13 +215,13 @@ class LevelsAndActionsTest extends TestCase
         // The van moves to actual costs and a motorbike is added before the old button is pressed.
         $van->update(['method' => 'actual']);
         $bike = Vehicle::query()->create(['name' => 'Motorbike', 'type' => 'motorcycle', 'method' => 'simplified']);
-        $this->post('/todo/trips_add/'.$shown['id'])->assertSessionHas('error');
+        $this->post('/todo/trips_add/'.$shown['id'], ['fp' => Fingerprints::of('trips_add', (string) $shown['id'])])->assertSessionHas('error');
         $this->assertSame(0, MileageTrip::query()->count(), 'Never added to a vehicle you weren’t shown');
 
         // The button the list offers now names the motorbike, and adds to it.
         $now = $this->mileageItem()['actions'][0];
         $this->assertSame('Add the trips to Motorbike', $now['label']);
-        $this->post('/todo/trips_add/'.$now['id'])->assertSessionHas('success');
+        $this->post('/todo/trips_add/'.$now['id'], ['fp' => Fingerprints::of('trips_add', (string) $now['id'])])->assertSessionHas('success');
         $this->assertSame([0, 1], [MileageTrip::query()->where('vehicle_id', $van->id)->count(), MileageTrip::query()->where('vehicle_id', $bike->id)->count()]);
     }
 
@@ -234,7 +235,7 @@ class LevelsAndActionsTest extends TestCase
         // A new home postcode not known yet: the list says "may have mileage" (same jobs, no button) without looking it up.
         Setting::put('home_postcode', 'M1 1AE');
         $this->assertSame([], $this->mileageItem()['actions']);
-        $this->post('/todo/trips_add/'.$shown['id'])->assertSessionHas('error');
+        $this->post('/todo/trips_add/'.$shown['id'], ['fp' => Fingerprints::of('trips_add', (string) $shown['id'])])->assertSessionHas('error');
         $this->assertSame(0, MileageTrip::query()->count(), 'The miles shown were from the old home');
         Http::assertNothingSent();
     }

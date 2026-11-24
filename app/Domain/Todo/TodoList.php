@@ -139,7 +139,7 @@ final class TodoList
     private const MILEAGE_KEY = 'todo_mileage';
 
     /** What the mileage found for finished jobs is made from. */
-    private const MILEAGE_WATCHED = ['job_days', 'mileage_trips', 'places', 'tax_years', 'travel_items', 'vehicles', 'work_jobs'];
+    private const MILEAGE_WATCHED = ['job_days', 'mileage_trips', 'places', 'tax_years', 'travel_items', 'vehicles', 'work_jobs', 'vetoes'];
 
     private const MILEAGE_SETTINGS = ['home_postcode', 'mileage_threshold_scope'];
 

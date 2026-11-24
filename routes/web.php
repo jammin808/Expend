@@ -123,6 +123,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('intel', [IntelController::class, 'index'])->name('intel.index');
     Route::get('intel/runs', [IntelController::class, 'runs'])->name('intel.runs');
     Route::post('intel/check', [IntelController::class, 'check'])->middleware('throttle:6,1')->name('intel.check');
+    // Links Expend made on its own: accept, or "Not this one" (remembered, so it isn't linked again).
+    Route::get('intel/proposals', [IntelController::class, 'proposals'])->name('intel.proposals');
+    Route::post('intel/proposals', [IntelController::class, 'decideProposal'])->name('intel.proposals.decide');
     Route::get('search', SearchController::class)->name('search');
     Route::get('explain/category/{category}', [TaxHelpController::class, 'category'])->name('explain.category');
     Route::get('explain/{source}/{id}', [TaxHelpController::class, 'payment'])->whereIn('source', ['bank', 'manual'])->whereNumber('id')->name('explain.payment');
@@ -178,6 +181,8 @@ Route::middleware(['auth'])->group(function () {
     Route::post('vehicles', [MileageController::class, 'storeVehicle'])->name('vehicles.store');
     Route::post('mileage', [MileageController::class, 'storeTrip'])->name('mileage.store');
     Route::post('mileage/from-jobs', [MileageController::class, 'fromJobs'])->name('mileage.fromJobs');
+    Route::post('mileage/not-driven', [MileageController::class, 'notDriven'])->name('mileage.notDriven');
+    Route::post('mileage/not-driven/{job}/undo', [MileageController::class, 'putBack'])->name('mileage.putBack');
     Route::patch('mileage/{trip}', [MileageController::class, 'updateTrip'])->name('mileage.update');
     Route::delete('mileage/{trip}', [MileageController::class, 'destroyTrip'])->name('mileage.destroy');
 });

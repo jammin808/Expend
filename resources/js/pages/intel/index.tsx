@@ -93,6 +93,9 @@ export default function Intel({ mode, report, reportRun, runs, checking }: Props
                     </div>
                     <div className="flex gap-2">
                         <Button variant="outline" asChild>
+                            <Link href="/intel/proposals">Links to check</Link>
+                        </Button>
+                        <Button variant="outline" asChild>
                             <Link href="/intel/runs">Run log</Link>
                         </Button>
                         <Button onClick={checkNow} disabled={busy || checking || mode === 'off'}>

@@ -7,6 +7,8 @@ use App\Domain\Import\Importer;
 use App\Domain\Import\ProfileDetector;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Telegram\Telegram;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoList;
 use App\Mail\InvoiceEmail;
 use App\Models\Account;
@@ -69,24 +71,25 @@ class TodoTest extends TestCase
 
         // One tap: a possible job becomes a job; a payment is marked personal.
         $candidate = JobCandidate::query()->sole();
-        $this->post("/todo/cand_add/{$candidate->id}")->assertSessionHas('success');
+        $shown = Fingerprints::of('cand_add', (string) $candidate->id);
+        $this->post("/todo/cand_add/{$candidate->id}", ['fp' => $shown])->assertSessionHas('success');
         $this->assertSame('Maybe a job', WorkJob::query()->latest('id')->value('title'));
         $tx = BankTransaction::query()->where('amount_pence', '<', 0)->where('review_status', '!=', 'confirmed')->first();
         app(AllocationWriter::class)->clear($tx);
-        $this->post("/todo/tx_personal/{$tx->id}")->assertSessionHas('success');
+        $this->post("/todo/tx_personal/{$tx->id}", ['fp' => Fingerprints::of('tx_personal', (string) $tx->id)])->assertSessionHas('success');
         $this->assertSame('personal', $tx->fresh()->allocations()->sole()->kind);
-        $this->post("/todo/cand_add/{$candidate->id}")->assertSessionHas('error', 'That’s already been dealt with.');
+        $this->post("/todo/cand_add/{$candidate->id}", ['fp' => $shown])->assertSessionHas('error', 'That’s already been dealt with.');
         $this->post('/todo/drop_tables/1')->assertNotFound();
 
         // An accepted suggestion is confirmed.
         $other = BankTransaction::query()->where('amount_pence', '<', 0)->where('review_status', '!=', 'confirmed')->where('id', '!=', $tx->id)->first();
         app(AllocationWriter::class)->decide($other, AllocationWriter::lines($other->amount_pence, 'business_expense', Category::query()->where('code', 'software')->value('id')), 'rule');
-        $this->post("/todo/tx_accept/{$other->id}")->assertSessionHas('success');
+        $this->post("/todo/tx_accept/{$other->id}", ['fp' => Fingerprints::of('tx_accept', (string) $other->id)])->assertSessionHas('success');
         $this->assertNotNull($other->fresh()->allocations()->sole()->confirmed_at);
 
         // Chasing the overdue invoice emails a reminder with the PDF.
         Mail::fake();
-        $this->post("/todo/inv_chase/{$overdue->id}")->assertSessionHas('success');
+        $this->post("/todo/inv_chase/{$overdue->id}", ['fp' => Fingerprints::of('inv_chase', (string) $overdue->id)])->assertSessionHas('success');
         Mail::assertQueued(InvoiceEmail::class, fn (InvoiceEmail $m) => $m->reminder && $m->hasTo('accounts@client.example'));
         $this->assertSame(1, $overdue->fresh()->reminder_count);
     }
@@ -121,20 +124,21 @@ class TodoTest extends TestCase
         $this->artisan('ledger:telegram-digest')->assertSuccessful();
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'setWebhook') && in_array('callback_query', $r['allowed_updates'], true));
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'sendMessage') && str_contains($r['text'], 'Maybe a job')
-            && $r['reply_markup']['inline_keyboard'][0][0]['callback_data'] === 't|cand_add|'.$candidate->id);
+            && $r['reply_markup']['inline_keyboard'][0][0]['callback_data'] === Telegram::callbackData('cand_add', (string) $candidate->id));
 
         // A press from your chat acts; from anyone else it doesn't.
         $press = fn (string $chat, string $data) => $this->withHeader('X-Telegram-Bot-Api-Secret-Token', 'secret')->postJson('/hooks/telegram', ['callback_query' => [
             'id' => 'q1', 'data' => $data, 'message' => ['message_id' => 7, 'chat' => ['id' => $chat], 'text' => 'Possible job: Maybe a job'],
         ]])->assertOk();
-        $press('99', 't|cand_dismiss|'.$candidate->id);
+        $dismiss = Telegram::callbackData('cand_dismiss', (string) $candidate->id);
+        $press('99', $dismiss);
         $this->assertSame('open', $candidate->fresh()->status);
-        $press('42', 't|cand_dismiss|'.$candidate->id);
+        $press('42', $dismiss);
         $this->assertSame('dismissed', $candidate->fresh()->status);
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'editMessageText') && str_contains($r['text'], '✓ Dismissed'));
 
         $this->artisan('ledger:invoice-nudges')->assertSuccessful();
-        Http::assertSent(fn (Request $r) => str_contains($r->url(), 'sendMessage') && str_contains($r['text'], "Invoice {$invoice->number}") && $r['reply_markup']['inline_keyboard'][0][0]['callback_data'] === 't|inv_chase|'.$invoice->id);
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), 'sendMessage') && str_contains($r['text'], "Invoice {$invoice->number}") && $r['reply_markup']['inline_keyboard'][0][0]['callback_data'] === Telegram::callbackData('inv_chase', (string) $invoice->id));
         $this->assertNotNull($invoice->fresh()->overdue_nudged_at);
     }
 

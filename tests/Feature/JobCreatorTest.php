@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Audit\AuditLog;
 use App\Domain\Jobs\JobCreator;
 use App\Jobs\GatherForJob;
 use App\Models\AuditEvent;
@@ -165,7 +166,8 @@ class JobCreatorTest extends TestCase
         $this->assertSame([$job->id, 'you'], [$doc->fresh()->work_job_id, $doc->fresh()->job_linked_by]);
         $this->assertSame('Acme Events', $job->client->name);
         $created = AuditEvent::query()->where('action', 'job.created')->sole();
-        $this->assertSame([['type' => 'document', 'id' => $doc->id, 'quote' => 'Acme Awards, Leeds Arena, 12 March 2026', 'verified' => true]], $created->after['evidence']);
+        // Written from the web with where it came from (audit hash v2, on since M7), so stored with its keys in order.
+        $this->assertSame(AuditLog::canonical([['type' => 'document', 'id' => $doc->id, 'quote' => 'Acme Awards, Leeds Arena, 12 March 2026', 'verified' => true]]), $created->after['evidence']);
         $this->assertSame(1, AuditEvent::query()->where('action', 'document.job_linked')->count());
     }
 }

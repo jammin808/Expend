@@ -6,7 +6,9 @@ use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\DecisionService;
 use App\Domain\Mileage\JobTrips;
 use App\Domain\Tax\ReturnSummary;
+use App\Domain\Telegram\Telegram;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Domain\Travel\Places;
@@ -122,7 +124,7 @@ class FirstDiscoveriesTest extends TestCase
         $this->assertStringContainsString('Not decided yet', $items['hmrc:'.$undecided->id]['detail']);
         $this->assertSame(3, $list['checked']['hmrc'], 'Every payment to HMRC was looked at');
 
-        $this->post('/todo/tx_tax/'.$personal->id)->assertSessionHas('success');
+        $this->post('/todo/tx_tax/'.$personal->id, ['fp' => Fingerprints::of('tx_tax', (string) $personal->id)])->assertSessionHas('success');
         $line = Allocation::query()->where('bank_transaction_id', $personal->id)->sole();
         $this->assertSame(['tax_payment', 'you'], [$line->kind, $line->decided_by]);
         $this->assertNotNull($line->confirmed_at);
@@ -130,10 +132,10 @@ class FirstDiscoveriesTest extends TestCase
         $this->assertArrayNotHasKey('hmrc:'.$personal->id, $this->items());
 
         // Pressed again (a Telegram button): nothing changes.
-        $this->post('/todo/tx_tax/'.$personal->id)->assertSessionHas('success', 'Already dealt with: the £2,500.00 payment to HMRC is recorded as tax.');
+        $this->post('/todo/tx_tax/'.$personal->id, ['fp' => Fingerprints::of('tx_tax', (string) $personal->id)])->assertSessionHas('success', 'Already dealt with: the £2,500.00 payment to HMRC is recorded as tax.');
         // Not a payment to HMRC: the button can't be used on another line.
         $other = $this->tx('2026-08-06', -1_000, 'COSTA COFFEE');
-        $this->post('/todo/tx_tax/'.$other->id)->assertSessionHas('error');
+        $this->post('/todo/tx_tax/'.$other->id, ['fp' => Fingerprints::of('tx_tax', (string) $other->id)])->assertSessionHas('error');
         $this->assertSame(0, Allocation::query()->where('bank_transaction_id', $other->id)->count());
     }
 
@@ -149,7 +151,7 @@ class FirstDiscoveriesTest extends TestCase
         $this->assertStringContainsString('Split: £2,500.00 as tax, £100.00 as personal', $item['detail']);
         $this->assertSame([], $item['actions'], 'One tap would undo the split');
 
-        $this->post('/todo/tx_tax/'.$tx->id)->assertSessionHas('error');
+        $this->post('/todo/tx_tax/'.$tx->id, ['fp' => Fingerprints::of('tx_tax', (string) $tx->id)])->assertSessionHas('error');
         $this->assertSame(['personal', 'tax_payment'], Allocation::query()->where('bank_transaction_id', $tx->id)->orderBy('kind')->pluck('kind')->all());
     }
 
@@ -174,7 +176,7 @@ class FirstDiscoveriesTest extends TestCase
 
         $this->artisan('ledger:telegram-digest')->assertSuccessful();
         Http::assertSent(fn ($r) => str_contains($r->url(), '/sendMessage') && str_contains((string) $r['text'], 'Payment to HMRC not recorded as tax: £2,500.00 on 30 Jan 2026')
-            && ($r['reply_markup']['inline_keyboard'][0][0]['callback_data'] ?? null) === 't|tx_tax|'.$tx->id);
+            && ($r['reply_markup']['inline_keyboard'][0][0]['callback_data'] ?? null) === Telegram::callbackData('tx_tax', (string) $tx->id));
 
         FindingsRegistry::sync();
         $finding = Finding::query()->where('key', 'hmrc:'.$tx->id)->sole();
@@ -191,7 +193,7 @@ class FirstDiscoveriesTest extends TestCase
         $item = $this->items()['hmrc:'.$tx->id];
         $this->assertSame([], $item['actions']);
         $this->assertStringContainsString('2024-25 is locked', $item['detail']);
-        $this->post('/todo/tx_tax/'.$tx->id)->assertSessionHas('error');
+        $this->post('/todo/tx_tax/'.$tx->id, ['fp' => Fingerprints::of('tx_tax', (string) $tx->id)])->assertSessionHas('error');
         $this->assertSame('personal', Allocation::query()->where('bank_transaction_id', $tx->id)->value('kind'));
     }
 

@@ -6,10 +6,13 @@ use App\Domain\Intel\DetectorLevels;
 use App\Domain\Intel\FindingDraft;
 use App\Domain\Intel\Grades;
 use App\Domain\Intel\RefResolver;
+use App\Domain\Todo\ChangedSince;
 use App\Domain\Todo\Dismissals;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
+use App\Models\Setting;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -47,8 +50,9 @@ class TodoController extends Controller
         $list['items'] = self::shown($list['items']);
         $list['below'] = self::shown($list['below']);
         // The kinds that can be raised or lowered, how each is shown now and why (the page counts what each found).
-        $kinds = collect(DetectorLevels::all())->filter(fn ($l, $code) => in_array($code, DetectorLevels::DEMOTABLE, true))
-            ->map(fn ($l, $code) => ['code' => $code, 'name' => DetectorLevels::name($code), 'level' => $l['level'], 'reason' => $l['reason']])->values()->all();
+        $kinds = Setting::remembering(fn () => collect(DetectorLevels::all())->filter(fn ($l, $code) => in_array($code, DetectorLevels::DEMOTABLE, true))
+            ->map(fn ($l, $code) => ['code' => $code, 'name' => DetectorLevels::name($code), 'level' => $l['level'], 'reason' => $l['reason'],
+                'fp_raise' => Fingerprints::of('det_raise', str_replace('.', ':', $code)), 'fp_lower' => Fingerprints::of('det_lower', str_replace('.', ':', $code))])->values()->all());
 
         return Inertia::render('todo', $list + ['groups' => TodoList::GROUPS, 'all' => $all, 'directions' => array_filter(FindingDraft::DIRECTION_WORDS),
             'snooze_reasons' => Dismissals::reasonsFor(null, true), 'detector_levels' => $kinds,
@@ -63,7 +67,8 @@ class TodoController extends Controller
 
     /**
      * Items as the page shows them: what each rests on, in plain words (its "Why", one query per kind of record), the
-     * reasons offered for hiding it, and its grade's basis.
+     * reasons offered for hiding it, its grade's basis, and each action's fingerprint of what it would act on now (a
+     * press on something changed since is refused).
      *
      * @param  list<array>  $items
      * @return list<array>
@@ -72,7 +77,7 @@ class TodoController extends Controller
     {
         $refs = RefResolver::resolveMany(collect($items)->flatMap(fn ($i) => $i['why'] ?? [])->unique()->values()->all());
 
-        return array_map(fn (array $i) => array_diff_key($i, array_flip(['hidden_under', 'job_ids', 'range', 'subsumes'])) + [
+        return array_map(fn (array $i) => ['actions' => Fingerprints::attach($i['actions'] ?? [])] + array_diff_key($i, array_flip(['hidden_under', 'job_ids', 'range', 'subsumes'])) + [
             'why_refs' => array_values(array_filter(array_map(fn ($r) => isset($refs[$r]) ? array_intersect_key($refs[$r], array_flip(['ref', 'label', 'href', 'state', 'check'])) : null, $i['why'] ?? []))),
             'reasons' => Dismissals::reasonsFor($i['code'] ?? null),
             'grade_basis' => Grades::forCode($i['code'] ?? null)[1],
@@ -134,11 +139,21 @@ class TodoController extends Controller
         return back()->with('success', $message);
     }
 
-    public function act(string $code, string $id, TodoActions $actions): RedirectResponse
+    /**
+     * A to-do button. It carries the fingerprint of what it was shown on (fp: Fingerprints): pressed on something that
+     * has changed since, it's refused with a message and nothing is done. A deciding press without one is refused the
+     * same way, so a page that doesn't send it can't act on something it never showed. Every page that offers these
+     * sends one: the to-do list, the why-panel's Lift and the connections map.
+     */
+    public function act(Request $request, string $code, string $id, TodoActions $actions): RedirectResponse
     {
         abort_unless(in_array($code, TodoActions::CODES, true), 404);
+        $fp = $request->validate(['fp' => 'nullable|string|regex:/^[0-9a-f]{6}$/'])['fp'] ?? null;
+        if ($fp === null && Fingerprints::decides($code, $id)) {
+            return back()->with('error', (new ChangedSince)->getMessage());
+        }
         try {
-            $message = $actions->run($code, $id);
+            $message = $actions->run($code, $id, null, $fp);
         } catch (Throwable $e) {
             if ($e instanceof ModelNotFoundException) {
                 return back()->with('error', 'That’s already been dealt with.');

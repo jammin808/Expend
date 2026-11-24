@@ -12,6 +12,7 @@ use App\Domain\Intel\Cycle\Steps\RecommendAlerts;
 use App\Domain\Intel\Cycle\Steps\RecommendReport;
 use App\Domain\Intel\Cycle\Steps\RelateCategorise;
 use App\Domain\Intel\Cycle\Steps\RelateJobs;
+use App\Domain\Intel\Cycle\Steps\RelateSweep;
 use App\Domain\Intel\Cycle\Steps\RelateTransfers;
 use App\Domain\Intel\Cycle\Steps\RunDetector;
 use App\Domain\Intel\Cycle\Steps\VerifyAuditChain;
@@ -103,10 +104,10 @@ final class CycleRunner
     /** Every detector in the registry (detect.todo, the to-do list's groups, first). */
     public const DETECTORS = 'detect.*';
 
-    /** The steps of each kind of run, in order (section 6.1). M7 to M10 add theirs. */
+    /** The steps of each kind of run, in order (section 6.1). M7 added relate.sweep; M8 to M10 add theirs. */
     public const PLANS = [
         'nightly' => [VerifyAuditChain::KEY, AcquireHealth::KEY, AcquireRetryReads::KEY, RelateTransfers::KEY, RelateCategorise::KEY, RelateJobs::KEY,
-            VerifyBacklog::KEY, VerifyReconcile::KEY, self::DETECTORS, DetectSync::KEY, PreserveSeal::KEY],
+            RelateSweep::KEY, VerifyBacklog::KEY, VerifyReconcile::KEY, self::DETECTORS, DetectSync::KEY, PreserveSeal::KEY],
         'morning' => [AcquireHealth::KEY, self::DETECTORS, DetectSync::KEY, RecommendReport::KEY, RecommendAlerts::KEY, PreserveSeal::KEY],
         'import' => ['detect.todo', DetectSync::KEY, PreserveSeal::KEY],
         'manual' => [self::DETECTORS, DetectSync::KEY, PreserveSeal::KEY],
@@ -118,7 +119,7 @@ final class CycleRunner
     public const STEPS = [
         VerifyAuditChain::KEY => VerifyAuditChain::class, AcquireHealth::KEY => AcquireHealth::class, AcquireRetryReads::KEY => AcquireRetryReads::class,
         RelateTransfers::KEY => RelateTransfers::class, RelateCategorise::KEY => RelateCategorise::class, RelateJobs::KEY => RelateJobs::class,
-        VerifyBacklog::KEY => VerifyBacklog::class, VerifyReconcile::KEY => VerifyReconcile::class, DetectSync::KEY => DetectSync::class,
+        RelateSweep::KEY => RelateSweep::class, VerifyBacklog::KEY => VerifyBacklog::class, VerifyReconcile::KEY => VerifyReconcile::class, DetectSync::KEY => DetectSync::class,
         RecommendReport::KEY => RecommendReport::class, RecommendAlerts::KEY => RecommendAlerts::class, PreserveSeal::KEY => PreserveSeal::class,
     ];
 
@@ -126,6 +127,7 @@ final class CycleRunner
     public const STEP_WORDS = [
         VerifyAuditChain::KEY => 'the audit log check', AcquireHealth::KEY => 'the check of your connections', AcquireRetryReads::KEY => 'reading what waited for AI budget',
         RelateTransfers::KEY => 'finding transfers between your accounts', RelateCategorise::KEY => 'suggesting what payments are', RelateJobs::KEY => 'the job finder',
+        RelateSweep::KEY => 'taking back suggestions that no longer hold',
         VerifyBacklog::KEY => 'double-checking AI findings', VerifyReconcile::KEY => 'checking accounts against the bank', 'detect.todo' => 'the to-do list’s checks',
         DetectSync::KEY => 'recording what was found', RecommendReport::KEY => 'the morning report', RecommendAlerts::KEY => 'urgent alerts',
         PreserveSeal::KEY => 'sealing the run in the audit log',

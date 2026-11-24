@@ -9,6 +9,7 @@ use App\Domain\Intel\Cycle\MorningReport;
 use App\Domain\Intel\Cycle\Steps\RecommendAlerts;
 use App\Domain\Intel\DetectorLevels;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Telegram\Telegram;
 use App\Models\CycleRun;
 use App\Models\CycleRunStep;
 use App\Models\Finding;
@@ -203,7 +204,7 @@ class MorningReportTest extends TestCase
         $this->assertCount(3, $this->sent());
         $this->assertStringStartsWith('⚠ Penalty step in 1 days (£100.00)', $this->sent()[0]);
         $buttons = Http::recorded(fn (Request $r) => str_contains($r->url(), '/sendMessage'))->first()[0]['reply_markup']['inline_keyboard'];
-        $this->assertSame('t|fnd_snooze|'.$critical[0]->id.':later', $buttons[0][0]['callback_data'], 'Snooze a week and Not relevant');
+        $this->assertSame(Telegram::callbackData('fnd_snooze', $critical[0]->id.':later'), $buttons[0][0]['callback_data'], 'Snooze a week and Not relevant');
 
         $this->assertSame(0, $alerts()->counts['sent'], 'Three a day');
         $this->assertCount(3, $this->sent());

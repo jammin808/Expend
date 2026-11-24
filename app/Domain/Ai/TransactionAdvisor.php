@@ -11,13 +11,16 @@ use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\Setting;
 use App\Models\TaxYear;
+use App\Models\Veto;
 use Illuminate\Support\Collection;
 use RuntimeException;
 
 /**
  * AI suggestions for undecided transactions. Sends only the minimum (date, amount, bank description,
  * bank category, candidate jobs). Each answer is validated against real categories and the candidate jobs
- * for that transaction, and saved as an unconfirmed AI suggestion for you to accept or change.
+ * for that transaction, and saved as an unconfirmed AI suggestion for you to accept or change. One you said no to
+ * for that payment (Intel\Vetoes) is never saved (AllocationWriter refuses it), and payments you said no to a
+ * suggestion for are sent after the others.
  */
 final class TransactionAdvisor
 {
@@ -30,9 +33,17 @@ final class TransactionAdvisor
             throw new RuntimeException('AI suggestions are switched off. Turn them on in Settings › Integrations.');
         }
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
-        $txs = BankTransaction::query()->with('account')->where('review_status', 'unreviewed')->whereDoesntHave('allocations')
-            ->whereNotIn('tax_year', $locked)->when($taxYear, fn ($q, $y) => $q->where('tax_year', $y))
-            ->orderBy('posted_on')->limit($limit)->get();
+        $waiting = fn () => BankTransaction::query()->with('account')->where('review_status', 'unreviewed')->whereDoesntHave('allocations')
+            ->whereNotIn('tax_year', $locked)->when($taxYear, fn ($q, $y) => $q->where('tax_year', $y))->orderBy('posted_on')->orderBy('id');
+        // Payments you said no to a suggestion for go last (Intel\Vetoes): each press reaches the newer ones first, rather
+        // than paying the AI again for answers that may be refused.
+        $saidNo = Veto::query()->active()->where('relation', 'allocation_shape')->where('subject_ref', 'like', 'tx:%')
+            ->where(fn ($q) => $q->whereNull('method')->orWhere('method', 'ai.advisor'))->pluck('subject_ref')
+            ->map(fn ($r) => (int) substr((string) $r, 3))->unique()->values()->all();
+        $txs = $waiting()->whereNotIn('id', $saidNo ?: [0])->limit($limit)->get();
+        if ($saidNo !== [] && $txs->count() < $limit) {
+            $txs = $txs->concat($waiting()->whereIn('id', $saidNo)->limit($limit - $txs->count())->get())->values();
+        }
         if ($txs->isEmpty()) {
             return ['suggested' => 0, 'skipped' => 0];
         }
@@ -98,8 +109,11 @@ final class TransactionAdvisor
             $pct = max(1, min(100, (int) ($s['business_pct'] ?? 100)));
 
             try {
-                $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, $s['kind'], $needs ? $category->id : null, $needs ? $jobId : null, $pct),
+                // Refused (false) when it's what you said no to for this payment, or a suggestion that outranks the AI's
+                // is there by now: skipped, like an answer that doesn't fit.
+                $done = $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, $s['kind'], $needs ? $category->id : null, $needs ? $jobId : null, $pct),
                     'ai', false, mb_substr('AI: '.($s['reason'] ?? ''), 0, 240), null, new Provenance('ai.advisor', [$needs && $jobId ? 'job:'.$jobId : null]));
+                $done ? $made++ : $skipped++;
             } catch (\InvalidArgumentException) {
                 $skipped++;
             }

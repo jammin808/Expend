@@ -76,6 +76,18 @@ class Setting extends Model
         // How the forwarding mailbox last went, {ok, at, error?}: written by ledger:fetch-email when it changes, read by
         // the health check (health.mailbox), which never repeats the error.
         'mailbox_last_result' => null,
+        // Audit events record where they came from: the channel (web, Telegram, the schedule), the correlation that ties
+        // an action to its knock-on changes, and the nightly run (hashed the second way, v2: AuditLog::hashFor()). On
+        // from M7: M6 is the oldest release that reads v2, so roll back no further than M6 (docs/intelligence-cycle.md 3.1).
+        'intel_audit_context' => true,
+        // The tax pot (Tax\TaxPot): the Starling Space or savings goal you keep tax in, {account_uid, kind: goal|space,
+        // uid, name}, chosen in Settings › Integrations; and its balance when last read, {ok: true, pence, currency, name,
+        // at} or {ok: false, error: scope|missing|failed, at}.
+        'tax_pot_space' => null,
+        'tax_pot_balance' => null,
+        // Jobs the "finished yesterday: invoice it?" message has been sent for, {job id: date sent}, so it's sent once
+        // (ledger:job-finished; pruned after 400 days).
+        'job_finished_told' => [],
     ];
 
     protected $primaryKey = 'key';

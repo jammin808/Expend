@@ -8,6 +8,7 @@ use App\Domain\Ai\AssistantTools;
 use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\Opportunities;
 use App\Domain\Telegram\Telegram;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Models\AuditEvent;
@@ -278,22 +279,22 @@ class OpportunitySurfacesTest extends TestCase
         $this->assertSame(['bookings', 1], [$item['group'], $item['priority']]);
         $this->assertSame(['opp_add', 'opp_dismiss'], array_column($item['actions'], 'code'));
 
-        $this->post('/todo/opp_add/'.$booked->id)->assertSessionHas('success', fn ($m) => str_starts_with($m, 'Added Smith Productions launch (2 days, 5 Mar 2026 to 6 Mar 2026)'));
+        $this->post('/todo/opp_add/'.$booked->id, ['fp' => Fingerprints::of('opp_add', (string) $booked->id)])->assertSessionHas('success', fn ($m) => str_starts_with($m, 'Added Smith Productions launch (2 days, 5 Mar 2026 to 6 Mar 2026)'));
         $job = WorkJob::query()->where('title', 'Smith Productions launch')->sole();
         $this->assertSame([['2026-03-05', 'rig'], ['2026-03-06', 'work']], $job->days()->get()->map(fn ($d) => [$d->on_date->format('Y-m-d'), $d->kind])->all());
         $this->assertSame(['confirmed', $job->id], [$booked->fresh()->status, $booked->fresh()->work_job_id]);
         $this->assertNull($this->item('opp_job:'.$booked->id));
-        $this->post('/todo/opp_add/'.$booked->id)->assertSessionHas('error', 'That’s already been dealt with.');
+        $this->post('/todo/opp_add/'.$booked->id, ['fp' => Fingerprints::of('opp_add', (string) $booked->id)])->assertSessionHas('error', 'That’s already been dealt with.');
 
         // "I said no" records it; nothing is sent.
-        $this->post('/todo/opp_decline/'.$offer->id)->assertSessionHas('success', fn ($m) => str_contains($m, 'Nothing was sent'));
+        $this->post('/todo/opp_decline/'.$offer->id, ['fp' => Fingerprints::of('opp_decline', (string) $offer->id)])->assertSessionHas('success', fn ($m) => str_contains($m, 'Nothing was sent'));
         $this->assertSame(['declined', 'you'], [$offer->fresh()->status, $offer->fresh()->decided_by]);
         $this->assertSame(1, WorkJob::query()->count());
 
         // An enquiry is never added in one tap.
         $asked = $this->told(['title' => 'Summer tour', 'status' => 'enquiry', 'reply_by' => '2026-03-01']);
         $this->assertSame(['opp_decline'], array_column($this->item('opp_reply:'.$asked->id.':2026-03-01')['actions'], 'code'));
-        $this->post('/todo/opp_add/'.$asked->id)->assertSessionHas('error', fn ($e) => str_contains($e, 'isn’t offered or booked'));
+        $this->post('/todo/opp_add/'.$asked->id, ['fp' => Fingerprints::of('opp_add', (string) $asked->id)])->assertSessionHas('error', fn ($e) => str_contains($e, 'isn’t offered or booked'));
         $this->assertSame(1, WorkJob::query()->count());
     }
 
@@ -308,20 +309,22 @@ class OpportunitySurfacesTest extends TestCase
         Telegram::sendTodo('777');
         $sent = collect(Http::recorded())->map(fn ($r) => $r[0])->filter(fn (HttpRequest $r) => str_contains($r->url(), 'sendMessage'));
         $this->assertTrue($sent->contains(fn (HttpRequest $r) => str_contains($r['text'], 'work to answer')));
-        $this->assertTrue($sent->contains(fn (HttpRequest $r) => str_contains(json_encode($r['reply_markup'] ?? []), 't|opp_add|'.$offer->id)));
+        $button = Telegram::callbackData('opp_add', (string) $offer->id);
+        $this->assertTrue($sent->contains(fn (HttpRequest $r) => str_contains(json_encode($r['reply_markup'] ?? []), json_encode($button))));
 
-        // A later email changed the offer after the message was sent: the button doesn't add the job.
+        // A later email changed the offer after the message was sent: the button doesn't add the job (since M7 its
+        // fingerprint of the offer as sent no longer matches).
         $sentAt = now()->subMinutes(5)->timestamp;
         $this->travelTo(now()->addMinute());
         $offer->update(['venue' => 'First Direct Arena']);
-        $press = fn (string $id, int $sentAt) => Telegram::handleButton(['id' => $id, 'data' => 't|opp_add|'.$offer->id,
+        $press = fn (string $id, int $sentAt, string $data) => Telegram::handleButton(['id' => $id, 'data' => $data,
             'message' => ['message_id' => (int) $id, 'chat' => ['id' => 777], 'date' => $sentAt, 'text' => 'Offer: Acme Awards']], app(TodoActions::class));
-        $press('1', $sentAt);
+        $press('1', $sentAt, $button);
         $this->assertSame(0, WorkJob::query()->count());
-        Http::assertSent(fn (HttpRequest $r) => str_contains($r->url(), 'answerCallbackQuery') && str_contains($r['text'], 'changed since this message'));
+        Http::assertSent(fn (HttpRequest $r) => str_contains($r->url(), 'answerCallbackQuery') && str_contains($r['text'], 'This changed since'));
 
         // A fresh message's button does, and it's recorded as yours in Telegram.
-        $press('2', now()->addMinute()->timestamp);
+        $press('2', now()->addMinute()->timestamp, Telegram::callbackData('opp_add', (string) $offer->id));
         $this->assertSame(1, WorkJob::query()->count());
         $this->assertSame('telegram', $offer->fresh()->decided_by);
         $this->assertSame('telegram', AuditEvent::query()->where('action', 'job.created')->sole()->actor);

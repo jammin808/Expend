@@ -6,8 +6,9 @@ and incremental delivery (9, 9). Ideas are grafted in from *controlled autonomy*
 *evidence graph* (traceability: 9, 9). The judges' main correction is followed: the read-only money discoveries
 come first, not last.
 
-M1 to M6 are built. Where the build differs from the first draft (names, dates, contracts, settings), the sections
-below say what was built, and each milestone's **As built** notes what was left or done differently.
+M1 to M7 are built. Where the build differs from the first draft (names, dates, contracts, settings), the sections
+below say what was built, and each milestone's **As built** notes what was left or done differently. Law 4 (section
+5.1) was amended on 24 November 2026 by the owner's mail and calendar decision (docs/mail-and-calendar.md).
 
 ---
 
@@ -452,7 +453,7 @@ act records live in the audit `after` payload, so no further audit columns are n
 | `intel_report_detail` | `full` | `full` or `counts` |
 | `mailbox_last_result` | null | {ok, at, error}: the forwarding mailbox's last change of state, written by `ledger:fetch-email` and read by `health.mailbox`. The error is never shown |
 | `intel_backfills_done` | `[]` | finished backfills |
-| `intel_audit_context` | false | audit events record channel, correlation and run id (hash v2). Off in M6, so M6 can still be rolled back; on from M7 |
+| `intel_audit_context` | true (from M7) | audit events record channel, correlation and run id (hash v2). Off in M6, so M6 can still be rolled back; on by default from M7 (a stored `false` still turns it off). From M7, roll back no further than M6 |
 
 `ai_usage_YYYY_MM` gains `reserved` and `by_purpose` fields (M2, M5).
 
@@ -558,7 +559,7 @@ Code that changes:
 | Input | `$changed`, waiting lines, vetoes, the autonomy levels |
 | Output | Proposals written through the existing writers, each carrying a `Provenance`; added to `$proposed` |
 | Steps | `relate.transfers`; `relate.route` (M8); `relate.categorise`; `relate.jobs`; `relate.sweep` (M7) |
-| Rules every writer obeys | 1. AllocationWriter's guard: owner-made or confirmed lines and locked years are untouchable. 2. `Vetoes::allows()`. 3. No laundering (section 2.3). 4. One precedence order, `Methods::outranks`: you > rule > matcher (invoice > HMRC > transfer > pattern > categoriser) > ai. |
+| Rules every writer obeys | 1. AllocationWriter's guard: owner-made or confirmed lines and locked years are untouchable. 2. `Vetoes::allows()`. 3. No laundering (section 2.3). 4. One precedence order, `Methods::outranks`: you > rule > matcher (invoice > HMRC > transfer > pattern > categoriser) > ai. **As built (M7):** the order is kept with the writer that enforces it, `AllocationWriter::PRECEDENCE` (`rank()`, `outranks()`); `Methods::outranks` delegates to it. The assistant's `ai.assistant` (your own words in the chat) ranks with the categoriser, and the background `ai.advisor` below it. An automatic writer never replaces an open suggestion that outranks its own; one of the same rank or lower is replaced as before. |
 | Hand-off | `$proposed` goes to verify; owner decisions go back through preserve |
 
 The steps:
@@ -711,7 +712,16 @@ Interfaces:
   - `det_raise`, `det_lower` (M4): show a kind of finding in full, or below the fold again (id: the code with `:`
     for `.`, e.g. `job:closeout`);
   - `veto_lift` (M7);
+  - `cand_merge` (mail and calendar batch 1): "Part of <job>" on a possible job, id `{candidate}:{job}`, through
+    `JobFinder::merge`, which then searches the job again (`GatherForJob`);
   - `act_undo`, `run_undo` (M9).
+- **Fingerprints (M7, `Todo\Fingerprints`).** Every deciding action is bound to the state it was offered on: 6 hex
+  characters of a hash of what it would act on (a payment's lines, an invoice's status and total, a finding's key and
+  code), never of fields a night's run rewrites (a finding's title or amount, an opportunity's last-seen time or
+  evidence wording). The web sends it as `fp` and refuses a deciding press without one; Telegram carries it as the
+  fourth part of the callback. A press on changed state is refused ("This changed since"), and one on something
+  already settled says "Already dealt with". Only `recheck`, and "Not relevant…" by a finding's id alone (it only asks
+  why), decide nothing.
 - **`ledger:invoice-nudges`** (`routes/console.php`): M2 makes it skip `invoice_overdue:{id}` keys in
   `TodoDismissal::activeKeys()`. M5 makes it read the `invoice.overdue` findings (brought up to date first with
   `FindingsRegistry::refresh()`), so the to-do list and the nudges share one logic.
@@ -758,7 +768,11 @@ Interfaces and code that changes:
   - says "didn't drive" for a mileage day;
   - undoes a rule (`RuleLearner::undo` also adds the merchant to `rule_offers_declined`).
 
-  Lifting a veto is audited.
+  Lifting a veto is audited. **As built (M7):** a link that already has a rejection store (calendar, documents, job
+  finds, candidates, rule offers) gets a veto row too when you reject it there, so it can be seen and lifted in one
+  place; the older store is still what `Vetoes::allows()` reads, through its adapter. `mileage_day` vetoes use subject
+  `job:J` with object null for the whole job, or `jday:<job_days id>` for one day (the page offers whole jobs only). A
+  veto never stops your own transfer from pairing. The Inbox's own Undo records no veto.
 - **`TaxYearController::lock`** (M4, `YearChecks::lockSnapshot`): the `tax_year.locked` event's `after` payload
   carries
   - the `ReturnSummary::for` figures;
@@ -790,8 +804,12 @@ Interfaces and code that changes:
    repeats an outcome the owner vetoed.
 2. Bank lines are never changed.
 3. Nothing irreversible is automatic: a kind without an undo handler has a ceiling of 2.
-4. Nothing leaves the app except the existing Gmail "✓ Invoiced" label. Invoice emails, reminders and money
-   movement are owner-only.
+4. Expend writes freely only to what it owns, and every such write is audited: its own Gmail labels (today
+   "✓ Invoiced"), its own Google calendar and its own Gmail drafts. Sending anything to a client (invoices,
+   reminders, replies), changing the owner's own calendar entries and moving money always need the owner's press.
+   *Amended 24 November 2026 by the owner's mail and calendar decision (docs/mail-and-calendar.md); before that,
+   nothing left the app except the "✓ Invoiced" label.* Access is not autonomy: the Gmail and calendar permissions
+   held allow more, and this law is what keeps it to these.
 5. AI is never the sole basis for an act (PLAN.md §6.4 and §6.8). Hotel stays never act (PLAN.md §6.4).
 6. Every act is audited with actor `policy` (or `rule` for a rule), with its run and correlation, and never as
    `you`.
@@ -843,7 +861,11 @@ nothing the owner sees except that it becomes visible and reversible.
 - raise an autonomy level;
 - dismiss a finding;
 - send anything to a client;
+- change the owner's own calendar entries;
 - move money.
+
+Writes to Expend's own labels, calendar and drafts (law 4) are kinds like any other: audited, and recorded as acts
+from M9.
 
 ### 5.4 Gates for acting (level 3 or 4)
 
@@ -1108,6 +1130,11 @@ Machine suggestions appear in the Inbox (`resources/js/pages/inbox.tsx`), and li
 - the impact;
 - buttons: Accept; **Not this** (reason chips); Later.
 
+**As built (M7):** the Inbox's "Also possible" lists the alternatives stored with each allocation (M6 provenance), so
+suggestions made before M6 show none. `/intel/proposals` lists open automatic links with Not this; a stay's matched
+payment has no Accept there (it links to Stays & travel, where the stay is decided), and only draft invoices are listed
+for an invoice-to-job link (an issued invoice is never changed).
+
 ### 7.4 Why-panels
 
 `resources/js/components/why-panel.tsx` **(new)** is fed by `GET /why?ref=` (`app/Http/Controllers/WhyController.php`
@@ -1153,7 +1180,9 @@ Machine suggestions appear in the Inbox (`resources/js/pages/inbox.tsx`), and li
   of a kind needs the web); `/pause` and `/resume`.
 - **Callback data** becomes `t|code|id|fp`, where fp is a 6-character fingerprint of the state shown, within the
   64-byte limit (M7). `handleButton` splits into 4 parts and still accepts old 3-part buttons for codes that don't
-  decide anything. A press on changed state answers "This changed since: open it in Expend".
+  decide anything. A press on changed state answers "This changed since: open it in Expend". **As built:** a button
+  whose data wouldn't fit is left out, never cut; "Snooze a week" decides something, so an old 3-part snooze button is
+  refused; a press on something already settled says "Already dealt with".
 - Only the paired chat is accepted (as today). The channel is recorded in the audit context.
 
 ### 7.7 The assistant
@@ -1594,6 +1623,26 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
   correlation and run id (hash v2). From this release, roll back no further than M6, the first release that reads
   v2. Verify the chain on a restored live copy after turning it on.
 
+**As built.**
+
+- The vetoes migration is `2026_12_16_000002_create_vetoes.php`, numbered after M5's `2026_12_16_000001` of the same
+  date, as section 3.2 says; the table is exactly as listed there.
+- Precedence lives in `AllocationWriter::PRECEDENCE` (`rank()`, `outranks()`, and `$refused` with `REFUSED_WORDS`:
+  `yours`, `vetoed`, `outranked`); `Methods::outranks` delegates to it. `ai.assistant` ranks with the categoriser and
+  `ai.advisor` below it. The assistant's `propose_decision` tells the owner which of the three stopped it.
+- Vetoes are written for links that already had a rejection store too, so every "Not this" can be seen and lifted;
+  the older stores stay authoritative and are read through adapters. Vetoes never stop your own transfer from
+  pairing. `mileage_day` is subject `job:J`, object null for the whole job or `jday:<id>` for one day (the page offers
+  whole jobs only), and `TravelUnclaimed` leaves those jobs out of the "may have mileage" count.
+- The Inbox sends the ids of the lines it showed ("shown"): Not this on a payment that says something else by now is
+  refused, and deciding a payment differently remembers a veto only for the suggestion you were shown.
+- Fingerprints (section 4.5) leave out volatile fields; settled presses say "Already dealt with". Snooze a week counts
+  as deciding, so old 3-part snooze buttons are refused. The web refuses every deciding press without a fingerprint,
+  the connections map's possible-job buttons included.
+- `/intel/proposals` has no Accept for a stay's matched payment, and lists only draft invoices (section 7.3).
+- The audit context is on by default (`Setting::DEFAULTS`); a stored `false` still turns it off. Web events are v2 and
+  stored with their keys in order (`AuditLog::canonical`).
+
 **Files.**
 
 - `database/migrations/2026_12_16_000002_create_vetoes.php` **(new)**
@@ -1606,6 +1655,13 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
 - `app/Domain/Todo/TodoActions.php`, `app/Domain/Telegram/Telegram.php`
 - `app/Models/Setting.php`, `app/Domain/Audit/AuditLog.php` (`recordsContext()` reads the default)
 - `resources/js/pages/{inbox.tsx,intel/proposals.tsx}`, `resources/js/components/why-panel.tsx`
+- As built, also: `app/Domain/Todo/{Fingerprints,ChangedSince}.php` **(new)**, `app/Domain/Intel/Methods.php`,
+  `app/Domain/Intel/Detectors/TravelUnclaimed.php`, `app/Domain/Matching/Categoriser.php`,
+  `app/Domain/Ai/{TransactionAdvisor,AssistantTools}.php`, `app/Domain/Intel/Cycle/CycleRunner.php`,
+  `app/Http/Controllers/{InboxController,IntelController,WhyController,MileageController,ConnectionsController}.php`,
+  `routes/web.php`, `resources/js/pages/{todo,mileage/index,intel/index,connections}.tsx`,
+  `resources/js/components/item-drawer.tsx`, `resources/js/types/intel.ts`
+- Tests: `tests/Feature/Intel/{Veto,VetoReview,Fingerprint,FingerprintReview,RelateSweep,AuditContextOn,RejectionMemoryIntegration}Test.php` **(new)**
 
 **Migrations.** One.
 

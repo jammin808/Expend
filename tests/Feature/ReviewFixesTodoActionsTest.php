@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Telegram\Telegram;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Domain\Travel\TravelMatcher;
@@ -154,17 +156,20 @@ class ReviewFixesTodoActionsTest extends TestCase
         $this->pairTelegram();
         $invoice = $this->issuedInvoice(today()->format('Y-m-d'));
 
-        // Emailed from the invoice page; then Monday's digest button, pressed twice, and an older one.
+        // Monday's digest offered "Email it"; then it was emailed from the invoice page. The digest's button, pressed
+        // twice, carries the fingerprint of the invoice as it was offered (not yet emailed), so it's refused (M7); a
+        // button offered after it was emailed says so.
+        $digest = Telegram::callbackData('inv_send', (string) $invoice->id);
         $this->post("/invoices/{$invoice->id}/send", ['to' => 'pay@client.example'])->assertSessionHas('success');
-        $this->press('t|inv_send|'.$invoice->id, 7, 'q1');
-        $this->press('t|inv_send|'.$invoice->id, 7, 'q2');
-        $this->press('t|inv_send|'.$invoice->id, 3, 'q3');
-        $this->post("/todo/inv_send/{$invoice->id}")->assertSessionHas('success', fn ($m) => str_contains($m, 'already emailed'));
+        $this->press($digest, 7, 'q1');
+        $this->press($digest, 7, 'q2');
+        $this->press(Telegram::callbackData('inv_send', (string) $invoice->id), 3, 'q3');
+        $this->post("/todo/inv_send/{$invoice->id}", ['fp' => Fingerprints::of('inv_send', (string) $invoice->id)])->assertSessionHas('success', fn ($m) => str_contains($m, 'already emailed'));
 
         Mail::assertQueued(InvoiceEmail::class, 1);
-        Http::assertSent(self::answered('q1', 'already emailed to pay@client.example'));
-        Http::assertSent(self::answered('q2', 'already emailed'));
-        Http::assertSent(self::answered('q3', 'already emailed'));
+        Http::assertSent(self::answered('q1', 'This changed since: open it in Expend'));
+        Http::assertSent(self::answered('q2', 'This changed since: open it in Expend'));
+        Http::assertSent(self::answered('q3', 'already emailed to pay@client.example'));
         $this->assertSame('pay@client.example', $invoice->fresh()->sent_to);
     }
 
@@ -202,15 +207,17 @@ class ReviewFixesTodoActionsTest extends TestCase
         $drafts = fn () => Invoice::query()->where('work_job_id', $job->id)->where('status', 'draft')->count();
 
         // Two taps on the same button while the first waits: one draft, the same answer twice.
-        $this->press('t|job_invoice|'.$job->id, 11, 'q1');
-        $this->press('t|job_invoice|'.$job->id, 11, 'q2');
+        $button = Telegram::callbackData('job_invoice', (string) $job->id);
+        $this->press($button, 11, 'q1');
+        $this->press($button, 11, 'q2');
         $this->assertSame(1, $drafts());
         Http::assertSent(self::answered('q1', 'is ready'));
         Http::assertSent(self::answered('q2', 'is ready'));
 
         // In the app, or an old button on another message: still one draft.
-        $this->post("/todo/job_invoice/{$job->id}")->assertSessionHas('success', fn ($m) => str_contains($m, 'already has a draft invoice'));
-        $this->press('t|job_invoice|'.$job->id, 4, 'q3');
+        $this->post("/todo/job_invoice/{$job->id}", ['fp' => Fingerprints::of('job_invoice', (string) $job->id)])->assertSessionHas('success', fn ($m) => str_contains($m, 'already has a draft invoice'));
+        $this->press($button, 4, 'q3'); // offered before the draft: refused as changed since
+        Http::assertSent(self::answered('q3', 'This changed since'));
         $this->assertSame(1, $drafts());
 
         // Once it's issued, no new full-fee draft.
@@ -249,8 +256,8 @@ class ReviewFixesTodoActionsTest extends TestCase
 
         // You decide it yourself in Stays & travel, then tap Monday's Accept (or Personal).
         app(TravelMatcher::class)->decide($stay, 'mixed', $b->id, 2, 'Third night was a holiday');
-        $this->post("/todo/stay_accept/{$stay->id}")->assertSessionHas('error', 'That’s already been dealt with.');
-        $this->post("/todo/stay_personal/{$stay->id}")->assertSessionHas('error', 'That’s already been dealt with.');
+        $this->post("/todo/stay_accept/{$stay->id}", ['fp' => Fingerprints::of('stay_accept', (string) $stay->id)])->assertSessionHas('error', 'That’s already been dealt with.');
+        $this->post("/todo/stay_personal/{$stay->id}", ['fp' => Fingerprints::of('stay_personal', (string) $stay->id)])->assertSessionHas('error', 'That’s already been dealt with.');
 
         $this->assertSame(['decision' => 'mixed', 'work_job_id' => $b->id, 'business_nights' => 2, 'note' => 'Third night was a holiday'], $stay->fresh()->only(['decision', 'work_job_id', 'business_nights', 'note']));
     }
@@ -261,13 +268,13 @@ class ReviewFixesTodoActionsTest extends TestCase
         $tools = Category::query()->where('kind', 'expense')->value('id');
         app(AllocationWriter::class)->decide($tx, AllocationWriter::lines(-4500, 'business_expense', $tools), 'you');
 
-        $this->post("/todo/tx_personal/{$tx->id}")->assertSessionHas('success', fn ($m) => str_contains($m, 'Already dealt with'));
+        $this->post("/todo/tx_personal/{$tx->id}", ['fp' => Fingerprints::of('tx_personal', (string) $tx->id)])->assertSessionHas('success', fn ($m) => str_contains($m, 'Already dealt with'));
         $line = $tx->fresh()->allocations()->sole();
         $this->assertSame(['business_expense', $tools], [$line->kind, $line->category_id]);
 
         // Waiting for you: Personal still works.
         $other = $this->payment('2025-06-03', -900, 'CAFE NERO');
-        $this->post("/todo/tx_personal/{$other->id}")->assertSessionHas('success', 'Marked personal: CAFE NERO.');
+        $this->post("/todo/tx_personal/{$other->id}", ['fp' => Fingerprints::of('tx_personal', (string) $other->id)])->assertSessionHas('success', 'Marked personal: CAFE NERO.');
         $this->assertSame('personal', $other->fresh()->allocations()->sole()->kind);
     }
 
@@ -333,12 +340,12 @@ class ReviewFixesTodoActionsTest extends TestCase
             'kind' => 'po', 'status' => $status]);
         $read = $make('extracted');
 
-        $this->post("/todo/doc_approve/{$read->id}")->assertSessionHas('error', 'That’s already been dealt with.');
+        $this->post("/todo/doc_approve/{$read->id}", ['fp' => Fingerprints::of('doc_approve', (string) $read->id)])->assertSessionHas('error', 'That’s already been dealt with.');
         $this->assertSame('extracted', $read->fresh()->status);
         Queue::assertNotPushed(ReadDocument::class);
 
         $held = $make('held');
-        $this->post("/todo/doc_approve/{$held->id}")->assertSessionHas('success');
+        $this->post("/todo/doc_approve/{$held->id}", ['fp' => Fingerprints::of('doc_approve', (string) $held->id)])->assertSessionHas('success');
         $this->assertSame('new', $held->fresh()->status);
     }
 
@@ -438,7 +445,7 @@ class ReviewFixesTodoActionsTest extends TestCase
     {
         $this->pairTelegram();
         $doc = Document::query()->create(['source' => 'email', 'original_name' => 'po.pdf', 'sha256' => str_repeat('b', 64), 'stored_path' => 'x', 'kind' => 'po', 'status' => 'extracted']);
-        $this->press('t|doc_approve|'.$doc->id, 20, 'q9');
+        $this->press(Telegram::callbackData('doc_approve', (string) $doc->id), 20, 'q9');
         Http::assertSent(self::answered('q9', 'Already dealt with.'));
         $this->assertSame('extracted', $doc->fresh()->status);
 
@@ -452,12 +459,13 @@ class ReviewFixesTodoActionsTest extends TestCase
         $invoice = $this->issuedInvoice(today()->format('Y-m-d'), null);
         Mail::fake();
 
-        $this->press('t|inv_send|'.$invoice->id, 30, 'q1');
+        $button = Telegram::callbackData('inv_send', (string) $invoice->id);
+        $this->press($button, 30, 'q1');
         Http::assertSent(self::answered('q1', 'There’s no email address for the client on this invoice'));
         $this->assertThrows(fn () => app(InvoiceMailer::class)->send($invoice->fresh(), null, false, true), InvalidArgumentException::class);
 
         DB::table('invoices')->where('id', $invoice->id)->update(['bill_to_email' => 'pay@client.example']);
-        $this->press('t|inv_send|'.$invoice->id, 30, 'q2');
+        $this->press($button, 30, 'q2');
         Http::assertSent(self::answered('q2', 'on its way to pay@client.example'));
         Mail::assertQueued(InvoiceEmail::class, 1);
     }
@@ -474,22 +482,24 @@ class ReviewFixesTodoActionsTest extends TestCase
         $invoice = $this->issuedInvoice('2026-10-01'); // due 31 Oct
         $invoice->forceFill(['sent_at' => '2026-10-01 10:00:00', 'sent_to' => 'accounts@client.example'])->save();
 
+        $digest = Telegram::callbackData('inv_chase', (string) $invoice->id); // Monday's digest, at 08:47
         $this->artisan('ledger:invoice-nudges');
         $nudge = $invoice->fresh()->overdue_nudged_at;
         $this->travelTo('2026-11-02 10:00:00');
-        $this->press('t|inv_chase|'.$invoice->id, 50, 'q1', $nudge);
+        $this->press(Telegram::callbackData('inv_chase', (string) $invoice->id), 50, 'q1', $nudge);
         Http::assertSent(self::answered('q1', 'is on its way'));
 
-        // Monday's digest went before that reminder: its button, pressed afterwards, doesn't send another.
-        $this->press('t|inv_chase|'.$invoice->id, 49, 'q2', Carbon::parse('2026-11-02 08:47:00'));
-        Http::assertSent(self::answered('q2', 'another wasn’t sent'));
+        // Monday's digest went before that reminder: its button, pressed afterwards, doesn't send another (since M7 it's
+        // refused as changed since: the invoice was chased after it was offered).
+        $this->press($digest, 49, 'q2', Carbon::parse('2026-11-02 08:47:00'));
+        Http::assertSent(self::answered('q2', 'This changed since'));
         $this->assertSame(1, (int) $invoice->fresh()->reminder_count);
 
         // Next week's nudge, pressed earlier in the day than last week's reminder went: it sends.
         $this->travelTo('2026-11-09 09:13:01');
         $this->artisan('ledger:invoice-nudges');
         $this->travelTo('2026-11-09 09:20:00');
-        $this->press('t|inv_chase|'.$invoice->id, 60, 'q3', $invoice->fresh()->overdue_nudged_at);
+        $this->press(Telegram::callbackData('inv_chase', (string) $invoice->id), 60, 'q3', $invoice->fresh()->overdue_nudged_at);
         Http::assertSent(self::answered('q3', 'is on its way'));
         $this->assertSame(2, (int) $invoice->fresh()->reminder_count);
         Mail::assertQueued(InvoiceEmail::class, 2);
@@ -501,13 +511,13 @@ class ReviewFixesTodoActionsTest extends TestCase
         $invoice = $this->issuedInvoice('2025-05-15');
         $invoice->forceFill(['sent_at' => '2025-05-15 10:00:00', 'sent_to' => 'accounts@client.example'])->save();
 
-        $this->post("/todo/inv_chase/{$invoice->id}")->assertSessionHas('success', fn ($m) => str_contains($m, 'is on its way'));
-        $this->post("/todo/inv_chase/{$invoice->id}")->assertSessionHas('success', fn ($m) => str_contains($m, 'another wasn’t sent'));
+        $this->post("/todo/inv_chase/{$invoice->id}", ['fp' => Fingerprints::of('inv_chase', (string) $invoice->id)])->assertSessionHas('success', fn ($m) => str_contains($m, 'is on its way'));
+        $this->post("/todo/inv_chase/{$invoice->id}", ['fp' => Fingerprints::of('inv_chase', (string) $invoice->id)])->assertSessionHas('success', fn ($m) => str_contains($m, 'another wasn’t sent'));
         $this->assertSame(1, (int) $invoice->fresh()->reminder_count);
 
         $this->travel(6)->days();
         $this->travel(23)->hours();
-        $this->post("/todo/inv_chase/{$invoice->id}")->assertSessionHas('success', fn ($m) => str_contains($m, 'is on its way'));
+        $this->post("/todo/inv_chase/{$invoice->id}", ['fp' => Fingerprints::of('inv_chase', (string) $invoice->id)])->assertSessionHas('success', fn ($m) => str_contains($m, 'is on its way'));
         $this->assertSame(2, (int) $invoice->fresh()->reminder_count);
         Mail::assertQueued(InvoiceEmail::class, 2);
     }

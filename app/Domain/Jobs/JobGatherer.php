@@ -6,6 +6,7 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Intel\AuditContext;
 use App\Domain\Intel\Provenance;
+use App\Domain\Intel\Vetoes;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\OwnAccounts;
@@ -135,7 +136,7 @@ final class JobGatherer
         };
     }
 
-    /** The Gmail search for a job: its client, venue, PO number or title, from four months before to six weeks after. */
+    /** The Gmail search for a job: its client, venue, PO number or title, from four months before to six weeks after, never in Sent. */
     public static function gmailQuery(WorkJob $job): ?string
     {
         $terms = [];
@@ -162,7 +163,8 @@ final class JobGatherer
         $after = $job->starts_on->copy()->subMonths(4)->format('Y/m/d');
         $before = $job->ends_on->copy()->addWeeks(6)->format('Y/m/d');
 
-        return '('.implode(' OR ', $terms).") after:{$after} before:{$before} -in:chats -in:drafts -in:spam";
+        // Never your Sent mail: an email you sent isn't the client's PO or booking, and your own invoices would match.
+        return '('.implode(' OR ', $terms).") after:{$after} before:{$before} -in:chats -in:drafts -in:spam -in:sent";
     }
 
     // ---------------------------------------------------------------- steps
@@ -225,11 +227,14 @@ final class JobGatherer
         Document::query()->whereNull('parent_id')->whereNull('work_job_id')->where('status', '!=', 'held')
             ->where(fn ($q) => $q->whereNull('job_linked_by')->orWhere('job_linked_by', '!=', 'you'))
             ->where(fn ($q) => $q->whereNull('received_at')->orWhereBetween('received_at', [$from, $to]))
-            ->with('children:id,parent_id,text')
+            ->with('children:id,parent_id,text,job_rejected')
             ->select(['id', 'kind', 'original_name', 'email_subject', 'email_from', 'text', 'extraction', 'received_at', 'job_rejected', 'job_linked_by', 'work_job_id', 'parent_id'])
             ->chunkById(150, function (Collection $docs) use ($job, $jobPo, $otherPos) {
                 foreach ($docs as $doc) {
-                    if (in_array($job->id, $doc->job_rejected ?? [], true) || isset($this->rejected['document:'.$doc->id])) {
+                    // Not an email you said isn't this job's, nor one with a part you said isn't (the job finder keeps
+                    // to the same: JobFinder::linkTarget), so a PO added to the job never brings that part's email back.
+                    if (in_array($job->id, $doc->job_rejected ?? [], true) || isset($this->rejected['document:'.$doc->id])
+                        || $doc->children->contains(fn (Document $c) => in_array($job->id, $c->job_rejected ?? [], true))) {
                         continue;
                     }
                     $attached = $doc->children->pluck('text')->filter()->implode("\n");
@@ -427,21 +432,28 @@ final class JobGatherer
      * true now, not when it was found: something you've since put on another job stays there (only "not this job" is
      * remembered), and an issued invoice is never changed.
      */
-    public function reject(JobFind $find): string
+    public function reject(JobFind $find, ?string $reasonCode = null, ?string $reason = null): string
     {
         $job = $find->job;
+        // Why not, when you said (Intel\Vetoes::REASONS): kept with what's recorded, so it can be seen later.
+        $note = $reason !== null ? 'Not this job: '.mb_strtolower($reason) : null;
 
-        return DB::transaction(function () use ($find, $job) {
+        return DB::transaction(function () use ($find, $job, $reasonCode, $reason, $note) {
             $message = match ($find->type) {
-                'calendar' => $this->rejectEvent($find, $job),
-                'document' => ($d = Document::query()->find((int) $find->ref)) ? $this->finder->rejectDocumentFor($d, $job) : null,
+                'calendar' => $this->rejectEvent($find, $job, $note),
+                'document' => ($d = Document::query()->find((int) $find->ref)) ? $this->finder->rejectDocumentFor($d, $job, $reason) : null,
                 'payment', 'income' => $this->unlinkPayment((int) $find->ref, $job),
-                'travel' => ($t = TravelItem::query()->find((int) $find->ref)) && $t->work_job_id === $job->id ? $this->finder->linkTravel($t, null, 'you') : null,
+                'travel' => ($t = TravelItem::query()->find((int) $find->ref)) && $t->work_job_id === $job->id ? $this->finder->linkTravel($t, null, 'you', reason: $note) : null,
                 'invoice' => $this->unlinkInvoice((int) $find->ref, $job),
                 default => null,
             };
             $find->update(['status' => 'rejected']);
-            AuditLog::record('job.find_rejected', $job, null, ['type' => $find->type, 'ref' => $find->ref], 'Not this job');
+            AuditLog::record('job.find_rejected', $job, null, ['type' => $find->type, 'ref' => $find->ref], $note ?? 'Not this job');
+            if ($find->type === 'invoice' && ctype_digit((string) $find->ref)) {
+                // Remembered beside the job's own list, so neither a search nor the follow-up's "Same PO number" link
+                // puts it back on this job, and so it can be seen and lifted (Intel\Vetoes).
+                Vetoes::record('invoice_job', 'inv:'.$find->ref, 'job:'.$job->id, reasonCode: $reasonCode ?? 'not_this_job', reason: $reason);
+            }
 
             return is_string($message) ? $message : 'OK: not part of '.$job->title.'. It won’t be suggested for it again.';
         });
@@ -549,10 +561,10 @@ final class JobGatherer
     }
 
     /** A calendar entry isn't this job's: unlinked if it's on it, otherwise remembered, wherever the entry is now. */
-    private function rejectEvent(JobFind $find, WorkJob $job): ?string
+    private function rejectEvent(JobFind $find, WorkJob $job, ?string $reason = null): ?string
     {
         if ($e = $this->event($find)) {
-            $this->finder->rejectCalendarFor($e, $job->id);
+            $this->finder->rejectCalendarFor($e, $job->id, $reason);
 
             return null;
         }

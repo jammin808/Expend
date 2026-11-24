@@ -26,7 +26,8 @@ use Tests\TestCase;
 /**
  * Snooze a week and Not relevant from Telegram (fnd_snooze, fnd_dismiss): the finding's id and a preset reason in the
  * button, within Telegram's 64 bytes; the reason is kept with the dismissal and the finding, audited as yours from
- * Telegram; the existing buttons keep working.
+ * Telegram. Since M7 a button that decides carries the fingerprint of what it was sent on (Telegram::callbackData()), and
+ * an old three-part one is refused for anything but what decides nothing.
  */
 class FindingsTelegramTest extends TestCase
 {
@@ -83,16 +84,18 @@ class FindingsTelegramTest extends TestCase
 
         Telegram::sendTodo('42');
         $message = collect($this->sent())->first(fn ($m) => str_starts_with($m['text'], 'Charged twice?'));
-        $this->assertSame([['t|fnd_snooze|'.$finding->id.':later', 't|fnd_dismiss|'.$finding->id]], $message['rows']);
+        // Snooze decides (it carries the fingerprint of the finding as shown); Not relevant… only asks why.
+        $this->assertSame([[Telegram::callbackData('fnd_snooze', $finding->id.':later'), 't|fnd_dismiss|'.$finding->id]], $message['rows']);
+        $this->assertMatchesRegularExpression('/^t\|fnd_snooze\|\d+:later\|[0-9a-f]{6}$/', $message['rows'][0][0]);
 
         // Not relevant… asks why, with the reasons for a duplicate.
         $this->press('t|fnd_dismiss|'.$finding->id);
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'editMessageReplyMarkup')
-            && in_array('t|fnd_dismiss|'.$finding->id.':refunded', array_column(array_merge(...$r['reply_markup']['inline_keyboard']), 'callback_data'), true)
+            && in_array(Telegram::callbackData('fnd_dismiss', $finding->id.':refunded'), array_column(array_merge(...$r['reply_markup']['inline_keyboard']), 'callback_data'), true)
             && in_array('Both charges were real', array_column(array_merge(...$r['reply_markup']['inline_keyboard']), 'text'), true));
         $this->assertNull(TodoDismissal::query()->first(), 'Nothing hidden until a reason is chosen');
 
-        $this->press('t|fnd_dismiss|'.$finding->id.':refunded', 8);
+        $this->press(Telegram::callbackData('fnd_dismiss', $finding->id.':refunded'), 8);
         $dismissal = TodoDismissal::query()->where('key', 'dupe:'.$tx->id)->sole();
         $this->assertSame([null, 'Refunded'], [$dismissal->until, $dismissal->note]);
         $finding->refresh();
@@ -114,12 +117,13 @@ class FindingsTelegramTest extends TestCase
         $job = WorkJob::query()->create(['title' => 'Arena show', 'starts_on' => '2025-06-01', 'ends_on' => '2025-06-01', 'status' => 'done']);
         FindingsRegistry::sync();
         $finding = Finding::query()->where('key', 'no_po:'.$job->id)->sole();
-        $this->press('t|fnd_snooze|'.$finding->id.':later');
+        $snooze = Telegram::callbackData('fnd_snooze', $finding->id.':later');
+        $this->press($snooze);
         $dismissal = TodoDismissal::query()->where('key', 'no_po:'.$job->id)->sole();
         $this->assertSame(['2025-07-08', 'Later'], [$dismissal->until->format('Y-m-d'), $dismissal->note]);
         $this->assertSame('snoozed', $finding->fresh()->state);
         // Pressed again (another message): already hidden, nothing changes.
-        $this->press('t|fnd_snooze|'.$finding->id.':later', 9);
+        $this->press($snooze, 9);
         $this->assertSame(1, FindingEvent::query()->where('finding_id', $finding->id)->where('event', 'snoozed')->count());
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'answerCallbackQuery') && ($r['text'] ?? '') === 'Already dealt with.');
     }
@@ -131,9 +135,9 @@ class FindingsTelegramTest extends TestCase
         $finding = Finding::query()->where('key', 'health:calendar')->sole();
         Telegram::sendTodo('42');
         $message = collect($this->sent())->first(fn ($m) => str_starts_with($m['text'], 'Calendar not updated'));
-        $this->assertSame([['t|fnd_snooze|'.$finding->id.':later']], $message['rows']);
+        $this->assertSame([[Telegram::callbackData('fnd_snooze', $finding->id.':later')]], $message['rows']);
 
-        $this->press('t|fnd_dismiss|'.$finding->id.':other');
+        $this->press(Telegram::callbackData('fnd_dismiss', $finding->id.':other'));
         $this->assertNull(TodoDismissal::query()->first());
         Http::assertSent(fn (Request $r) => str_contains($r->url(), 'answerCallbackQuery') && str_contains((string) ($r['text'] ?? ''), 'can only be snoozed'));
     }
@@ -144,16 +148,21 @@ class FindingsTelegramTest extends TestCase
         $finding->forceFill(['id' => 9_999_999_999])->save();
         $buttons = Telegram::findingButtons(['snooze_only' => false], $finding->id);
         foreach ([...$buttons, ...array_merge(...Telegram::reasonButtons($finding))] as $b) {
-            $data = is_array($b) && isset($b['callback_data']) ? $b['callback_data'] : 't|'.$b[1].'|'.$b[2];
+            $data = is_array($b) && isset($b['callback_data']) ? $b['callback_data'] : Telegram::callbackData($b[1], $b[2]);
+            $this->assertNotNull($data);
             $this->assertLessThanOrEqual(Telegram::CALLBACK_BYTES, strlen($data), $data);
         }
 
-        // An old three-part button for a code that was there before still acts.
+        // An old three-part button for a code that decides something is refused since M7 (it carries no fingerprint of
+        // what it was sent on), with what to do instead; with its fingerprint, it acts.
         $candidate = JobCandidate::query()->create(['title' => 'Maybe a job', 'starts_on' => '2025-08-01', 'ends_on' => '2025-08-01', 'sources' => [], 'reasons' => ['why' => []]]);
         $this->press('t|cand_dismiss|'.$candidate->id);
+        $this->assertSame('open', $candidate->fresh()->status);
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), 'answerCallbackQuery') && str_starts_with((string) ($r['text'] ?? ''), 'This changed since: open it in Expend.'));
+        $this->press(Telegram::callbackData('cand_dismiss', (string) $candidate->id), 11);
         $this->assertSame('dismissed', $candidate->fresh()->status);
         // A finding button with a reason it doesn't offer is refused.
-        $this->press('t|fnd_dismiss|'.$finding->id.':bogus', 10);
+        $this->press(Telegram::callbackData('fnd_dismiss', $finding->id.':bogus'), 10);
         $this->assertNull(TodoDismissal::query()->first());
     }
 }

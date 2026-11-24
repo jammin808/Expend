@@ -52,6 +52,8 @@ interface Props {
         trip_dates: string[];
         why: string;
     }[];
+    /** Jobs this year you said you didn't drive to: never offered for mileage until you put them back */
+    notDriven: { job_id: number; title: string; starts_on: string; postcode: string | null }[];
     homePostcode: string | null;
 }
 
@@ -60,7 +62,20 @@ function defaultVehicle(vehicles: Vehicle[]): Vehicle | undefined {
     return vehicles.find((v) => v.type === 'car_van' && v.method === 'simplified') ?? vehicles.find((v) => v.method === 'simplified') ?? vehicles[0];
 }
 
-export default function Mileage({ year, years, locked, rates, trips, total_pence, total_miles, vehicles, jobs, fromJobs, homePostcode }: Props) {
+export default function Mileage({
+    year,
+    years,
+    locked,
+    rates,
+    trips,
+    total_pence,
+    total_miles,
+    vehicles,
+    jobs,
+    fromJobs,
+    notDriven,
+    homePostcode,
+}: Props) {
     // Jobs you unticked. Everything else on the list is ticked, so switching tax year or adding trips never leaves
     // ticks or counts from another list behind.
     const [skipped, setSkipped] = useState<number[]>([]);
@@ -155,6 +170,17 @@ export default function Mileage({ year, years, locked, rates, trips, total_pence
                                             </span>
                                         </span>
                                         <span className="tabular-nums">{p.miles} mi</span>
+                                        <button
+                                            type="button"
+                                            className="text-muted-foreground hover:text-foreground text-xs underline underline-offset-2"
+                                            title="Not offered again until you put it back"
+                                            onClick={(e) => {
+                                                e.preventDefault();
+                                                router.post('/mileage/not-driven', { job_id: p.job_id }, { preserveScroll: true });
+                                            }}
+                                        >
+                                            Didn’t drive
+                                        </button>
                                     </label>
                                 </li>
                             ))}
@@ -195,6 +221,28 @@ export default function Mileage({ year, years, locked, rates, trips, total_pence
                                 {jobVehicle.name} uses actual costs, so these trips record your business miles but don’t add a mileage claim.
                             </p>
                         )}
+                    </section>
+                )}
+                {notDriven.length > 0 && (
+                    <section className="space-y-2 rounded-xl border p-4">
+                        <h2 className="text-sm font-semibold">Jobs you didn’t drive to</h2>
+                        <p className="text-muted-foreground text-sm">Not offered for mileage. Put one back if you did drive.</p>
+                        <ul className="divide-y rounded-lg border text-sm">
+                            {notDriven.map((j) => (
+                                <li key={j.job_id} className="flex items-center justify-between gap-3 p-2">
+                                    <span className="min-w-0 flex-1 truncate">
+                                        {j.title} <span className="text-muted-foreground text-xs">· {day(j.starts_on)}</span>
+                                    </span>
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => router.post(`/mileage/not-driven/${j.job_id}/undo`, {}, { preserveScroll: true })}
+                                    >
+                                        Put back
+                                    </Button>
+                                </li>
+                            ))}
+                        </ul>
                     </section>
                 )}
                 {!homePostcode && (

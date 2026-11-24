@@ -12,6 +12,8 @@ interface Action {
     id: string;
     label: string;
     style: 'default' | 'ghost';
+    /** A fingerprint of what it acts on, as shown: a press on something changed since is refused. */
+    fp?: string | null;
 }
 interface Item {
     key: string;
@@ -45,6 +47,9 @@ interface DetectorLevel {
     name: string;
     level: 'normal' | 'info' | 'raised' | 'demoted';
     reason: string | null;
+    /** Fingerprints of showing it in full or below the fold, as shown. */
+    fp_raise?: string | null;
+    fp_lower?: string | null;
 }
 
 interface WhyRef {
@@ -165,11 +170,11 @@ export default function Todo({
         );
     };
     const act = (a: Action, key: string) =>
-        router.post(
-            `/todo/${a.code}/${encodeURIComponent(a.id)}`,
-            {},
-            { preserveScroll: true, onStart: () => setBusy(key + a.code), onFinish: () => setBusy(null) },
-        );
+        router.post(`/todo/${a.code}/${encodeURIComponent(a.id)}`, a.fp ? { fp: a.fp } : {}, {
+            preserveScroll: true,
+            onStart: () => setBusy(key + a.code),
+            onFinish: () => setBusy(null),
+        });
     // Snooze (days) or not relevant (no days), with your reason (kept with it). The server confirms it; this gives
     // that confirmation an Undo (the toaster shows the same message once, keeping the one with the Undo), so its words
     // must match the server's.
@@ -200,8 +205,11 @@ export default function Todo({
     const belowKinds = detector_levels.filter((d) => belowAll.some((i) => i.code === d.code));
     const raised = detector_levels.filter((d) => d.level === 'raised');
     // A detector's code as a button's id holds it: no full stop in a to-do button's id.
-    const level = (code: string, up: boolean) =>
-        router.post(`/todo/${up ? 'det_raise' : 'det_lower'}/${code.replace(/\./g, ':')}`, {}, { preserveScroll: true });
+    const level = (code: string, up: boolean) => {
+        const d = detector_levels.find((x) => x.code === code);
+        const fp = up ? d?.fp_raise : d?.fp_lower;
+        router.post(`/todo/${up ? 'det_raise' : 'det_lower'}/${code.replace(/\./g, ':')}`, fp ? { fp } : {}, { preserveScroll: true });
+    };
 
     const row = (i: Item) => (
         <li key={i.key} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">

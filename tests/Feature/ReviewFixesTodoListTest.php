@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Matching\Suggester;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoList;
 use App\Domain\Verification\Verifier;
 use App\Http\Middleware\HandleInertiaRequests;
@@ -130,7 +131,7 @@ class ReviewFixesTodoListTest extends TestCase
         $this->assertSame(['paid' => 0, 'elsewhere' => 0, 'waiting' => 45000], TodoList::received([$invoice])[$invoice->id]);
 
         // Accepted: paid.
-        $this->post("/todo/tx_accept/{$tx->id}")->assertSessionHas('success');
+        $this->post("/todo/tx_accept/{$tx->id}", ['fp' => Fingerprints::of('tx_accept', (string) $tx->id)])->assertSessionHas('success');
         $this->assertNull($this->item('invoice_overdue:'.$invoice->id));
     }
 
@@ -249,8 +250,8 @@ class ReviewFixesTodoListTest extends TestCase
         $c = $this->payment(-1400, 'Shop C');
         $this->post('/todo/dismiss', ['key' => 'tx:'.$a->id])->assertSessionHas('success');
         $this->post('/todo/dismiss', ['key' => 'tx:'.$b->id])->assertSessionHas('success');
-        $this->post("/todo/tx_personal/{$a->id}")->assertSessionHas('success');
-        $this->post("/todo/tx_personal/{$b->id}")->assertSessionHas('success');
+        $this->post("/todo/tx_personal/{$a->id}", ['fp' => Fingerprints::of('tx_personal', (string) $a->id)])->assertSessionHas('success');
+        $this->post("/todo/tx_personal/{$b->id}", ['fp' => Fingerprints::of('tx_personal', (string) $b->id)])->assertSessionHas('success');
 
         $list = TodoList::build();
         $this->assertSame(1, $list['counts']['payments'], 'Only C is waiting');
@@ -561,7 +562,7 @@ class ReviewFixesTodoListTest extends TestCase
         $this->assertContains('tx:'.$tx->id, $keys());
 
         // A to-do action forgets the kept list.
-        $this->post("/todo/tx_personal/{$tx->id}")->assertSessionHas('success');
+        $this->post("/todo/tx_personal/{$tx->id}", ['fp' => Fingerprints::of('tx_personal', (string) $tx->id)])->assertSessionHas('success');
         $this->assertNotContains('tx:'.$tx->id, $keys());
         $this->assertSame(TodoList::build()['total'], TodoList::cached()['total']);
     }

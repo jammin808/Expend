@@ -195,7 +195,7 @@ final class AssistantTools
                 .'its label, whether it is still there, whether it has changed since it was relied on, and the latest double-check of it. For a finding (fnd:), also its evidence. '
                 .'Labels and check results only, never the text of a document or an email.',
                 'inputSchema' => $obj(['ref' => $str], ['ref'])],
-            ['name' => 'propose_decision', 'description' => 'Suggest what one transaction is. It is saved as an unconfirmed AI suggestion for the owner to accept or change in the Inbox. Cannot change anything the owner has decided.',
+            ['name' => 'propose_decision', 'description' => 'Suggest what one transaction is. It is saved as an unconfirmed AI suggestion for the owner to accept or change in the Inbox. Cannot change anything the owner has decided, repeat what they said no to, or replace a stronger suggestion already waiting.',
                 'inputSchema' => $obj(['transaction_id' => $int, 'kind' => ['type' => 'string', 'enum' => array_keys(Allocation::KINDS)], 'category_code' => $str,
                     'job_id' => $int, 'business_pct' => $int, 'reason' => $str], ['transaction_id', 'kind', 'reason'])],
         ];
@@ -801,9 +801,14 @@ final class AssistantTools
             return ['error' => $e->getMessage()];
         }
 
-        return $saved
-            ? ['ok' => true, 'note' => 'Saved as an unconfirmed AI suggestion; the owner confirms or changes it in the Inbox.']
-            : ['ok' => false, 'note' => 'Not changed: the owner has already decided or confirmed this transaction.'];
+        if ($saved) {
+            return ['ok' => true, 'note' => 'Saved as an unconfirmed AI suggestion; the owner confirms or changes it in the Inbox.'];
+        }
+        // Why the writer refused (its own words, to the owner): their decision, a "Not this" they made, or a stronger
+        // suggestion already waiting. Nothing was changed; the owner can still decide it themselves in the Inbox.
+        $why = AllocationWriter::REFUSED_WORDS[$this->writer->refused ?? 'yours'] ?? AllocationWriter::REFUSED_WORDS['yours'];
+
+        return ['ok' => false, 'note' => 'Not changed. Tell the owner: '.$why.'. They can still decide it themselves in the Inbox.'];
     }
 
     private function listOpportunities(array $f): array

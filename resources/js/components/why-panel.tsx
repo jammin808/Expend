@@ -1,6 +1,8 @@
+import { toast } from '@/components/toaster';
 import { cn } from '@/lib/utils';
-import { type ResolvedRef, type Why, type WhyHistoryEvent, type WhyItem } from '@/types/intel';
-import { AlertTriangle, ChevronDown, ChevronRight, HelpCircle } from 'lucide-react';
+import { type ResolvedRef, type Why, type WhyHistoryEvent, type WhyItem, type WhySaidNo } from '@/types/intel';
+import { router } from '@inertiajs/react';
+import { AlertTriangle, Ban, ChevronDown, ChevronRight, HelpCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 const gradeWords: Record<string, string> = {
@@ -23,8 +25,8 @@ const gradeTone: Record<string, string> = {
 
 /**
  * "Why?" for a line's decision or an automatic link (GET /why?ref=…): who made it and how, the evidence it relied on,
- * the runner-up it beat, and its history with the knock-on changes made at the same time. Read only: it's fetched
- * when opened, and changes nothing.
+ * the runner-up it beat, and its history with the knock-on changes made at the same time. Fetched when opened. It also
+ * lists what you said no to about it ("Not this one"), each with Lift: the only thing it changes.
  */
 export function WhyPanel({ refId, label = 'Why?', className }: { refId: string; label?: string; className?: string }) {
     const [open, setOpen] = useState(false);
@@ -65,6 +67,7 @@ export function WhyPanel({ refId, label = 'Why?', className }: { refId: string; 
                     {failed && <p className="text-muted-foreground text-xs">Couldn’t load why. Try again in a moment.</p>}
                     {!failed && !why && <p className="text-muted-foreground text-xs">Loading…</p>}
                     {why?.items.map((item, i) => <WhyItemView key={i} item={item} />)}
+                    {why?.said_no && why.said_no.length > 0 && <SaidNo vetoes={why.said_no} onLifted={() => setWhy(null)} />}
                 </div>
             )}
         </div>
@@ -141,6 +144,47 @@ function WhyItemView({ item }: { item: WhyItem }) {
             )}
 
             {item.history.length > 0 && <History events={item.history} />}
+        </div>
+    );
+}
+
+/** What you said no to about it: not proposed again until you lift it (audited). */
+function SaidNo({ vetoes, onLifted }: { vetoes: WhySaidNo[]; onLifted: () => void }) {
+    const [busy, setBusy] = useState<number | null>(null);
+    const lift = (v: WhySaidNo) =>
+        router.post(`/todo/veto_lift/${v.id}`, v.fp ? { fp: v.fp } : {}, {
+            preserveScroll: true,
+            preserveState: true,
+            onStart: () => setBusy(v.id),
+            onFinish: () => setBusy(null),
+            onSuccess: () => onLifted(),
+            onError: () => toast('That didn’t work. Try again.', 'error'),
+        });
+
+    return (
+        <div className="space-y-1">
+            <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">You said no to</p>
+            <ul className="space-y-1">
+                {vetoes.map((v) => (
+                    <li key={v.id} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                        <Ban className="text-muted-foreground size-3 shrink-0 self-center" />
+                        <span>{v.what}</span>
+                        <span className="text-muted-foreground">
+                            {v.method_label ? `(held back from ${v.method_label})` : '(nothing automatic suggests it)'}
+                            {v.reason ? ` · ${v.reason}` : ''}
+                            {v.at ? ` · ${v.at}` : ''}
+                        </span>
+                        <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground underline underline-offset-2"
+                            disabled={busy === v.id}
+                            onClick={() => lift(v)}
+                        >
+                            Lift
+                        </button>
+                    </li>
+                ))}
+            </ul>
         </div>
     );
 }

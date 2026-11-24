@@ -10,15 +10,32 @@ import { day, decidedByLabels, kindLabels, paidIn, paidWith } from '@/lib/format
 import { cn } from '@/lib/utils';
 import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, Link, router, usePage } from '@inertiajs/react';
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Keyboard, PartyPopper, Sparkles } from 'lucide-react';
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Keyboard, PartyPopper, Sparkles, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+/** An Inbox item, with what its suggestion rests on and what you've said no to for it. */
+type InboxItem = Item & {
+    suggestion_why?: {
+        /** How the method works, in plain words */
+        method: string | null;
+        /** What else it weighed ("Also possible"), best first, with how far behind in plain words */
+        alternatives: { ref: string; label: string; href: string | null; score: number | null; note: string | null }[];
+    } | null;
+    /** What you said no to for this payment: not suggested again */
+    said_no?: { id: number; what: string }[];
+};
+
 interface Props {
-    items: Item[];
+    items: InboxItem[];
     remaining: number;
     filters: { year: string | null; status: string | null };
     lookups: Lookups;
+    /** "Not this one" asks why, with these */
+    not_this_reasons: Record<string, string>;
 }
+
+/** The lines a card shows, by id: what a decision or "Not this" there is about. */
+const shownIds = (item: Item) => item.allocations.map((a) => a.id);
 
 const RECENT_KEY = 'ledger.recentCategories';
 
@@ -41,9 +58,10 @@ function rememberCategory(id: number | null | undefined) {
 }
 
 /** One item at a time, best suggestion pre-filled, instant feedback, keyboard and swipe. */
-export default function InboxPage({ items, remaining, filters, lookups }: Props) {
+export default function InboxPage({ items, remaining, filters, lookups, not_this_reasons }: Props) {
     const { nav } = usePage<SharedData>().props;
-    const [queue, setQueue] = useState<Item[]>(items);
+    const [queue, setQueue] = useState<InboxItem[]>(items);
+    const [askingWhy, setAskingWhy] = useState(false);
     const [index, setIndex] = useState(0);
     const [decision, setDecision] = useState<Decision | null>(null);
     const [applyAll, setApplyAll] = useState(false);
@@ -69,6 +87,7 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
         if (item) {
             setDecision(initialDecision(item.amount_pence, item.allocations));
             setApplyAll(false);
+            setAskingWhy(false);
         }
         // Only when a different payment is shown: a reloaded queue mustn't wipe a decision you're part-way through.
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -109,7 +128,12 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
             const all = applyAll && (current.merchant_count ?? 1) > 1;
             const url = mode === 'accept' ? `/items/bank/${current.id}/confirm` : all ? '/decisions/bulk' : `/items/bank/${current.id}/decide`;
             const payload = {
-                ...(mode === 'accept' ? {} : all ? { ...d, merchant_key: current.merchant_key, tax_year: current.tax_year } : d),
+                // A single decision says which lines it was shown, so deciding differently is remembered only for those.
+                ...(mode === 'accept'
+                    ? {}
+                    : all
+                      ? { ...d, merchant_key: current.merchant_key, tax_year: current.tax_year }
+                      : { ...d, shown: shownIds(current) }),
                 quiet: true,
             };
 
@@ -140,7 +164,8 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                             run: () =>
                                 router.post(
                                     `/items/bank/${current.id}/clear`,
-                                    { reason: 'Undo from Inbox' },
+                                    // Undo only puts back what you just did: it says no to nothing.
+                                    { reason: 'Undo from Inbox', undo: true },
                                     { preserveState: true, onSuccess: () => router.reload({ only: ['items', 'remaining', 'nav'] }) },
                                 ),
                         });
@@ -153,6 +178,49 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
             });
         },
         [item, applyAll, advance],
+    );
+
+    // "Not this one": the suggestion goes, with your reason, and isn't made for this payment again. The payment stays
+    // here for you to decide.
+    const notThis = useCallback(
+        (reason: string) => {
+            if (!item) return;
+            const current = item;
+            router.post(
+                `/items/bank/${current.id}/clear`,
+                // Bound to the suggestion on the card: if another has replaced it since, nothing is cleared.
+                { reason_code: reason, quiet: true, shown: shownIds(current) },
+                {
+                    preserveScroll: true,
+                    preserveState: true,
+                    only: ['nav', 'flash'],
+                    onSuccess: (page) => {
+                        const flash = (page.props as unknown as SharedData).flash;
+                        if (flash?.error) {
+                            // Refused (the message is shown): it changed since it was shown, so show it as it is now.
+                            return router.reload({ only: ['items', 'remaining', 'nav'] });
+                        }
+                        setQueue((q) =>
+                            q.map((x) =>
+                                x.id === current.id
+                                    ? {
+                                          ...x,
+                                          allocations: [],
+                                          suggestion_why: null,
+                                          said_no: [...(x.said_no ?? []), { id: 0, what: 'Not what was suggested' }],
+                                      }
+                                    : x,
+                            ),
+                        );
+                        setDecision(initialDecision(current.amount_pence, []));
+                        setAskingWhy(false);
+                        toast('OK: that won’t be suggested for this payment again. Decide it yourself.');
+                    },
+                    onError: () => toast('That didn’t work. Try again.', 'error'),
+                },
+            );
+        },
+        [item],
     );
 
     useEffect(() => {
@@ -336,6 +404,21 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                                                     {suggestion.category ? ` · ${suggestion.category}` : ''}
                                                 </span>
                                                 {suggestion.reason && <span className="text-muted-foreground block">{suggestion.reason}</span>}
+                                                {item.suggestion_why?.method && (
+                                                    <span className="text-muted-foreground block text-xs">How: {item.suggestion_why.method}</span>
+                                                )}
+                                                {item.suggestion_why && item.suggestion_why.alternatives.length > 0 && (
+                                                    <span className="text-muted-foreground block text-xs">
+                                                        Also possible:{' '}
+                                                        {item.suggestion_why.alternatives.map((a, i) => (
+                                                            <span key={a.ref}>
+                                                                {i > 0 ? '; ' : ''}
+                                                                {a.label}
+                                                                {a.note ? ` (${a.note})` : ''}
+                                                            </span>
+                                                        ))}
+                                                    </span>
+                                                )}
                                                 {(suggestion.decided_by === 'ai' || suggestion.decided_by === 'matcher') && (
                                                     <CheckBadge
                                                         check={item.check ?? null}
@@ -345,10 +428,35 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                                                 )}
                                             </span>
                                         </span>
-                                        <Button size="sm" onClick={() => submit(decision, 'accept')}>
-                                            <Check /> Accept <kbd className="ml-1 hidden opacity-60 md:inline">↵</kbd>
-                                        </Button>
+                                        <span className="flex flex-wrap items-center gap-2">
+                                            <Button size="sm" variant="outline" onClick={() => setAskingWhy((v) => !v)} aria-expanded={askingWhy}>
+                                                <X /> Not this
+                                            </Button>
+                                            <Button size="sm" onClick={() => submit(decision, 'accept')}>
+                                                <Check /> Accept <kbd className="ml-1 hidden opacity-60 md:inline">↵</kbd>
+                                            </Button>
+                                        </span>
+                                        {askingWhy && (
+                                            <div className="flex w-full flex-wrap items-center gap-1.5">
+                                                <span className="text-muted-foreground text-xs">Why not?</span>
+                                                {Object.entries(not_this_reasons).map(([code, label]) => (
+                                                    <button
+                                                        key={code}
+                                                        className="hover:bg-muted rounded-full border bg-white px-2.5 py-0.5 text-xs dark:bg-transparent"
+                                                        onClick={() => notThis(code)}
+                                                    >
+                                                        {label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
+                                )}
+                                {item.said_no && item.said_no.length > 0 && (
+                                    <p className="text-muted-foreground text-xs">
+                                        You said no before: {item.said_no.map((v) => v.what).join('; ')}. It isn’t suggested again (lift it from Why?
+                                        in the details).
+                                    </p>
                                 )}
                             </div>
 

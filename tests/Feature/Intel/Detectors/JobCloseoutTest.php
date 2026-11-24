@@ -7,6 +7,7 @@ use App\Domain\Intel\Detectors\JobCloseout;
 use App\Domain\Intel\RefResolver;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoList;
 use App\Models\Client;
 use App\Models\Document;
@@ -184,7 +185,7 @@ class JobCloseoutTest extends TestCase
         $this->assertContains('travel:'.$hotel->id, $item['why']);
 
         // The action is the usual one: a draft for the job, and the close-out stays until it's right.
-        $this->post('/todo/job_invoice/'.$job->id)->assertSessionHas('success');
+        $this->post('/todo/job_invoice/'.$job->id, ['fp' => Fingerprints::of('job_invoice', (string) $job->id)])->assertSessionHas('success');
         $this->assertSame(1, Invoice::query()->where('work_job_id', $job->id)->where('status', 'draft')->count());
     }
 

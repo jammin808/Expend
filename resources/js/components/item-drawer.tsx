@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { WhyPanel } from '@/components/why-panel';
 import { day, decidedByLabels, kindLabels, paidIn, paidWith, rateText } from '@/lib/format';
-import { type CalendarEntry, type Decision, type Item, type JobRef, type Lookups } from '@/types';
+import { type CalendarEntry, type Decision, type Item, type JobRef, type Lookups, type SharedData } from '@/types';
 import { router } from '@inertiajs/react';
 import { CalendarDays, History } from 'lucide-react';
 import { Fragment, useEffect, useState } from 'react';
@@ -65,7 +65,9 @@ export function ItemDrawer({
         router.post(url, { ...data, quiet: true } as never, {
             preserveScroll: true,
             preserveState: true,
-            onSuccess: () => {
+            onSuccess: (page) => {
+                // Refused (it changed since it was shown, say): the message is shown, and the drawer stays open.
+                if ((page.props as unknown as SharedData).flash?.error) return;
                 toast(done);
                 onClose();
             },
@@ -241,7 +243,8 @@ export function ItemDrawer({
                                         if (problem) return toast(problem, 'error');
                                         post(
                                             `/items/${item.source}/${item.id}/decide`,
-                                            decision as never,
+                                            // What it was shown as: deciding differently is remembered only for that.
+                                            { ...decision, shown: item.allocations.map((a) => a.id) } as never,
                                             'Saved. Your decision overrides any suggestion.',
                                         );
                                     }}
@@ -256,7 +259,13 @@ export function ItemDrawer({
                                 lookups={lookups}
                                 near={detail.jobs_near}
                                 busy={busy}
-                                onSave={(lines) => post(`/items/${item.source}/${item.id}/decide`, { lines }, 'Split saved.')}
+                                onSave={(lines) =>
+                                    post(
+                                        `/items/${item.source}/${item.id}/decide`,
+                                        { lines, shown: item.allocations.map((a) => a.id) },
+                                        'Split saved.',
+                                    )
+                                }
                             />
                         )}
 
@@ -265,7 +274,14 @@ export function ItemDrawer({
                                 variant="ghost"
                                 size="sm"
                                 className="text-muted-foreground"
-                                onClick={() => post(`/items/${item.source}/${item.id}/clear`, {}, 'Sent back to the Inbox.')}
+                                onClick={() =>
+                                    // Bound to the lines shown here: if they've changed since, nothing is cleared.
+                                    post(
+                                        `/items/${item.source}/${item.id}/clear`,
+                                        { shown: item.allocations.map((a) => a.id) },
+                                        'Sent back to the Inbox.',
+                                    )
+                                }
                             >
                                 Clear decision and send back to the Inbox
                             </Button>

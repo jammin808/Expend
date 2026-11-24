@@ -163,7 +163,7 @@ class AuditHashV2Test extends TestCase
     public function test_on_a_database_that_reorders_json_every_event_is_v2(): void
     {
         $this->assertFalse(AuditLog::reordersJson(), 'SQLite and MariaDB keep the JSON as written');
-        Setting::put(AuditLog::CONTEXT_SETTING, null); // even before recording where events came from is turned on
+        Setting::put(AuditLog::CONTEXT_SETTING, false); // even with recording where events came from turned off
         $reorders = new \ReflectionProperty(AuditLog::class, 'reorders');
         $reorders->setValue(null, [DB::connection()->getName() => true]);
         try {
@@ -254,12 +254,13 @@ class AuditHashV2Test extends TestCase
     }
 
     /**
-     * Until it's turned on, events record only the first way, even from the web, Telegram, the queue or a cycle run: the
-     * release before this one, which knows only the first way, can be redeployed and still verifies every event.
+     * Turned off (by hand: from M7 it's on by default), events record only the first way, even from the web, Telegram,
+     * the queue or a cycle run: a release before M6, which knows only the first way, can be redeployed and still
+     * verifies every event.
      */
-    public function test_until_turned_on_every_event_is_v1_so_the_release_before_still_verifies(): void
+    public function test_turned_off_every_event_is_v1_so_the_release_before_still_verifies(): void
     {
-        Setting::put(AuditLog::CONTEXT_SETTING, null);
+        Setting::put(AuditLog::CONTEXT_SETTING, false);
         $this->assertFalse(AuditLog::recordsContext());
         $this->legacyChain(2);
         $web = AuditContext::with(null, fn () => AuditLog::record('test.web', 'Test', ['b' => 1, 'a' => 2], ['ok' => true], 'From the web'), 'web', AuditContext::newCorrelation());
