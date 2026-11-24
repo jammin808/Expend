@@ -15,15 +15,19 @@ use Illuminate\Support\Collection;
 /**
  * Mileage from your jobs: a return trip from home to each venue you drove to. The distance is an estimate (the
  * straight line between postcodes, times 1.25 for roads), so each trip says so and can be corrected. Left out:
- * jobs reached by train, plane or coach, jobs with mileage already, jobs without a venue postcode, jobs whose last
- * day is still to come, and days in a locked tax year (a locked year's figures never change).
+ * jobs reached by train, plane, coach or hire car (a hire car's cost and fuel are claimed instead, never mileage on
+ * top), jobs with mileage already, jobs without a venue postcode, jobs whose last day is still to come, and days in a
+ * locked tax year (a locked year's figures never change).
  */
 final class JobTrips
 {
     public const ROAD_FACTOR = 1.25;
 
-    /** Journeys that mean you didn't drive. */
-    private const JOURNEYS = ['rail', 'flight', 'coach'];
+    /**
+     * Journeys that mean you didn't drive your own vehicle to the job: no mileage to claim. The to-do list's mileage
+     * items read the same list (TodoList::NOT_DRIVEN).
+     */
+    public const JOURNEYS = ['rail', 'flight', 'coach', 'car_hire'];
 
     /** @return list<array{job_id:int, title:string, starts_on:string, ends_on:string, venue:?string, postcode:string, one_way:float, trips:int, miles:float, trip_dates:list<string>, why:string}> */
     public static function proposals(string $taxYear): array
@@ -54,7 +58,7 @@ final class JobTrips
             }
             $travel = self::travelFor($job, $dates);
             if ($travel['journey']) {
-                continue; // went by train, plane or coach
+                continue; // went by train, plane, coach or hire car
             }
             $straight = Places::miles($home, $job->postcode);
             if ($straight === null || $straight < 1) {
@@ -134,16 +138,16 @@ final class JobTrips
 
     /**
      * The travel that says how you got to this job. Travel linked to the job always counts. Other travel counts
-     * when it fits the job's days. A train, plane or coach counts when it's unlinked and within a day of a working
-     * day; one linked to another job was the way to that job. A hotel counts when you woke up there on a working
-     * day, whichever job it's linked to: one stay can cover back-to-back jobs, but it's linked to only one of them.
+     * when it fits the job's days. A train, plane, coach or hire car counts when it's unlinked and within a day of a
+     * working day; one linked to another job was the way to that job. A hotel counts when you woke up there on a
+     * working day, whichever job it's linked to: one stay can cover back-to-back jobs, but it's linked to only one.
      * A night after the last of a run of days doesn't count: that's the evening you moved on to the next job, or a
      * stay before driving home, and it saves none of the drives in on the days before. Travel you marked personal
      * wasn't for work, so it never counts.
      *
      * @param  list<string>  $dates  the job's working days
-     * @return array{journey:bool, woke:list<string>} whether you went by train, plane or coach, and the working days
-     *                                                you woke up at a hotel on
+     * @return array{journey:bool, woke:list<string>} whether you went by train, plane, coach or hire car, and the
+     *                                                working days you woke up at a hotel on
      */
     private static function travelFor(WorkJob $job, array $dates): array
     {

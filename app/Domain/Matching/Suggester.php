@@ -22,7 +22,17 @@ use Illuminate\Support\Collection;
  */
 final class Suggester
 {
-    private const HMRC_PATTERN = '/\bHMRC\b|H\s?M\s?R\s?C|SELF ASSESSMENT|INLAND REVENUE/i';
+    /**
+     * A payment to HMRC, by its words ("HMRC", "H M R C", "HM Revenue & Customs", "Self Assessment", "Inland Revenue").
+     * The to-do list also uses it, to find payments to HMRC not recorded as tax.
+     */
+    public const HMRC_PATTERN = '/\bHMRC\b|H\s?M\s?R\s?C|\bHM\s?REVENUE|SELF ASSESSMENT|INLAND REVENUE/i';
+
+    /**
+     * SQL LIKE patterns that every match of HMRC_PATTERN contains (each "_" stands for the space HMRC_PATTERN allows
+     * between the letters), so the database can pick out the few lines worth testing with it. Change them together.
+     */
+    public const HMRC_LIKE = ['%HMRC%', '%H_MRC%', '%HM_RC%', '%HMR_C%', '%H_M_RC%', '%H_MR_C%', '%HM_R_C%', '%H_M_R_C%', '%HMREVENUE%', '%HM_REVENUE%', '%SELF ASSESSMENT%', '%INLAND REVENUE%'];
 
     private const PENALTY_PATTERN = '/\bPCN\b|PENALTY CHARGE|PARKING FINE/i';
 

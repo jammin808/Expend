@@ -13,6 +13,7 @@ use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\DecisionService;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\Categoriser;
+use App\Domain\Matching\Suggester;
 use App\Domain\Matching\TransferPairer;
 use App\Domain\Travel\TravelMatcher;
 use App\Domain\Verification\Verifier;
@@ -44,7 +45,7 @@ use InvalidArgumentException;
  */
 final class TodoActions
 {
-    public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
+    public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'tx_tax', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
         'opp_add', 'opp_decline', 'opp_dismiss'];
 
     public function __construct(
@@ -64,6 +65,7 @@ final class TodoActions
             'rule_no' => $this->ruleNo((int) $id),
             'tx_accept' => $this->txAccept((int) $id),
             'tx_personal' => $this->txPersonal((int) $id),
+            'tx_tax' => $this->txTax((int) $id, $offeredAt),
             'cand_add' => $this->candidateAdd((int) $id),
             'cand_dismiss' => $this->candidateDismiss((int) $id),
             'job_invoice' => $this->jobInvoice((int) $id),
@@ -168,6 +170,37 @@ final class TodoActions
         }
 
         return "Marked personal: {$name}.";
+    }
+
+    /**
+     * Record a payment to HMRC as tax (TodoList's "Payment to HMRC not recorded as tax"), as your decision: it replaces
+     * what it was recorded as, which is why you pressed it. A Telegram button pressed after the payment was decided
+     * again (in the app, since the message was sent) changes nothing: that later decision is yours too.
+     */
+    private function txTax(int $id, ?CarbonInterface $offeredAt): string
+    {
+        $tx = BankTransaction::query()->with('allocations')->findOrFail($id);
+        $amount = Money::format(abs($tx->amount_pence), 'GBP', false);
+        if ($tx->allocations->isNotEmpty() && $tx->allocations->every(fn ($a) => $a->kind === 'tax_payment' && $a->confirmed_at !== null)) {
+            return "Already dealt with: the {$amount} payment to HMRC is recorded as tax.";
+        }
+        if ($tx->amount_pence >= 0 || ! preg_match(Suggester::HMRC_PATTERN, $tx->description.' '.$tx->counterparty)) {
+            throw new InvalidArgumentException('That isn’t a payment to HMRC: decide it in the Inbox.');
+        }
+        // Split, with part of it tax already: recording it all as tax would undo a split you chose.
+        if ($tx->allocations->contains('kind', 'tax_payment')) {
+            throw new InvalidArgumentException('Part of it is already recorded as tax, so it wasn’t changed: change the split in Transactions if the rest was tax too.');
+        }
+        $changed = $tx->allocations->map(fn ($a) => $a->updated_at ?? $a->created_at)->filter()->max();
+        if ($offeredAt && $changed && $changed->gt($offeredAt)) {
+            throw new InvalidArgumentException('It’s been decided since this message, so it wasn’t changed. Open it in Expend to check: '.url('/transactions?year='.$tx->tax_year));
+        }
+        $r = $this->decisions->apply(['kind' => 'tax_payment', 'reason' => 'From the to-do list: a payment to HMRC'], collect([$tx]));
+        if ($r['errors']) {
+            throw new InvalidArgumentException($r['errors'][0]);
+        }
+
+        return "Recorded as tax: {$amount} to HMRC on ".$tx->effectiveDate()->format('j M Y').'. Fines and interest now count it.';
     }
 
     /** Draft the invoice for a finished job, unless it already has one: then point at that instead of making another. */

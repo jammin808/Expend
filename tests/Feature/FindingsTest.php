@@ -2,14 +2,20 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Tax\PenaltyEstimator;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\TodoList;
 use App\Models\Account;
 use App\Models\BankTransaction;
+use App\Models\Category;
 use App\Models\Finding;
 use App\Models\ImportBatch;
+use App\Models\TaxYear;
 use App\Models\TodoDismissal;
 use App\Models\User;
 use App\Models\WorkJob;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
@@ -56,5 +62,59 @@ class FindingsTest extends TestCase
             ->where('money_open', 5000 + (int) Finding::query()->whereNull('resolved_at')->where('key', '!=', $gap->key)->get()->sum(fn ($f) => abs((int) $f->amount_pence)))
             ->has('recent'));
         Carbon::setTestNow();
+    }
+
+    public function test_an_expired_snooze_on_a_finding_that_has_gone_closes_it_as_dealt_with(): void
+    {
+        Carbon::setTestNow('2025-07-01 09:00:00');
+        $job = WorkJob::query()->create(['title' => 'Arena show', 'starts_on' => '2025-06-01', 'ends_on' => '2025-06-01', 'status' => 'done']);
+        FindingsRegistry::sync();
+        TodoDismissal::query()->create(['key' => 'no_po:'.$job->id, 'until' => now()->addDays(7)]);
+        FindingsRegistry::sync();
+        $finding = Finding::query()->where('key', 'no_po:'.$job->id)->sole();
+        $this->assertSame('snoozed', $finding->resolution);
+
+        // The snooze ended (its row is still there), and the PO was added since: dealt with, not snoozed.
+        Carbon::setTestNow('2025-07-20 09:00:00');
+        $job->update(['po_number' => 'PO-1234']);
+        FindingsRegistry::sync();
+        $this->assertSame(['resolved', '2025-07-20'], [$finding->fresh()->resolution, $finding->fresh()->resolved_at->format('Y-m-d')]);
+        Carbon::setTestNow();
+    }
+
+    public function test_a_check_that_goes_wrong_leaves_its_findings_open(): void
+    {
+        Carbon::setTestNow('2026-11-24 09:00:00');
+        CarbonImmutable::setTestNow('2026-11-24 09:00:00');
+        // 2024-25, filed, nothing paid towards its tax: fines and interest are running.
+        $bank = Account::query()->create(['name' => 'Starling', 'kind' => 'bank']);
+        $batch = ImportBatch::query()->create(['account_id' => $bank->id, 'original_filename' => 't.csv', 'file_sha256' => str_repeat('a', 64), 'stored_path' => 'x']);
+        $tx = BankTransaction::query()->create(['account_id' => $bank->id, 'import_batch_id' => $batch->id, 'posted_on' => '2024-09-10', 'tax_year' => '2024-25', 'description' => 'Acme Events',
+            'merchant_key' => 'ACME EVENTS', 'amount_pence' => 3_000_000, 'raw' => [], 'fingerprint' => md5('acme'), 'occurrence' => 1]);
+        app(AllocationWriter::class)->decide($tx, AllocationWriter::lines(3_000_000, 'business_income', Category::query()->where('code', 'turnover')->value('id')));
+        TaxYear::track('2024-25')->update(['status' => 'filed', 'filed_on' => '2026-01-20']);
+        FindingsRegistry::sync();
+        $penalty = Finding::query()->where('key', 'penalty:2024-25')->sole();
+
+        // The estimate breaks (here, its rules can't be read): its items are missing from the list this time.
+        $rules = new \ReflectionProperty(PenaltyEstimator::class, 'rules');
+        $rules->setValue(null, []);
+        try {
+            $this->assertThrows(fn () => PenaltyEstimator::all());
+            $this->assertNotContains('penalty:2024-25', array_column(TodoList::everything(), 'key'));
+            $r = FindingsRegistry::sync();
+            $this->assertNull($penalty->fresh()->resolved_at, 'Not dealt with: only not worked out this time');
+            $this->assertContains('penalty:', $r['failed']);
+            $this->assertGreaterThanOrEqual(1, $r['kept']);
+        } finally {
+            $rules->setValue(null, null);
+        }
+
+        // Working again, and still there: still open, never closed and reopened.
+        FindingsRegistry::sync();
+        $this->assertNull($penalty->fresh()->resolved_at);
+        $this->assertSame(0, $penalty->fresh()->reopened);
+        Carbon::setTestNow();
+        CarbonImmutable::setTestNow();
     }
 }

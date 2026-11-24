@@ -2,6 +2,7 @@
 
 namespace App\Domain\Todo;
 
+use App\Domain\Banks\StarlingSync;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoicePayments;
@@ -10,10 +11,15 @@ use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\Reconciler;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\OwnAccounts;
+use App\Domain\Matching\Suggester;
 use App\Domain\Matching\TransferPairer;
+use App\Domain\Mileage\JobTrips;
 use App\Domain\Tax\FilingDates;
 use App\Domain\Tax\PenaltyEstimator;
+use App\Domain\Tax\ReturnSummary;
 use App\Domain\Tax\Submissions;
+use App\Domain\Tax\TaxParameters;
+use App\Domain\Travel\Places;
 use App\Models\Account;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -22,11 +28,14 @@ use App\Models\Document;
 use App\Models\ImportBatch;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
+use App\Models\ManualExpense;
+use App\Models\MileageTrip;
 use App\Models\Opportunity;
 use App\Models\Setting;
 use App\Models\TaxYear;
 use App\Models\TodoDismissal;
 use App\Models\TravelItem;
+use App\Models\Vehicle;
 use App\Models\Verification;
 use App\Models\WorkJob;
 use App\Support\Money;
@@ -40,11 +49,13 @@ use Illuminate\Support\Facades\DB;
 use Throwable;
 
 /**
- * Everything that needs you, in one list, most urgent first: a reconnect, a held statement, unpaid invoices, failed
- * checks, a filing deadline, work to answer (an offer or hold whose reply-by date is close), bookings with no job yet,
- * invoices to send, possible jobs, payments and stays to decide, jobs with no PO (with who to ask), payments missing
- * from your statements and documents held for approval. Each item carries one-tap actions (TodoActions),
- * used by the to-do page and by Telegram buttons.
+ * Everything that needs you, in one list, most urgent first: something in Expend not working (the audit log, Starling,
+ * the calendar, background work), a reconnect, a held statement, unpaid invoices, failed checks, a filing deadline,
+ * payments to HMRC not recorded as tax and filed returns your records no longer match, work to answer (an offer or
+ * hold whose reply-by date is close), bookings with no job yet, invoices to send, mileage to claim, possible jobs,
+ * payments and stays to decide, jobs with no PO (with who to ask), payments missing from your statements and documents
+ * held for approval. Each item carries one-tap actions (TodoActions), used by the to-do page and by Telegram buttons.
+ * Nothing here changes anything: the checks only read.
  *
  * Building it reads most of the ledger, so the last list is kept (see cached()) for the dashboard, and built afresh
  * as soon as anything it's made from changes: a change made by this process is seen as it's written (watch()), one
@@ -55,10 +66,34 @@ use Throwable;
 final class TodoList
 {
     public const GROUPS = [
-        'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'checks' => 'Failed checks', 'deadline' => 'Tax return', 'penalties' => 'Fines and interest',
-        'offers' => 'Work to answer', 'bookings' => 'Booked with no job yet', 'invoice' => 'Invoices to send', 'jobs' => 'Possible jobs', 'transfers' => 'Transfers between your accounts', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
+        'health' => 'Something isn’t working', 'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'checks' => 'Failed checks', 'deadline' => 'Tax return', 'penalties' => 'Fines and interest',
+        'tax' => 'Tax records to check', 'offers' => 'Work to answer', 'bookings' => 'Booked with no job yet', 'invoice' => 'Invoices to send', 'claims' => 'Expenses you could claim', 'jobs' => 'Possible jobs', 'transfers' => 'Transfers between your accounts', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
         'no_po' => 'Jobs with no PO', 'reconcile' => 'Accounts that don’t match the bank', 'missing' => 'Payments missing from statements', 'documents' => 'Documents held',
     ];
+
+    /**
+     * A filed return that differs from your records by this much or more (in pence), beyond what rounding to whole
+     * pounds could explain, is listed.
+     */
+    public const DRIFT_PENCE = 100;
+
+    /** Background work that failed longer ago than this many days has been put right or no longer matters. */
+    public const FAILED_JOBS_DAYS = 7;
+
+    /**
+     * Journeys that mean you didn't drive your own vehicle to a job: no mileage to claim (a hire car's cost is claimed
+     * instead). The Mileage page's own list (JobTrips::JOURNEYS), so the two always agree.
+     */
+    public const NOT_DRIVEN = JobTrips::JOURNEYS;
+
+    /**
+     * A finished job you said had no mileage to claim ("Not relevant" on a mileage item): mileage_job:{job}:{the item's
+     * set}. Kept with the to-do dismissals, so an Undo puts the jobs back (see TodoController::dismiss()).
+     */
+    public const MILEAGE_JOB = 'mileage_job:';
+
+    /** The calendar refreshes every hour: one not refreshed for longer than this has stopped. */
+    public const CALENDAR_STALE_HOURS = 2;
 
     /** Where the last list is kept. */
     public const CACHE_KEY = 'todo_list';
@@ -78,17 +113,46 @@ final class TodoList
     /** At least this many of each kind are kept, so the dashboard, the menu badge and the to-do page share one list. */
     private const KEEP_PER_GROUP = 15;
 
-    /** The tables the list is made from (directly, or through the rule offers, PO status and bank checks). */
+    /**
+     * The tables the list is made from (directly, or through the rule offers, PO status, bank checks, the mileage
+     * found for finished jobs and the background work that failed).
+     */
     private const WATCHED = [
-        'accounts', 'allocations', 'bank_transactions', 'calendar_job_links', 'categories', 'clients', 'document_facts', 'documents', 'import_batches',
-        'invoices', 'job_candidates', 'manual_expenses', 'merchant_rules', 'opportunities', 'statement_balances', 'tax_submissions', 'tax_years', 'travel_items', 'verifications', 'work_jobs',
+        'accounts', 'allocations', 'bank_transactions', 'calendar_job_links', 'categories', 'clients', 'document_facts', 'documents', 'failed_jobs', 'import_batches',
+        'invoices', 'job_candidates', 'job_days', 'manual_expenses', 'merchant_rules', 'mileage_trips', 'opportunities', 'places', 'statement_balances', 'tax_submissions', 'tax_years', 'travel_items',
+        'vehicles', 'verifications', 'work_jobs',
     ];
 
-    /** The settings it reads: the Gmail connection, merchants you said no to a rule for, and your Making Tax Digital status (penalties). */
-    private const WATCHED_SETTINGS = ['google_client_id', 'google_client_secret', 'gmail_refresh_token', 'gmail_last_result', 'rule_offers_declined', 'mtd_volunteer_from', 'mtd_exempt', 'mtd_exempt_from', 'mtd_exempt_never_required'];
+    /** Watched tables without the usual columns: what stands in for the newest row and for the latest change. */
+    private const STAMP_COLUMNS = ['failed_jobs' => ['id', 'failed_at'], 'places' => ['postcode', 'updated_at']];
+
+    /**
+     * Where the mileage found for finished jobs is kept. Working it out looks at each job's travel and postcodes, so
+     * it's kept until something it's made from changes (MILEAGE_WATCHED), not worked out again with every list.
+     */
+    private const MILEAGE_KEY = 'todo_mileage';
+
+    /** What the mileage found for finished jobs is made from. */
+    private const MILEAGE_WATCHED = ['job_days', 'mileage_trips', 'places', 'tax_years', 'travel_items', 'vehicles', 'work_jobs'];
+
+    private const MILEAGE_SETTINGS = ['home_postcode', 'mileage_threshold_scope'];
+
+    /** Where ledger:verify-audit keeps how the last check of the audit log went (see health()). */
+    public const AUDIT_RESULT = 'audit_chain_result';
+
+    /**
+     * The settings it reads: the Gmail connection, merchants you said no to a rule for, your Making Tax Digital status
+     * (penalties), your home postcode and mileage settings, and how the nightly audit check, Starling and the
+     * calendar last went.
+     */
+    private const WATCHED_SETTINGS = ['google_client_id', 'google_client_secret', 'gmail_refresh_token', 'gmail_last_result', 'rule_offers_declined', 'mtd_volunteer_from', 'mtd_exempt', 'mtd_exempt_from', 'mtd_exempt_never_required',
+        'home_postcode', 'mileage_threshold_scope', self::AUDIT_RESULT, 'starling_token', 'starling_last_result', 'calendar_ics_url', 'calendar_synced_at'];
 
     /** This process has written to what the list is made from since it last built it (see watch()). */
     private static bool $changed = false;
+
+    /** This process has written to what the mileage found for finished jobs is made from (see mileageFound()). */
+    private static bool $mileageChanged = false;
 
     /**
      * The list, built now. Counts and the total cover everything (less what you snoozed or marked not relevant),
@@ -117,7 +181,22 @@ final class TodoList
      */
     public static function everything(): array
     {
-        return self::compute(self::KEEP_PER_GROUP, TodoDismissal::activeKeys(), true)['items'];
+        return self::scan()['items'];
+    }
+
+    /**
+     * Every item, as everything(), with the kinds of item that couldn't be worked out in full this time: 'failed'
+     * (something went wrong working them out, such as the fines and interest estimate) and 'capped' (a limit left
+     * some out), each as the start of their keys ("penalty:"). An item of those kinds that's missing may still be
+     * there, so the findings history keeps it open rather than calling it dealt with.
+     *
+     * @return array{items:list<array>, failed:list<string>, capped:list<string>, checked:array{hmrc:?int, jobs:?int, years:?int}}
+     */
+    public static function scan(): array
+    {
+        $list = self::compute(self::KEEP_PER_GROUP, TodoDismissal::activeKeys(), true);
+
+        return ['items' => $list['items'], 'failed' => $list['failed'], 'capped' => $list['capped'], 'checked' => $list['checked']];
     }
 
     /**
@@ -186,8 +265,10 @@ final class TodoList
         }
         app()->instance(self::class.'.watching', true);
         DB::listen(function (QueryExecuted $query) {
-            if (! self::$changed && self::writesTo($query->sql, $query->bindings)) {
+            if (! (self::$changed && self::$mileageChanged) && ($table = self::writesTo($query->sql, $query->bindings)) !== null) {
                 self::$changed = true;
+                self::$mileageChanged = self::$mileageChanged || in_array($table, self::MILEAGE_WATCHED, true)
+                    || ($table === 'settings' && array_intersect(array_filter($query->bindings, 'is_string'), self::MILEAGE_SETTINGS) !== []);
             }
         });
     }
@@ -195,6 +276,10 @@ final class TodoList
     /** After a request: if it changed what the list is made from, the kept list is forgotten. */
     public static function settle(): void
     {
+        if (self::$mileageChanged) {
+            self::$mileageChanged = false;
+            Cache::forget(self::MILEAGE_KEY);
+        }
         if (self::$changed) {
             self::$changed = false;
             self::forget();
@@ -203,13 +288,27 @@ final class TodoList
 
     /**
      * To-dos that come back under the same key every time they apply again: Gmail needing reconnecting, a tax return
-     * falling due or overdue, transfers to confirm. "Not relevant" hides a key for good, so it would hide every later
-     * one too (the next disconnection, the overdue return). These can only be snoozed. A new item whose key never
-     * changes belongs here too.
+     * falling due or overdue, transfers to confirm, something in Expend not working. "Not relevant" hides a key for
+     * good, so it would hide every later one too (the next disconnection, the overdue return). These can only be
+     * snoozed. A new item whose key never changes belongs here too. (Background work that failed is kept by the newest
+     * failure, so "Not relevant" sets aside the failures you've looked at and the next one brings it back; mileage and
+     * filed returns that differ are kept by the jobs and the difference.)
      */
     public static function snoozeOnly(string $key): bool
     {
-        return in_array($key, ['gmail', 'transfers'], true) || str_starts_with($key, 'deadline:') || str_starts_with($key, 'penalty:') || str_starts_with($key, 'submission:');
+        if (in_array($key, ['gmail', 'transfers'], true)) {
+            return true;
+        }
+        if (str_starts_with($key, 'health:failed_jobs:')) {
+            return false;
+        }
+        foreach (['deadline:', 'penalty:', 'submission:', 'health:'] as $prefix) {
+            if (str_starts_with($key, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** Work you're asked about is listed this many days before the date to reply by. */
@@ -258,6 +357,25 @@ final class TodoList
             $items[] = ['key' => $key, 'group' => $group, 'priority' => $priority, 'title' => $title, 'detail' => $detail, 'href' => $href, 'actions' => $actions,
                 'snooze_only' => self::snoozeOnly($key)] + $extra;
         };
+        // Kinds of item not worked out in full this time (see scan()), by the start of their keys.
+        $notWorkedOut = [];
+        $cappedKeys = [];
+        // What the new checks looked at, for the line under the list: so it's seen they ran, even when nothing's wrong
+        // (null: the check went wrong this time).
+        $checked = ['hmrc' => null, 'jobs' => null, 'years' => null];
+        // One check going wrong never stops the list: its items are left out this time, and the history keeps them open.
+        $try = function (string $prefix, callable $check) use (&$notWorkedOut) {
+            try {
+                $check();
+            } catch (Throwable $e) {
+                report($e);
+                $notWorkedOut[] = $prefix;
+            }
+        };
+
+        // Expend itself: the audit log altered, Starling or the calendar not updating, background work that failed,
+        // documents left unread at the AI spending cap.
+        $try('health:', fn () => self::health($add));
 
         // Gmail access ended (Google's 7-day limit in Testing).
         if (GmailClient::configured() && ! GmailClient::connected() && (Setting::get('gmail_last_result')['ok'] ?? true) === false) {
@@ -338,6 +456,8 @@ final class TodoList
         } catch (Throwable $e) {
             report($e);
             $fines = [];
+            // Its items (fines and interest, quarterly updates) are missing this time, not dealt with.
+            array_push($notWorkedOut, 'penalty:', 'submission:');
         }
         $returnEffect = [];
         foreach ($fines as $y) {
@@ -451,6 +571,14 @@ final class TodoList
             }
         }
 
+        // Tax records to check: payments to HMRC not recorded as tax, and filed returns your records no longer match.
+        $try('hmrc:', function () use ($add, &$checked) {
+            $checked['hmrc'] = self::hmrcPayments($add);
+        });
+        $try('drift:', function () use ($add, &$checked) {
+            $checked['years'] = self::filedDrift($add);
+        });
+
         // Work to answer: an availability check, a hold or an offer whose date to reply by is close or has passed.
         // You reply to them yourself; the buttons only record what you decided. A new date to reply by is a new item.
         foreach (self::toAnswer(Opportunity::query()->with('client'))->orderBy('reply_by')->orderBy('id')->get() as $o) {
@@ -490,6 +618,9 @@ final class TodoList
 
         // Finished jobs with no invoice issued (as PoStatus counts it: an issued or paid invoice for the job).
         $finished = $capped(WorkJob::query()->with('client')->where('status', '!=', 'cancelled')->whereDate('ends_on', '<', today())->orderByDesc('ends_on'), 300)->get();
+        if (! $complete && $finished->count() >= 300) {
+            $cappedKeys[] = 'invoice:';
+        }
         $invoiced = Invoice::query()->whereIn('work_job_id', $finished->pluck('id'))->whereIn('status', ['issued', 'paid'])->distinct()->pluck('work_job_id')->flip();
         $drafts = Invoice::query()->where('status', 'draft')->whereIn('work_job_id', $finished->pluck('id'))->pluck('id', 'work_job_id');
         foreach ($finished->filter(fn (WorkJob $j) => ! isset($invoiced[$j->id])) as $j) {
@@ -510,6 +641,11 @@ final class TodoList
                 .($elsewhere > 0 ? ' · '.Money::format($elsewhere).' came in for this job in another currency: if that paid it, mark this not relevant' : ''),
                 '/invoices/'.$i->id, $i->bill_to_email ? [self::action('inv_send', $i->id, 'Email it')] : [], ['amount' => $i->total_minor - $paid, 'currency' => $i->currency ?: 'GBP']);
         }
+
+        // Expenses you could claim: mileage for finished jobs you drove to, with none recorded.
+        $try('mileage:', function () use ($add, $hidden, &$checked) {
+            $checked['jobs'] = self::unclaimedMileage($add, $hidden);
+        });
 
         // Possible jobs from the job finder.
         $candidates = JobCandidate::query()->where('status', 'open')->orderBy('starts_on')->get();
@@ -560,6 +696,9 @@ final class TodoList
         $dupes = $capped(OwnAccounts::scopeNotTransfers(BankTransaction::query())->where('amount_pence', '<=', -2000)->whereNull('transfer_pair_id')
             ->select('account_id', 'merchant_key', 'amount_pence', 'posted_on')->selectRaw('COUNT(*) as n, MIN(id) as first_id')
             ->groupBy('account_id', 'merchant_key', 'amount_pence', 'posted_on')->havingRaw('COUNT(*) > 1')->orderByDesc('posted_on'), 50)->get();
+        if (! $complete && $dupes->count() >= 50) {
+            $cappedKeys[] = 'dupe:';
+        }
         $firsts = BankTransaction::query()->whereIn('id', $dupes->pluck('first_id'))->get()->keyBy('id');
         foreach ($dupes as $d) {
             if (! ($tx = $firsts[$d->first_id] ?? null)) {
@@ -589,7 +728,11 @@ final class TodoList
 
         // Jobs with no PO. Those worth chasing now (starting within 60 days, under way, or done and not invoiced) come
         // first, with who to ask (Opportunities::poChase): the job's page has the request ready to send from your email.
-        $noPo = self::withoutPo($capped(WorkJob::query()->where('status', '!=', 'cancelled')->orderByDesc('starts_on'), 300)->get());
+        $jobs = $capped(WorkJob::query()->where('status', '!=', 'cancelled')->orderByDesc('starts_on'), 300)->get();
+        if (! $complete && $jobs->count() >= 300) {
+            $cappedKeys[] = 'no_po:';
+        }
+        $noPo = self::withoutPo($jobs);
         $chase = [];
         if ($noPo->isNotEmpty()) {
             try {
@@ -676,7 +819,518 @@ final class TodoList
         $order = array_flip(array_keys(self::GROUPS));
         usort($items, fn ($a, $b) => [$a['priority'], $order[$a['group']]] <=> [$b['priority'], $order[$b['group']]]);
 
-        return ['items' => $items, 'counts' => $counts, 'total' => array_sum($counts), 'per_group' => $limit];
+        return ['items' => $items, 'counts' => $counts, 'total' => array_sum($counts), 'per_group' => $limit,
+            'failed' => array_values(array_unique($notWorkedOut)), 'capped' => array_values(array_unique($cappedKeys)), 'checked' => $checked];
+    }
+
+    /**
+     * Expend itself not working as it should, each first on the list: the audit log altered (found by the nightly
+     * ledger:verify-audit), Starling's last import failing, the calendar not refreshed for over CALENDAR_STALE_HOURS
+     * hours, background work that failed in the last FAILED_JOBS_DAYS days, and documents left unread because the
+     * month's AI spending cap was reached. Each comes back under the same key for as long as it lasts, so it can be
+     * snoozed but not marked not relevant, except the failed work: that's kept by the newest failure, so "Not relevant"
+     * sets aside the failures you've looked at, and the next one brings it back.
+     *
+     * @param  callable  $add  TodoList::compute()'s
+     */
+    private static function health(callable $add): void
+    {
+        $london = fn (string $at) => CarbonImmutable::parse($at, config('app.timezone'))->setTimezone('Europe/London');
+
+        $chain = Setting::get(self::AUDIT_RESULT);
+        if (is_array($chain) && ($chain['ok'] ?? true) === false) {
+            $add('health', 1, 'health:audit', 'The audit log has been altered',
+                'The nightly check'.(isset($chain['at']) ? ' on '.$london($chain['at'])->format('j M Y') : '').' found that event '.($chain['broken_at'] ?? '?')
+                .' doesn’t follow on from the '.($chain['checked'] ?? 0).' before it, so something changed the records outside Expend. Nothing was changed because of it. '
+                .'Compare the records with a backup before you lock or file a year.', null);
+        }
+
+        $starling = Setting::get('starling_last_result');
+        if (is_array($starling) && StarlingSync::connected()) {
+            $failing = collect($starling['results'] ?? [])->filter(fn ($r) => ($r['ok'] ?? true) === false)->pluck('account')->filter()->unique()->values();
+            if ($failing->isNotEmpty()) {
+                $add('health', 1, 'health:starling', 'Starling import failed: '.$failing->implode(', '),
+                    'The automatic import'.(isset($starling['at']) ? ' on '.$london($starling['at'])->format('j M Y, H:i') : '').' didn’t finish, so the newest payments may be missing. '
+                    .'Check the connection in Settings › Integrations, or import the statement yourself.', '/settings/integrations');
+            }
+        }
+
+        if (Setting::get('calendar_ics_url')) {
+            $synced = Setting::get('calendar_synced_at');
+            $at = is_string($synced) && $synced !== '' ? $london($synced) : null;
+            if ($at === null || $at->lt(now()->subHours(self::CALENDAR_STALE_HOURS))) {
+                $add('health', 1, 'health:calendar', $at ? 'Calendar not updated since '.$at->format('j M, H:i') : 'Calendar not updated yet',
+                    'It’s read from your calendar link every hour, and jobs are found from it. Check the link in Settings › Ledger still works: calendar apps sometimes issue a new one.', '/settings/ledger');
+            }
+        }
+
+        // Failures from the last week (Expend never clears them, so older ones would stay for good), less the ones you
+        // set aside: up to the newest failure of an item you marked not relevant.
+        $aside = (int) TodoDismissal::query()->whereNull('until')->where('key', 'like', 'health:failed_jobs:%')->pluck('key')
+            ->map(fn (string $k) => (int) substr($k, strlen('health:failed_jobs:')))->max();
+        $recent = DB::table('failed_jobs')->where('id', '>', $aside)->where('failed_at', '>=', now()->subDays(self::FAILED_JOBS_DAYS));
+        $failedJobs = (clone $recent)->count();
+        if ($failedJobs > 0) {
+            $last = (clone $recent)->orderByDesc('id')->first(['id', 'payload', 'failed_at']);
+            $name = class_basename((string) (json_decode((string) $last->payload, true)['displayName'] ?? ''));
+            $what = ['ReadDocument' => 'reading a document', 'ReadTravelEmail' => 'reading a booking email', 'ScanGmail' => 'a Gmail search', 'FindJobs' => 'the job finder',
+                'SyncGmailLabels' => 'the Gmail labels', 'GatherFromGmail' => 'gathering a job’s emails', 'GatherForJob' => 'gathering a job’s records', 'HandleTelegramUpdate' => 'a Telegram message'][$name] ?? ($name ?: 'a task');
+            $add('health', 1, 'health:failed_jobs:'.$last->id, $failedJobs.' background '.($failedJobs === 1 ? 'task' : 'tasks').' failed in the last week',
+                'The newest: '.$what.($last->failed_at ? ', '.$london((string) $last->failed_at)->format('j M Y, H:i') : '').'. '
+                .'On the server, php artisan queue:failed lists them and php artisan ledger:check shows the newest error. '
+                .'Run one again (php artisan queue:retry and its ID) only if it’s still wanted: an old one can read a document or answer a Telegram message a second time. '
+                .'Clear the rest with php artisan queue:forget and its ID, or queue:flush for all of them. '
+                .'Once you’ve looked, mark this not relevant: it comes back if something else fails.', null);
+        }
+
+        $unread = Document::query()->where('status', 'failed')->where('error', 'like', '%spending cap%')->count();
+        if ($unread > 0) {
+            $add('health', 1, 'health:ai_cap', $unread.' '.($unread === 1 ? 'document' : 'documents').' not read: the AI spending cap was reached',
+                'Raise this month’s cap in Settings › Integrations, or wait for next month, then press Read with AI on '.($unread === 1 ? 'it' : 'each').'.', '/documents?status=failed');
+        }
+    }
+
+    /**
+     * Payments to HMRC (by their words, as the Suggester spots them: Suggester::HMRC_PATTERN, with the database picking
+     * out the lines worth testing by Suggester::HMRC_LIKE) that aren't recorded as tax: never decided, or decided or
+     * suggested as something else. Fines and interest count only the payments recorded as tax, so until it is they
+     * may be overstated. One tap records it as tax, as your decision; in a locked year there's only the link.
+     *
+     * @param  callable  $add  TodoList::compute()'s
+     * @return int the payments to HMRC looked at
+     */
+    private static function hmrcPayments(callable $add): int
+    {
+        $lines = BankTransaction::query()->where('amount_pence', '<', 0)->whereNull('transfer_pair_id')
+            ->where(function (Builder $q) {
+                foreach (Suggester::HMRC_LIKE as $like) {
+                    $q->orWhere('description', 'like', $like)->orWhere('counterparty', 'like', $like);
+                }
+            })
+            ->with('allocations.category')->orderByDesc('posted_on')->orderByDesc('id')->get()
+            ->filter(fn (BankTransaction $t) => preg_match(Suggester::HMRC_PATTERN, $t->description.' '.$t->counterparty) === 1)->values();
+        $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label')->flip();
+        $pounds = fn (int $pence) => Money::format(abs($pence), 'GBP', false);
+        foreach ($lines as $t) {
+            $tax = $t->allocations->where('kind', 'tax_payment');
+            $other = $t->allocations->reject(fn (Allocation $a) => $a->kind === 'tax_payment');
+            if ($t->allocations->isNotEmpty() && $other->isEmpty()) {
+                continue; // recorded as tax (or suggested as tax, waiting with the payments to decide)
+            }
+            $how = fn (Allocation $a) => mb_strtolower(Allocation::KINDS[$a->kind] ?? $a->kind).($a->category ? ' ('.$a->category->name.')' : '');
+            $isLocked = isset($locked[$t->tax_year]);
+            $name = $t->counterparty ?: $t->description;
+            $href = '/transactions?year='.$t->tax_year.'&q='.urlencode($name);
+            $on = $t->effectiveDate()->format('j M Y');
+            if ($tax->isNotEmpty()) {
+                // Split, with part of it already tax (someone else's bill paid with yours, say): only the rest is in
+                // question, and one tap would undo the split, so there's only the link.
+                $part = (int) $other->sum('amount_pence');
+                $add('tax', 2, 'hmrc:'.$t->id, 'Part of a payment to HMRC not recorded as tax: '.$pounds($part).' of '.$pounds($t->amount_pence).' on '.$on,
+                    $name.' · Split: '.$pounds((int) $tax->sum('amount_pence')).' as tax, '
+                    .$other->groupBy($how)->map(fn ($as, $kind) => $pounds((int) $as->sum('amount_pence')).' '.($as->every(fn (Allocation $a) => $a->confirmed_at === null) ? 'suggested as ' : 'as ').$kind)->implode(', ').'. '
+                    .'Fines and interest count only the part recorded as tax. If the rest was your own tax too, change the split in Transactions'
+                    .($isLocked ? ' (unlock '.$t->tax_year.' on its year page first)' : '').'; if it wasn’t, mark this not relevant.',
+                    $href, [], ['amount' => $part]);
+
+                continue;
+            }
+            $now = $other->isEmpty() ? 'Not decided yet'
+                : ($other->every(fn (Allocation $a) => $a->confirmed_at === null) ? 'Suggested as ' : 'Recorded as ').$other->map($how)->unique()->implode(' and ');
+            $add('tax', 2, 'hmrc:'.$t->id, 'Payment to HMRC not recorded as tax: '.$pounds($t->amount_pence).' on '.$on,
+                $name.' · '.$now.'. Fines and interest count only payments recorded as tax, so they may be overstated until it is.'
+                    .($isLocked ? ' '.$t->tax_year.' is locked: unlock it on its year page to change it.' : ' If it wasn’t your own tax, mark this not relevant.'),
+                $href, $isLocked ? [] : [self::action('tx_tax', $t->id, 'Record as tax')], ['amount' => $t->amount_pence]);
+        }
+
+        return $lines->count();
+    }
+
+    /**
+     * Filed returns your records no longer match. For each year filed (or being amended) with its filed figures saved,
+     * the return's figures now (ReturnSummary) are compared with them: turnover, allowable expenses and profit. A
+     * figure is listed when it's DRIFT_PENCE or more away from anything rounding your records to whole pounds could
+     * give (a return takes whole pounds, so each box may be rounded either way), with the date to amend by (12 months
+     * after the filing date: FilingDates::amendBy), first on the list within 60 days of it. A return that took the
+     * trading allowance instead of expenses is compared the same way.
+     *
+     * Only a year Expend holds from start to end is compared: one with records in its first month and in its last.
+     * The year before you started, whose figures you typed in at setup, holds a few days of statements at most, and a
+     * few days set against a whole year's return would be no comparison at all. While payments in the year are still to
+     * decide, it says to decide them first rather than to amend.
+     *
+     * The key carries the difference, so "Not relevant" sets aside the difference you've seen, and a new one comes back.
+     *
+     * @param  callable  $add  TodoList::compute()'s
+     * @return int the filed years compared
+     */
+    private static function filedDrift(callable $add): int
+    {
+        $years = TaxYear::query()->whereIn('status', ['filed', 'amending'])
+            ->where(fn ($q) => $q->whereNotNull('filed_turnover_pence')->orWhereNotNull('filed_expenses_pence')->orWhereNotNull('filed_profit_pence'))->orderBy('label')->get();
+        $pounds = fn (int $pence) => Money::format($pence, 'GBP', false);
+        $compared = 0;
+        foreach ($years as $year) {
+            $label = $year->label;
+            if (! self::holdsWholeYear($label)) {
+                continue;
+            }
+            $compared++;
+            $s = ReturnSummary::for($label);
+            $filed = array_filter(['turnover' => $year->filed_turnover_pence, 'expenses' => $year->filed_expenses_pence, 'profit' => $year->filed_profit_pence], fn ($v) => $v !== null);
+            $filed = array_map('intval', $filed);
+            // How far each filed figure is from what the records could give, rounded to whole pounds either way.
+            $off = fn (array $basis) => array_map(fn ($k) => $filed[$k] < $basis[$k]['low'] ? $basis[$k]['low'] - $filed[$k] : ($filed[$k] > $basis[$k]['high'] ? $filed[$k] - $basis[$k]['high'] : 0),
+                array_combine(array_keys($filed), array_keys($filed)));
+            // The trading allowance instead of expenses: no expenses, and profit is turnover less the allowance (all
+            // of it, or as much as there was turnover). With expenses left blank it could be either, so whichever of
+            // the two the return is nearer to is used.
+            $allowance = $s['trading_allowance']['allowance_pence'];
+            $tookAllowance = isset($filed['turnover'], $filed['profit']) && $filed['turnover'] > $filed['profit'] && min($filed['turnover'], $allowance) === $filed['turnover'] - $filed['profit']
+                && ($filed['expenses'] ?? 0) === 0;
+            $usual = self::returnFigures($s, false);
+            $basis = $usual;
+            $onAllowance = false;
+            if ($tookAllowance) {
+                $withAllowance = self::returnFigures($s, true);
+                if (isset($filed['expenses']) || array_sum($off($withAllowance)) < array_sum($off($usual))) {
+                    [$basis, $onAllowance] = [$withAllowance, true];
+                }
+            }
+            $now = array_map(fn ($b) => $b['exact'], $basis);
+            $diff = [];
+            foreach ($off($basis) as $k => $away) {
+                if ($away >= self::DRIFT_PENCE) {
+                    $diff[$k] = $now[$k] - $filed[$k];
+                }
+            }
+            if ($diff === []) {
+                continue;
+            }
+            $by = FilingDates::amendBy($label, $year);
+            $canAmend = today()->lte($by);
+            $pending = $s['pending']['unreviewed_count'] + $s['pending']['suggested_count'] + $s['pending']['manual_unreviewed_count'];
+            $names = ['turnover' => 'turnover', 'expenses' => 'allowable expenses', 'profit' => 'profit'];
+            $figures = fn (array $values) => implode(', ', array_map(fn ($k) => $names[$k].' '.$pounds($values[$k]), array_keys($filed)));
+            $profit = $diff['profit'] ?? null;
+            $amendText = $canAmend ? 'amend the return by '.$by->format('j F Y').'.' : null;
+            $add('tax', $pending === 0 && $canAmend && $by->lte(today()->addDays(60)) ? 1 : 2, 'drift:'.$label.':'.substr(md5(json_encode($diff)), 0, 10),
+                ($pending > 0
+                    ? "{$label} figures differ from the return you filed, with {$pending} ".($pending === 1 ? 'payment' : 'payments').' still to decide'
+                    : ($profit !== null ? "{$label} profit is ".$pounds(abs($profit)).' '.($profit > 0 ? 'higher' : 'lower').' than the return you filed' : "{$label} figures differ from the return you filed")
+                        .($canAmend ? ': amend by '.$by->format('j F Y') : '')),
+                implode(' ', array_filter([
+                    'Filed: '.$figures($filed).'. Your records now: '.$figures($now).'.',
+                    $onAllowance ? 'Worked out with the trading allowance, as your return was.' : null,
+                    $pending > 0 ? 'Decide '.($pending === 1 ? 'it' : 'them').' first: the difference may go once '.($pending === 1 ? 'it’s' : 'they’re').' done.'
+                        .($amendText ? ' If it’s still there, '.$amendText : '') : null,
+                    $pending > 0 || $profit === null ? null : ($profit > 0 ? 'You may owe more tax.' : 'You may have paid too much tax.'),
+                    $pending === 0 && $amendText ? 'If your records are right, '.$amendText : null,
+                    $canAmend ? null : 'The 12 months to amend the return ended on '.$by->format('j F Y').': ask an accountant how to put it right.',
+                    'The year page shows what’s in it now.',
+                ])), '/years/'.$label, [], $pending === 0 && $profit !== null ? ['amount' => -$profit] : []);
+        }
+
+        return $compared;
+    }
+
+    /**
+     * Whether Expend holds the whole tax year: something confirmed in it (a decision or a trip), and records (statement
+     * lines, cash expenses or trips) in its first month and in its last.
+     */
+    private static function holdsWholeYear(string $label): bool
+    {
+        if (! Allocation::query()->where('tax_year', $label)->whereNotNull('confirmed_at')->exists() && ! MileageTrip::query()->where('tax_year', $label)->exists()) {
+            return false;
+        }
+        $year = UkTaxYear::fromLabel($label);
+        $within = fn (CarbonImmutable $from, CarbonImmutable $to) => BankTransaction::query()->where('tax_year', $label)->whereDate('posted_on', '>=', $from->format('Y-m-d'))->whereDate('posted_on', '<=', $to->format('Y-m-d'))->exists()
+            || ManualExpense::query()->where('tax_year', $label)->whereDate('spent_on', '>=', $from->format('Y-m-d'))->whereDate('spent_on', '<=', $to->format('Y-m-d'))->exists()
+            || MileageTrip::query()->where('tax_year', $label)->whereDate('trip_on', '>=', $from->format('Y-m-d'))->whereDate('trip_on', '<=', $to->format('Y-m-d'))->exists();
+
+        return $within($year->startsOn(), $year->startsOn()->addMonth()->subDay()) && $within($year->endsOn()->subMonth()->addDay(), $year->endsOn());
+    }
+
+    /**
+     * A return's figures from your records (ReturnSummary::for()): each exactly, and the lowest and highest it could
+     * be once each box is rounded to whole pounds (turnover and other income in their own boxes, expenses in one box for
+     * each kind, profit from those).
+     *
+     * @param  bool  $allowance  with the trading allowance instead of expenses
+     * @return array{turnover:array{exact:int, low:int, high:int}, expenses:array{exact:int, low:int, high:int}, profit:array{exact:int, low:int, high:int}}
+     */
+    private static function returnFigures(array $s, bool $allowance): array
+    {
+        $down = fn (int $p) => (int) (floor($p / 100) * 100);
+        $up = fn (int $p) => (int) (ceil($p / 100) * 100);
+        $turnover = (int) $s['turnover_pence'];
+        $other = (int) $s['other_income_pence'];
+        if ($allowance) {
+            $less = (int) $s['trading_allowance']['allowance_pence'];
+            $expenses = ['exact' => 0, 'low' => 0, 'high' => 0];
+            $profit = ['exact' => max(0, $turnover + $other - $less), 'low' => max(0, $down($turnover) + $down($other) - $less), 'high' => max(0, $up($turnover) + $up($other) - $less)];
+        } else {
+            $boxes = collect($s['expense_lines'])->groupBy(fn ($l) => $l['box'] ?? $l['code'])->map(fn ($ls) => (int) $ls->sum('allowable_pence'));
+            $expenses = ['exact' => (int) $s['allowable_expenses_pence'], 'low' => (int) $boxes->sum(fn ($p) => $down($p)), 'high' => (int) $boxes->sum(fn ($p) => $up($p))];
+            $profit = ['exact' => (int) $s['net_profit_pence'], 'low' => $down($turnover) + $down($other) - $expenses['high'], 'high' => $up($turnover) + $up($other) - $expenses['low']];
+        }
+
+        return ['turnover' => ['exact' => $turnover, 'low' => $down($turnover), 'high' => $up($turnover)], 'expenses' => $expenses, 'profit' => $profit];
+    }
+
+    /**
+     * Mileage you could claim: for each open tax year (not locked or filed; the current one even if you're not
+     * tracking it yet), the finished jobs you drove to with no mileage recorded, as the Mileage page offers them
+     * (JobTrips::proposals), valued at the year's simplified mileage rates with the miles already recorded that year
+     * counting towards the 10,000-mile threshold (for all your cars and vans together, or only the one the trips would
+     * go on when the threshold is per vehicle). Left out: jobs you reached by hire car (its cost is claimed instead)
+     * and jobs you said had no mileage to claim. Without a home postcode there's one item asking for it instead. Only
+     * vehicles on actual costs: nothing to claim, so nothing's listed.
+     *
+     * Distances come only from postcodes already looked up (the Mileage page and the travel checks look them up):
+     * building this list never sends a postcode anywhere. Where one isn't known yet, the item says so and points to
+     * the Mileage page instead of giving the miles.
+     *
+     * Each item is kept by its jobs (mileage:{year}:{set}), so "Not relevant" says those jobs have no mileage to claim
+     * (they're left out from then on: TodoController::dismiss()), and a job that finishes later brings it back.
+     *
+     * @param  callable  $add  TodoList::compute()'s
+     * @param  array<string, true>  $hidden  keys you snoozed or marked not relevant
+     * @return int the finished jobs looked at
+     */
+    private static function unclaimedMileage(callable $add, array $hidden): int
+    {
+        $found = self::mileageFound($hidden);
+        foreach ($found['items'] as $i) {
+            $add('claims', 2, $i['key'], $i['title'], $i['detail'], $i['href'], [], $i['extra']);
+        }
+
+        return $found['jobs'];
+    }
+
+    /**
+     * The jobs of a mileage item still on the list under this key (mileage:{year}:{set}), for "Not relevant" to leave
+     * them out from then on; null for any other key, or one whose jobs have changed since.
+     *
+     * @return list<int>|null
+     */
+    public static function mileageJobs(string $key): ?array
+    {
+        if (! preg_match('/^mileage:\d{4}-\d{2}:[0-9a-f]+$/', $key)) {
+            return null;
+        }
+        $item = collect(self::mileageFound(TodoDismissal::activeKeys())['items'])->firstWhere('key', $key);
+
+        return $item ? $item['job_ids'] : null;
+    }
+
+    /** The dismissal that leaves a job out of the mileage items, as part of the item with this key. */
+    public static function mileageJobKey(int $job, string $key): string
+    {
+        return self::MILEAGE_JOB.$job.':'.substr($key, strrpos($key, ':') + 1);
+    }
+
+    /**
+     * The mileage items and how many finished jobs were looked at: kept (MILEAGE_KEY) until something they're made
+     * from changes, as seen by this process (watch()) or by their fingerprint, or the date changes, or after
+     * KEEP_SECONDS. Working them out looks at each job's travel and postcodes (JobTrips::proposals), so they aren't
+     * worked out again every time the list is built.
+     *
+     * @param  array<string, true>  $hidden
+     * @return array{items:list<array{key:string, title:string, detail:string, href:string, extra:array, job_ids:list<int>}>, jobs:int}
+     */
+    private static function mileageFound(array $hidden): array
+    {
+        $excluded = [];
+        foreach (array_keys($hidden) as $k) {
+            if (str_starts_with($k, self::MILEAGE_JOB)) {
+                $excluded[(int) substr($k, strlen(self::MILEAGE_JOB))] = true;
+            }
+        }
+        ksort($excluded);
+        $stamp = md5(json_encode([today()->format('Y-m-d'), array_keys($excluded), filemtime(__FILE__), filemtime((new \ReflectionClass(JobTrips::class))->getFileName()),
+            self::tableStamps(self::MILEAGE_WATCHED, self::MILEAGE_SETTINGS)]));
+        $kept = self::$mileageChanged ? null : Cache::get(self::MILEAGE_KEY);
+        if (is_array($kept) && ($kept['stamp'] ?? null) === $stamp) {
+            return $kept;
+        }
+        self::$mileageChanged = false;
+        $found = self::findMileage($excluded) + ['stamp' => $stamp];
+        Cache::put(self::MILEAGE_KEY, $found, self::KEEP_SECONDS);
+
+        return $found;
+    }
+
+    /**
+     * @param  array<int, true>  $excluded  jobs you said had no mileage to claim
+     * @return array{items:list<array>, jobs:int}
+     */
+    private static function findMileage(array $excluded): array
+    {
+        // What the trips would go on: a car or van on simplified mileage (or none yet: you'd add one), else a motorbike.
+        // The car or van is the one the Mileage page offers first (by name).
+        $vehicles = Vehicle::query()->orderBy('name')->get(['id', 'name', 'type', 'method']);
+        $simplified = $vehicles->where('method', 'simplified');
+        $type = $vehicles->isEmpty() || $simplified->contains('type', 'car_van') ? 'car_van' : ($simplified->contains('type', 'motorcycle') ? 'motorcycle' : null);
+        if ($type === null) {
+            return ['items' => [], 'jobs' => 0];
+        }
+        $vans = $simplified->where('type', 'car_van')->values();
+        $perVehicle = Setting::get('mileage_threshold_scope') === 'per_vehicle';
+        $current = UkTaxYear::current()->label();
+        $tracked = TaxYear::query()->get(['label', 'status', 'locked_at'])->keyBy('label');
+        $years = $tracked->filter(fn (TaxYear $y) => $y->locked_at === null && $y->status !== 'filed')->keys()->all();
+        if (! isset($tracked[$current])) {
+            $years[] = $current;
+        }
+        sort($years);
+        $home = Setting::get('home_postcode');
+        $today = today()->format('Y-m-d');
+        $items = [];
+        $item = function (string $key, string $title, string $detail, string $href, array $jobIds, array $extra = []) use (&$items) {
+            $items[] = ['key' => $key, 'title' => $title, 'detail' => $detail, 'href' => $href, 'extra' => $extra, 'job_ids' => array_values($jobIds)];
+        };
+        $set = function (array $ids) {
+            sort($ids);
+
+            return substr(md5(implode(',', $ids)), 0, 10);
+        };
+        $seen = [];
+        $noHome = [];
+        foreach ($years as $label) {
+            $period = UkTaxYear::fromLabel($label);
+            // Finished as JobTrips counts it: its last working day is done.
+            $jobs = WorkJob::query()->where('status', '!=', 'cancelled')->whereDate('starts_on', '<=', min($period->endsOn()->format('Y-m-d'), $today))
+                ->whereDate('ends_on', '>=', $period->startsOn()->format('Y-m-d'))->with('days')->withExists('mileageTrips')->get()
+                ->filter(function (WorkJob $j) use ($today) {
+                    $dates = $j->workDates();
+
+                    return $dates !== [] && end($dates) <= $today;
+                })->keyBy('id');
+            $seen += array_fill_keys($jobs->keys()->all(), true);
+            // As JobTrips picks them (any postcode at all, so one it can't read is counted when looking up yours).
+            $candidates = $jobs->filter(fn (WorkJob $j) => ! $j->mileage_trips_exists && $j->postcode !== null);
+            $waiting = $candidates->reject(fn (WorkJob $j) => isset($excluded[$j->id]));
+            if ($waiting->isEmpty()) {
+                continue;
+            }
+            if (! $home) {
+                $noHome += array_fill_keys($waiting->filter(fn (WorkJob $j) => filled($j->postcode))->keys()->all(), true);
+
+                continue;
+            }
+            $href = '/mileage?year='.$label;
+            // How you reached each job, if not in your own vehicle (train, plane, coach or hire car): JobTrips leaves
+            // those jobs out, and never looks their postcodes up.
+            $journeys = self::journeys($candidates);
+            $mayDrive = $waiting->reject(fn (WorkJob $j) => isset($journeys[$j->id]))->keys()->all();
+            if (self::lookupsNeeded($home, $candidates->reject(fn (WorkJob $j) => isset($journeys[$j->id])))) {
+                // Working the miles out would look a postcode up: the Mileage page does that, not the list.
+                $n = count($mayDrive);
+                if ($n > 0) {
+                    $item('mileage:'.$label.':'.$set($mayDrive), $n.' finished '.($n === 1 ? 'job' : 'jobs').' may have mileage to claim',
+                        $label.': how far '.($n === 1 ? 'it is' : 'some of them are').' from home hasn’t been worked out yet. Open the Mileage page for '.$label.' to see the miles (each postcode is looked up once). '
+                        .'If you didn’t drive to '.($n === 1 ? 'it' : 'any of them').', mark this not relevant and '.($n === 1 ? 'it' : 'they').' won’t be listed again.', $href, $mayDrive);
+                }
+
+                continue;
+            }
+            $trips = array_values(array_filter(JobTrips::proposals($label), fn ($p) => isset($waiting[$p['job_id']])));
+            if ($trips === []) {
+                continue;
+            }
+            $miles = array_sum(array_column($trips, 'miles'));
+            $rates = TaxParameters::for($label)['mileage'] ?? null;
+            $value = null;
+            $on = null;
+            if ($rates && $type === 'motorcycle') {
+                $value = (int) round($miles * $rates['motorcycle']);
+            } elseif ($rates) {
+                // Miles already on cars and vans this year come first towards the threshold (as MileageCalculator counts
+                // them): on all of them together, or with a threshold for each vehicle, on the one these would go on.
+                $on = $perVehicle ? $vans->first() : null;
+                $already = $perVehicle && ! $on ? 0.0 : (float) MileageTrip::query()->where('tax_year', $label)
+                    ->whereHas('vehicle', fn ($q) => $q->where('type', 'car_van')->where('method', 'simplified')->when($on, fn ($q) => $q->whereKey($on->id)))->sum('miles');
+                $first = max(0.0, min($miles, $rates['threshold_miles'] - $already));
+                $value = (int) round($first * $rates['car_van_first'] + ($miles - $first) * $rates['car_van_after']);
+            }
+            $n = count($trips);
+            $titles = array_column($trips, 'title');
+            $rate = $rates ? ($type === 'motorcycle' ? $rates['motorcycle'].'p a mile' : $rates['car_van_first'].'p a mile ('.$rates['car_van_after'].'p after '.number_format($rates['threshold_miles']).' miles in the year)') : null;
+            $leftOut = $waiting->filter(fn (WorkJob $j) => in_array('car_hire', $journeys[$j->id] ?? [], true))->count();
+            $item('mileage:'.$label.':'.$set(array_column($trips, 'job_id')), $n.' finished '.($n === 1 ? 'job' : 'jobs').' with no mileage: about '.number_format($miles).' miles'
+                .($value !== null ? ', about £'.number_format($value / 100).' to claim' : ''),
+                implode(' ', array_filter([
+                    $label.': '.implode(', ', array_slice($titles, 0, 3)).($n > 3 ? ' and '.($n - 3).' more' : '').'.',
+                    'The miles are estimated from postcodes (the straight line × '.JobTrips::ROAD_FACTOR.' for roads)'.($rate ? ' at '.$rate : '').': check them on the Mileage page, where they’re added in one go.',
+                    $on && $vans->count() > 1 ? 'Valued as trips on '.$on->name.', the vehicle the Mileage page offers first: each of your vehicles has its own 10,000 miles.' : null,
+                    $leftOut > 0 ? $leftOut.' '.($leftOut === 1 ? 'job' : 'jobs').' you went to by hire car '.($leftOut === 1 ? 'is' : 'are').' left out: claim the hire and its fuel instead.' : null,
+                    'If you didn’t drive to '.($n === 1 ? 'it' : 'any of them').', mark this not relevant and '.($n === 1 ? 'it' : 'they').' won’t be listed again.',
+                ])), $href, array_column($trips, 'job_id'), $value !== null ? ['amount' => $value] : []);
+        }
+        if ($noHome !== []) {
+            $n = count($noHome);
+            $item('mileage:setup:'.$set(array_keys($noHome)), 'Add your home postcode to find mileage to claim',
+                $n.' finished '.($n === 1 ? 'job has' : 'jobs have').' a venue postcode and no mileage. Expend works out the miles from your home postcode: add it in Settings › Ledger.', '/settings/ledger', []);
+        }
+
+        return ['items' => $items, 'jobs' => count($seen)];
+    }
+
+    /**
+     * Whether JobTrips::proposals would look a postcode up (yours or a venue's) for any of these jobs, because it isn't
+     * known yet. Building the list never does: the Mileage page does it, once for each postcode.
+     *
+     * @param  Collection<int, WorkJob>  $jobs  the jobs JobTrips would work the miles out for
+     */
+    private static function lookupsNeeded(string $home, Collection $jobs): bool
+    {
+        $homeCode = Places::normalise($home);
+        if ($homeCode === null || $jobs->isEmpty()) {
+            return false; // not a postcode: nothing is looked up (and no distance found)
+        }
+        $codes = $jobs->map(fn (WorkJob $j) => Places::normalise($j->postcode));
+        $known = DB::table('places')->whereIn('postcode', $codes->filter()->push($homeCode)->unique()->values()->all())->pluck('postcode')->flip();
+
+        return ! isset($known[$homeCode]) || $codes->contains(fn (?string $code) => $code !== null && ! isset($known[$code]));
+    }
+
+    /**
+     * How you reached these jobs other than in your own vehicle (NOT_DRIVEN: train, plane, coach or hire car), as
+     * JobTrips counts a journey: one linked to the job, or not linked to any job and within a day of a working day,
+     * not cancelled and not marked personal. One query.
+     *
+     * @param  Collection<int, WorkJob>  $jobs  by id, with their days
+     * @return array<int, list<string>> the kinds of journey, by job id (jobs you may have driven to aren't in it)
+     */
+    private static function journeys(Collection $jobs): array
+    {
+        $dates = $jobs->map(fn (WorkJob $j) => $j->workDates());
+        $all = $dates->flatten()->sort()->values();
+        if ($all->isEmpty()) {
+            return [];
+        }
+        $journeys = TravelItem::query()->whereIn('kind', self::NOT_DRIVEN)->where('status', '!=', 'cancelled')
+            ->where(fn ($q) => $q->whereNull('decision')->orWhere('decision', '!=', 'personal'))
+            ->where(fn ($q) => $q->whereIn('work_job_id', $jobs->keys()->all())->orWhere(fn ($q) => $q->whereNull('work_job_id')
+                ->whereDate('starts_on', '>=', CarbonImmutable::parse($all->first())->subDay()->format('Y-m-d'))
+                ->whereDate('starts_on', '<=', CarbonImmutable::parse($all->last())->addDay()->format('Y-m-d'))))
+            ->get(['kind', 'work_job_id', 'starts_on']);
+        $out = [];
+        foreach ($jobs as $id => $j) {
+            $near = [];
+            foreach ($dates[$id] as $d) {
+                $day = CarbonImmutable::parse($d);
+                $near[$day->subDay()->format('Y-m-d')] = $near[$d] = $near[$day->addDay()->format('Y-m-d')] = true;
+            }
+            $kinds = $journeys->filter(fn (TravelItem $i) => (int) $i->work_job_id === $id || ($i->work_job_id === null && isset($near[$i->starts_on->format('Y-m-d')])))
+                ->pluck('kind')->unique()->values()->all();
+            if ($kinds !== []) {
+                $out[$id] = $kinds;
+            }
+        }
+
+        return $out;
     }
 
     /** An opportunity's dates, rate and who it's from, in a few words: "12–14 Mar 2026 · £350.00 a day · Alex Smith". */
@@ -762,7 +1416,7 @@ final class TodoList
             return $seen[$i['group']] <= $perGroup;
         }));
 
-        return ['items' => $items, 'counts' => $list['counts'], 'total' => $list['total']];
+        return ['items' => $items, 'counts' => $list['counts'], 'total' => $list['total'], 'checked' => $list['checked'] ?? ['hmrc' => null, 'jobs' => null, 'years' => null]];
     }
 
     private static function keep(array $list, string $stamp): void
@@ -780,28 +1434,43 @@ final class TodoList
      */
     private static function stamp(array $hidden): string
     {
-        $grammar = DB::connection()->getQueryGrammar();
-        $parts = array_map(fn (string $t) => 'SELECT '.DB::getPdo()->quote($t).' AS t, COUNT(*) AS n, MAX('.$grammar->wrap('id').') AS i, MAX('.$grammar->wrap('updated_at').') AS u FROM '.$grammar->wrapTable($t), self::WATCHED);
-        $parts[] = 'SELECT '.DB::getPdo()->quote('settings').', COUNT(*), NULL, MAX('.$grammar->wrap('updated_at').') FROM '.$grammar->wrapTable('settings')
-            .' WHERE '.$grammar->wrap('key').' IN ('.implode(', ', array_fill(0, count(self::WATCHED_SETTINGS), '?')).')';
-        $rows = DB::select(implode(' UNION ALL ', $parts), self::WATCHED_SETTINGS);
-
-        return md5(json_encode([today()->format('Y-m-d'), array_keys($hidden), filemtime(__FILE__), $rows]));
+        return md5(json_encode([today()->format('Y-m-d'), array_keys($hidden), filemtime(__FILE__), self::tableStamps(self::WATCHED, self::WATCHED_SETTINGS)]));
     }
 
-    /** Whether a query adds, changes or removes rows the list is made from. */
-    private static function writesTo(string $sql, array $bindings): bool
+    /**
+     * For each table, how many rows it has, its newest row and its latest change, and the same for these settings.
+     * One query.
+     *
+     * @param  list<string>  $tables
+     * @param  list<string>  $settings
+     */
+    private static function tableStamps(array $tables, array $settings): array
+    {
+        $grammar = DB::connection()->getQueryGrammar();
+        $parts = array_map(function (string $t) use ($grammar) {
+            [$id, $changed] = self::STAMP_COLUMNS[$t] ?? ['id', 'updated_at'];
+
+            return 'SELECT '.DB::getPdo()->quote($t).' AS t, COUNT(*) AS n, MAX('.$grammar->wrap($id).') AS i, MAX('.$grammar->wrap($changed).') AS u FROM '.$grammar->wrapTable($t);
+        }, $tables);
+        $parts[] = 'SELECT '.DB::getPdo()->quote('settings').', COUNT(*), NULL, MAX('.$grammar->wrap('updated_at').') FROM '.$grammar->wrapTable('settings')
+            .' WHERE '.$grammar->wrap('key').' IN ('.implode(', ', array_fill(0, count($settings), '?')).')';
+
+        return DB::select(implode(' UNION ALL ', $parts), $settings);
+    }
+
+    /** The table a query adds, changes or removes rows the list is made from in (null: none it's made from). */
+    private static function writesTo(string $sql, array $bindings): ?string
     {
         if (! preg_match('/^\s*(?:insert(?:\s+or\s+\w+|\s+ignore)?\s+into|replace\s+into|update(?:\s+ignore)?|delete\s+from)\s+[`"\[]?(\w+)/i', $sql, $m)) {
-            return false;
+            return null;
         }
         $prefix = DB::getTablePrefix();
         $table = $prefix !== '' && str_starts_with($m[1], $prefix) ? substr($m[1], strlen($prefix)) : $m[1];
         if ($table === 'settings') {
-            return array_intersect(array_filter($bindings, 'is_string'), self::WATCHED_SETTINGS) !== [];
+            return array_intersect(array_filter($bindings, 'is_string'), self::WATCHED_SETTINGS) !== [] ? $table : null;
         }
 
-        return in_array($table, self::WATCHED, true);
+        return in_array($table, self::WATCHED, true) ? $table : null;
     }
 
     /**

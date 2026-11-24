@@ -61,12 +61,19 @@ class TodoController extends Controller
     /**
      * Snooze a to-do for a while, or mark it not relevant (it stays hidden until something about it changes its key).
      * The to-do page adds an Undo to the confirmation.
+     *
+     * Mileage to claim marked not relevant means you didn't drive to those jobs: each is left out from then on (a
+     * dismissal of its own, TodoList::mileageJobKey()), so a job that finishes later is listed on its own. Undo puts
+     * them back.
      */
     public function dismiss(Request $request): RedirectResponse
     {
         $data = $request->validate(['key' => 'required|string|max:191', 'days' => 'nullable|integer|min:1|max:365', 'undo' => 'boolean']);
         if ($data['undo'] ?? false) {
             TodoDismissal::query()->where('key', $data['key'])->delete();
+            if (preg_match('/^mileage:\d{4}-\d{2}:([0-9a-f]+)$/', $data['key'], $m)) {
+                TodoDismissal::query()->where('key', 'like', TodoList::MILEAGE_JOB.'%:'.$m[1])->delete();
+            }
             TodoList::forget();
 
             return back()->with('success', 'It’s back on the list.');
@@ -74,11 +81,16 @@ class TodoController extends Controller
         if (! isset($data['days']) && self::snoozeOnly($data['key'])) {
             throw ValidationException::withMessages(['key' => 'This one can only be snoozed. It comes back whenever it applies again, and “Not relevant” would hide it for good.']);
         }
+        $jobs = isset($data['days']) ? null : TodoList::mileageJobs($data['key']);
         TodoDismissal::query()->updateOrCreate(['key' => $data['key']], ['until' => isset($data['days']) ? now()->addDays($data['days']) : null]);
-        AuditLog::record('todo.dismissed', 'Todo', null, $data);
+        foreach ($jobs ?? [] as $job) {
+            TodoDismissal::query()->updateOrCreate(['key' => TodoList::mileageJobKey($job, $data['key'])], ['until' => null]);
+        }
+        AuditLog::record('todo.dismissed', 'Todo', null, $data + ($jobs ? ['no_mileage_for_jobs' => $jobs] : []));
         TodoList::forget();
 
-        return back()->with('success', isset($data['days']) ? "Snoozed for {$data['days']} days." : 'Marked not relevant.');
+        return back()->with('success', isset($data['days']) ? "Snoozed for {$data['days']} days."
+            : ($jobs ? 'Marked not relevant: '.(count($jobs) === 1 ? 'that job won’t' : 'those '.count($jobs).' jobs won’t').' be listed for mileage again.' : 'Marked not relevant.'));
     }
 
     public function act(string $code, string $id, TodoActions $actions): RedirectResponse

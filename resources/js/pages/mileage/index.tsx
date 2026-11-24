@@ -133,8 +133,8 @@ export default function Mileage({ year, years, locked, rates, trips, total_pence
                         <h2 className="font-semibold">Add trips for the jobs you drove to</h2>
                         <p className="text-muted-foreground text-sm">
                             From home ({homePostcode}) to each venue and back. Distances are estimated from the postcodes (straight line × 1.25 for
-                            roads): correct any that differ. Jobs you reached by train, plane or coach, jobs that already have mileage, and jobs whose
-                            last day is still to come aren’t listed.
+                            roads): correct any that differ. Jobs you reached by train, plane, coach or hire car (claim the hire and its fuel
+                            instead), jobs that already have mileage, and jobs whose last day is still to come aren’t listed.
                         </p>
                         <ul className="bg-background divide-y rounded-lg border text-sm">
                             {fromJobs.map((p) => (

@@ -19,7 +19,8 @@ use Illuminate\Support\Facades\Cache;
  * 51st duplicate charge) hasn't been dealt with, and one you snoozed is told apart from one that's gone. A snoozed
  * finding that's then dealt with counts as dealt with. A gap with the bank that's partly filled stays one finding,
  * however its dates and amount change, and the money dealt with is the most it involved (the whole gap, not what
- * was left of it at the end).
+ * was left of it at the end). A finding whose kind couldn't be worked out this time (its check went wrong, or a
+ * limit left some out: TodoList::scan()) is left open, not called dealt with, until it can.
  */
 final class FindingsRegistry
 {
@@ -33,9 +34,10 @@ final class FindingsRegistry
 
     /**
      * Record what's found now. One at a time: the history page and the nightly run can overlap, and two at once
-     * would both add the same new finding.
+     * would both add the same new finding. 'kept' counts findings missing this time but left open because their kind
+     * wasn't worked out in full; 'failed' names the kinds whose check went wrong.
      *
-     * @return array{new:int, resolved:int, open:int}
+     * @return array{new:int, resolved:int, open:int, kept?:int, failed?:list<string>}
      */
     public static function sync(): array
     {
@@ -77,15 +79,20 @@ final class FindingsRegistry
     /**
      * @param  ?string  $fingerprint  what the list was made from, taken before it's read (so a change made meanwhile
      *                                is recorded next time)
-     * @return array{new:int, resolved:int, open:int}
+     * @return array{new:int, resolved:int, open:int, kept:int, failed:list<string>}
      */
     private static function record(?string $fingerprint = null): array
     {
         $fingerprint ??= TodoList::fingerprint();
         $now = Carbon::now();
-        $all = collect(TodoList::everything())->reject(fn ($i) => in_array($i['group'], self::ROUTINE, true))->keyBy(fn ($i) => mb_substr($i['key'], 0, 191));
+        $scan = TodoList::scan();
+        $all = collect($scan['items'])->reject(fn ($i) => in_array($i['group'], self::ROUTINE, true))->keyBy(fn ($i) => mb_substr($i['key'], 0, 191));
+        // Kinds that couldn't be worked out in full this time (a check that went wrong, or a limit): one of theirs
+        // that's missing may still be there, so it's left as it is, never called dealt with.
+        $unsure = array_values(array_unique([...$scan['failed'], ...$scan['capped']]));
         $shown = $all->reject(fn ($i) => $i['hidden'] ?? false);
         self::followGaps($all, $now);
+        self::followFamilies($all);
         $existing = Finding::query()->whereIn('key', $all->keys())->get()->keyBy('key');
 
         $new = 0;
@@ -116,9 +123,11 @@ final class FindingsRegistry
             Finding::query()->whereIn('key', $keys->values()->all())->toBase()->update(['last_seen_at' => $now]);
         }
 
-        // Hidden by you: snoozed or marked not relevant, as you hid it now.
+        // Hidden by you: snoozed or marked not relevant, as you hid it now. Only snoozes still running count (as for
+        // the list itself, TodoDismissal::activeKeys()): one that's ended hides nothing.
         $resolved = 0;
-        $dismissals = TodoDismissal::query()->where(fn ($q) => $q->whereNull('until')->orWhere('until', '>', $now))->get()->keyBy('key');
+        $active = TodoDismissal::activeKeys();
+        $dismissals = TodoDismissal::query()->whereIn('key', array_keys($active) ?: [''])->get()->keyBy('key');
         foreach ($all->filter(fn ($i) => $i['hidden'] ?? false) as $key => $i) {
             $row = $existing[$key] ?? null;
             $label = $dismissals->get($i['hidden_by'] ?? $key)?->until ? 'snoozed' : 'dismissed';
@@ -134,17 +143,39 @@ final class FindingsRegistry
         }
 
         // Gone: dealt with. One that was snoozed and has gone since was dealt with too (a snooze isn't an answer).
+        // Except where its kind wasn't worked out in full this time: it's kept as it was until it is. And one you
+        // marked not relevant that's gone because of it (mileage for jobs you didn't drive to is left out from then
+        // on) was set aside, not dealt with.
+        $kept = 0;
         Finding::query()->whereNotIn('key', $all->keys()->all() ?: [''])->where(fn ($q) => $q->whereNull('resolved_at')->orWhere('resolution', 'snoozed'))->get()
-            ->each(function (Finding $f) use ($now, &$resolved) {
+            ->each(function (Finding $f) use ($now, $unsure, $dismissals, &$resolved, &$kept) {
+                if (self::startsWithAny($f->key, $unsure)) {
+                    $kept++;
+
+                    return;
+                }
                 if ($f->resolved_at === null) {
                     $resolved++;
                 }
-                $f->update(['resolved_at' => $now, 'resolution' => 'resolved']);
+                $setAside = $dismissals->has($f->key) && $dismissals[$f->key]->until === null;
+                $f->update(['resolved_at' => $now, 'resolution' => $setAside ? 'dismissed' : 'resolved']);
             });
 
         Cache::forever(self::SYNCED_KEY, $fingerprint);
 
-        return ['new' => $new, 'resolved' => $resolved, 'open' => $shown->count()];
+        return ['new' => $new, 'resolved' => $resolved, 'open' => $shown->count(), 'kept' => $kept, 'failed' => $scan['failed']];
+    }
+
+    /** @param  list<string>  $prefixes */
+    private static function startsWithAny(string $key, array $prefixes): bool
+    {
+        foreach ($prefixes as $prefix) {
+            if ($prefix !== '' && str_starts_with($key, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -181,6 +212,43 @@ final class FindingsRegistry
                     $f->update(['resolution' => 'superseded'] + ($f->resolved_at === null ? ['resolved_at' => $now] : []));
                 }
             });
+    }
+
+    /**
+     * Items kept by what they're about now, whose key changes with it: mileage by its jobs (mileage:{year}:{set}), a
+     * filed return by its difference (drift:{year}:{difference}) and failed background work by the newest failure
+     * (health:failed_jobs:{id}). One whose key has changed is the same finding: an open (or snoozed) one that's gone
+     * while a new key of its kind appears takes the new key and keeps its history, rather than being called dealt
+     * with. One you marked not relevant stays so: you set aside what it was about, and the new one is new.
+     *
+     * @param  Collection<string, array>  $all
+     */
+    private static function followFamilies(Collection $all): void
+    {
+        $fresh = $all->keys()->filter(fn ($k) => self::family($k) !== null);
+        if ($fresh->isEmpty()) {
+            return;
+        }
+        $known = Finding::query()->whereIn('key', $fresh->all())->pluck('key')->flip();
+        $fresh = $fresh->reject(fn ($k) => isset($known[$k]))->mapWithKeys(fn ($k) => [self::family($k) => $k]);
+        if ($fresh->isEmpty()) {
+            return;
+        }
+        Finding::query()->where(fn ($q) => $q->where('key', 'like', 'mileage:%')->orWhere('key', 'like', 'drift:%')->orWhere('key', 'like', 'health:failed_jobs:%'))
+            ->whereNotIn('key', $all->keys()->all())->where(fn ($q) => $q->whereNull('resolved_at')->orWhere('resolution', 'snoozed'))->orderByDesc('id')->get()
+            ->each(function (Finding $f) use (&$fresh) {
+                $family = self::family($f->key);
+                if ($family !== null && isset($fresh[$family])) {
+                    $f->update(['key' => $fresh[$family]]);
+                    $fresh->forget($family);
+                }
+            });
+    }
+
+    /** What a key changing with what it's about is about: mileage:{year} (or mileage:setup), drift:{year}, health:failed_jobs. */
+    private static function family(string $key): ?string
+    {
+        return preg_match('/^((?:mileage|drift):[^:]+|health:failed_jobs):[^:]+$/', $key, $m) ? $m[1] : null;
     }
 
     /**

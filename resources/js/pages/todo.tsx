@@ -27,6 +27,18 @@ interface Item {
     snooze_only?: boolean;
 }
 
+/** What the money checks looked at this time, so it shows they ran even when they found nothing (null: it went wrong). */
+interface Checked {
+    hmrc: number | null;
+    jobs: number | null;
+    years: number | null;
+}
+
+const counted = (n: number | null, one: string, many: string, what = '') =>
+    n === null
+        ? `${many}${what && ` ${what}`}: couldn’t check this time`
+        : `${n.toLocaleString('en-GB')} ${n === 1 ? one : many}${what && ` ${what}`}`;
+
 const PRIORITY = {
     1: { label: 'Do first', dot: 'bg-rose-500' },
     2: { label: 'This week', dot: 'bg-amber-500' },
@@ -40,6 +52,7 @@ export default function Todo({
     total,
     groups,
     all = [],
+    checked,
 }: {
     items: Item[];
     counts: Record<string, number>;
@@ -47,6 +60,7 @@ export default function Todo({
     groups: Record<string, string>;
     /** The kinds sent in full because you asked for all of them; of the rest, only the first few are sent. */
     all?: string[];
+    checked?: Checked;
 }) {
     const [busy, setBusy] = useState<string | null>(null);
     const [filter, setFilter] = useState<string | null>(null);
@@ -239,6 +253,18 @@ export default function Todo({
                         </section>
                     );
                 })}
+
+                {checked && (
+                    <p className="text-muted-foreground border-t pt-3 text-xs">
+                        Checked:{' '}
+                        {[
+                            counted(checked.hmrc, 'payment to HMRC', 'payments to HMRC'),
+                            counted(checked.jobs, 'finished job', 'finished jobs', 'for mileage'),
+                            counted(checked.years, 'filed year', 'filed years', 'against your records'),
+                        ].join(', ')}
+                        .
+                    </p>
+                )}
             </div>
         </AppLayout>
     );
