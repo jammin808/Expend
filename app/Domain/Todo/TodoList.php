@@ -9,6 +9,7 @@ use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\Reconciler;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\OwnAccounts;
+use App\Domain\Matching\TransferPairer;
 use App\Domain\Tax\PenaltyEstimator;
 use App\Models\Account;
 use App\Models\Allocation;
@@ -98,6 +99,28 @@ final class TodoList
         self::keep($list, $stamp);
 
         return self::cut($list, $perGroup);
+    }
+
+    /**
+     * Every item, for the findings history (FindingsRegistry), which must tell an item that's gone from one that's
+     * only hidden or past a limit: nothing is left out by the limits that keep the list quick (the newest 300 jobs,
+     * 50 duplicate charges), and what you snoozed or marked not relevant is kept, with 'hidden' set and 'hidden_by'
+     * the key it's hidden under. Not kept for the dashboard, which keeps its own list.
+     *
+     * @return list<array>
+     */
+    public static function everything(): array
+    {
+        return self::compute(self::KEEP_PER_GROUP, TodoDismissal::activeKeys(), true)['items'];
+    }
+
+    /**
+     * A fingerprint of everything the list is made from right now (see stamp()): the same as last time means the
+     * list would be the same. One query.
+     */
+    public static function fingerprint(): string
+    {
+        return self::stamp(TodoDismissal::activeKeys());
     }
 
     /**
@@ -201,11 +224,16 @@ final class TodoList
 
     /**
      * @param  array<string, true>  $hidden  keys you snoozed or marked not relevant
+     * @param  bool  $complete  for everything(): no query limits, and hidden items kept and marked
      * @return array{items:list<array>, counts:array<string,int>, total:int, per_group:int} every item, most urgent first
      */
-    private static function compute(int $limit, array $hidden): array
+    private static function compute(int $limit, array $hidden, bool $complete = false): array
     {
-        self::$changed = false; // what's been written so far is in this list
+        if (! $complete) {
+            self::$changed = false; // what's been written so far is in this list (which is kept)
+        }
+        $capped = fn ($query, int $max) => $complete ? $query : $query->limit($max);
+        $hiddenBy = []; // items hidden under another key: a gap snoozed before its key changed
         $items = [];
         $add = function (string $group, int $priority, string $key, string $title, ?string $detail, ?string $href, array $actions = [], array $extra = []) use (&$items) {
             $items[] = ['key' => $key, 'group' => $group, 'priority' => $priority, 'title' => $title, 'detail' => $detail, 'href' => $href, 'actions' => $actions,
@@ -330,7 +358,7 @@ final class TodoList
         }
 
         // Finished jobs with no invoice issued (as PoStatus counts it: an issued or paid invoice for the job).
-        $finished = WorkJob::query()->with('client')->where('status', '!=', 'cancelled')->whereDate('ends_on', '<', today())->orderByDesc('ends_on')->limit(300)->get();
+        $finished = $capped(WorkJob::query()->with('client')->where('status', '!=', 'cancelled')->whereDate('ends_on', '<', today())->orderByDesc('ends_on'), 300)->get();
         $invoiced = Invoice::query()->whereIn('work_job_id', $finished->pluck('id'))->whereIn('status', ['issued', 'paid'])->distinct()->pluck('work_job_id')->flip();
         $drafts = Invoice::query()->where('status', 'draft')->whereIn('work_job_id', $finished->pluck('id'))->pluck('id', 'work_job_id');
         foreach ($finished->filter(fn (WorkJob $j) => ! isset($invoiced[$j->id])) as $j) {
@@ -359,33 +387,48 @@ final class TodoList
                 '/connections?year='.UkTaxYear::fromDate($c->starts_on)->label(), [self::action('cand_add', $c->id, 'Add as a job'), self::action('cand_dismiss', $c->id, 'Not a job', 'ghost')]);
         }
 
-        // Money moving between your own accounts, suggested by the matcher: confirm them all in one go.
-        $moves = self::suggestedTransfers();
+        // Money moving between your own accounts, suggested by the matcher, that is safe to confirm in one go: both
+        // sides of each pair, and money going to another account of yours (TransferPairer::confirmable). The button
+        // carries the last suggestion shown, so one made after the list was built is never confirmed unseen. Money
+        // paid in with no other side imported is left out: a client could have paid it, so it's listed with the
+        // payments to decide, one by one.
+        $moves = TransferPairer::confirmable();
         if ($moves['count'] > 0) {
+            $sides = implode(' and ', array_filter([
+                $moves['out_count'] ? Money::format($moves['out_pence'], 'GBP', false).' out' : null,
+                $moves['in_count'] ? Money::format($moves['in_pence'], 'GBP', false).' in' : null,
+            ]));
             $add('transfers', 2, 'transfers', 'Confirm '.$moves['count'].' '.($moves['count'] === 1 ? 'transfer' : 'transfers').' between your accounts',
-                Money::format($moves['pence']).' moved between your own accounts (card bills, top-ups, savings, your own name). They aren’t spending or income, so they don’t change your tax.',
-                '/transactions?kind=transfer&status=suggested', [self::action('transfers_ok', 0, 'Confirm all')]);
+                ucfirst($sides).' moving between your own accounts: both sides of each pair, and money going to another account of yours. Once confirmed, they’re left out of your income and spending.',
+                '/transactions?kind=transfer&status=suggested', [self::action('transfers_ok', $moves['up_to'], 'Confirm all')]);
         }
 
         // Payments to decide: suggestions first (one tap to accept), then the rest. Ones you snoozed are left out
-        // before the first few are picked, so the next ones show instead, and the count is of what's left.
+        // before the first few are picked, so the next ones show instead, and the count is of what's left. Suggested
+        // transfers are confirmed together above, except money paid in with no other side imported, and a transfer
+        // with something else suggested beside it (a currency exchange's fee, as a bank charge), which are here.
         $hiddenTx = array_map(fn ($k) => (int) substr($k, 3), array_values(array_filter(array_keys($hidden), fn ($k) => str_starts_with($k, 'tx:'))));
         $waiting = fn () => BankTransaction::query()->whereIn('review_status', ['suggested', 'unreviewed'])->whereNotIn('id', $hiddenTx)
-            ->whereDoesntHave('allocations', fn ($a) => $a->where('kind', 'transfer')->whereNull('confirmed_at')->where('decided_by', 'matcher'));
-        $txs = $waiting()->with(['allocations.category', 'allocations.job'])
+            ->where(fn ($q) => $q->whereDoesntHave('allocations', fn ($a) => $a->where('kind', 'transfer')->whereNull('confirmed_at')->where('decided_by', 'matcher'))
+                ->orWhereIn('id', $moves['left_ids'] ?: [0])
+                ->orWhereHas('allocations', fn ($a) => $a->where('kind', '!=', 'transfer')->whereNull('confirmed_at')));
+        $txs = $waiting()->with(['account', 'allocations.category', 'allocations.job'])
             ->orderByRaw("CASE WHEN review_status = 'suggested' THEN 0 ELSE 1 END")->orderByDesc('posted_on')->limit($limit)->get();
         foreach ($txs as $t) {
             $s = $t->allocations->first();
-            $suggestion = $s && ! $s->confirmed_at ? (Allocation::KINDS[$s->kind] ?? $s->kind).($s->category ? ': '.$s->category->name : '').($s->job ? ' · '.$s->job->title : '') : null;
-            $add('payments', 2, 'tx:'.$t->id, ($t->counterparty ?: $t->description), $t->effectiveDate()->format('j M Y').($suggestion ? ' · suggested: '.$suggestion : ''), '/inbox',
+            // Every line suggested, so accepting never confirms a part you didn't see (an exchange's fee beside its transfer).
+            $suggestion = $s && ! $s->confirmed_at ? $t->allocations->map(fn (Allocation $a) => (Allocation::KINDS[$a->kind] ?? $a->kind).($a->category ? ': '.$a->category->name : '').($a->job ? ' · '.$a->job->title : ''))
+                ->unique()->implode(' + ') : null;
+            $how = self::howPaid($t);
+            $add('payments', 2, 'tx:'.$t->id, ($t->counterparty ?: $t->description), $t->effectiveDate()->format('j M Y').($how !== '' ? ' · '.$how : '').($suggestion ? ' · suggested: '.$suggestion : ''), '/inbox',
                 array_values(array_filter([$suggestion ? self::action('tx_accept', $t->id, 'Accept') : null, self::action('tx_personal', $t->id, 'Personal', 'ghost')])), ['amount' => $t->amount_pence]);
         }
         $payments = $txs->count() < $limit ? $txs->count() : $waiting()->count();
 
         // The same amount to the same merchant twice in a day (£20 or more): charged twice?
-        $dupes = OwnAccounts::scopeNotTransfers(BankTransaction::query())->where('amount_pence', '<=', -2000)->whereNull('transfer_pair_id')
+        $dupes = $capped(OwnAccounts::scopeNotTransfers(BankTransaction::query())->where('amount_pence', '<=', -2000)->whereNull('transfer_pair_id')
             ->select('account_id', 'merchant_key', 'amount_pence', 'posted_on')->selectRaw('COUNT(*) as n, MIN(id) as first_id')
-            ->groupBy('account_id', 'merchant_key', 'amount_pence', 'posted_on')->havingRaw('COUNT(*) > 1')->orderByDesc('posted_on')->limit(50)->get();
+            ->groupBy('account_id', 'merchant_key', 'amount_pence', 'posted_on')->havingRaw('COUNT(*) > 1')->orderByDesc('posted_on'), 50)->get();
         $firsts = BankTransaction::query()->whereIn('id', $dupes->pluck('first_id'))->get()->keyBy('id');
         foreach ($dupes as $d) {
             if (! ($tx = $firsts[$d->first_id] ?? null)) {
@@ -414,7 +457,7 @@ final class TodoList
         }
 
         // Jobs with no PO.
-        foreach (self::withoutPo(WorkJob::query()->where('status', '!=', 'cancelled')->orderByDesc('starts_on')->limit(300)->get()) as $j) {
+        foreach (self::withoutPo($capped(WorkJob::query()->where('status', '!=', 'cancelled')->orderByDesc('starts_on'), 300)->get()) as $j) {
             $add('no_po', 2, 'no_po:'.$j->id, 'No PO: '.$j->title, $j->starts_on->format('j M Y').'. Link the PO email or attachment, add the number, or mark it not needed.', '/jobs/'.$j->id,
                 [self::action('job_no_po', $j->id, 'No PO needed', 'ghost')]);
         }
@@ -424,12 +467,36 @@ final class TodoList
             $r = Reconciler::account($acc);
             $currency = $r['currency'] ?? 'GBP';
             foreach ($r['gaps'] as $g) {
-                $add('reconcile', 2, 'gap:'.$acc->id.':'.$g['from'].':'.$g['missing_pence'], $acc->name.': '.Money::format(abs($g['missing_pence']), $currency).' missing', $g['text'].' Import the statement for those dates (or the missing rows); if they’re already in another account, check the right account was chosen.',
-                    '/imports', [], ['amount' => $g['missing_pence'], 'currency' => $currency]);
+                // Kept by its dates and amount: "not relevant" hides the gap you saw, and one that grows (or shrinks)
+                // comes back. The findings history follows a gap by its dates, so it's one finding however it changes.
+                $kind = $g['kind'] ?? 'missing';
+                $key = 'gap:'.$acc->id.':'.$g['from'].':'.$g['to'].':'.$g['missing_pence'].($kind === 'extra' ? ':twice' : ($kind === 'misdated' ? ':date' : ''));
+                $legacy = 'gap:'.$acc->id.':'.$g['from'].':'.$g['missing_pence']; // how a gap was kept before: a snooze on it still counts
+                if ($kind === 'missing' && ! isset($hidden[$key]) && isset($hidden[$legacy])) {
+                    $hidden[$key] = true;
+                    $hiddenBy[$key] = $legacy;
+                }
+                // A gap is in the account's own minor units (¥1,500 is 1500); the item's amount, like every to-do's,
+                // in hundredths of its currency, as the list, the history and Telegram show it.
+                $amount = Money::formatMinor(abs($g['missing_pence']), $currency);
+                $meta = fn (int $minor) => ['amount' => Money::toHundredths($minor, $currency), 'currency' => $currency];
+                // The account's lines of that amount, where a payment in twice (or dated differently) is easy to see.
+                $lines = '/transactions?account='.$acc->id.($currency === 'GBP' ? '&min='.($a = number_format(abs($g['missing_pence']) / 100, 2, '.', '')).'&max='.$a : '');
+                match ($kind) {
+                    'extra' => $add('reconcile', 2, $key, $acc->name.': '.$amount.' may be in twice', $g['text'].' Check whether the payment is on the ledger twice (for example from a second export) before undoing anything: undoing an import takes out every line it brought in. If it’s only there once, look for a gap of the same amount nearby; the bank may have it on another date.',
+                        $lines, [], $meta(-$g['missing_pence'])), // the lines in twice
+                    'misdated' => $add('reconcile', 2, $key, $acc->name.': check the date of a '.$amount.' line', $g['text'].' If it’s the same payment, nothing is missing: mark this not relevant. If not, import the statement for those dates (or the missing rows).',
+                        $lines, [], $meta($g['missing_pence'])),
+                    default => $add('reconcile', 2, $key, $acc->name.': '.$amount.' missing', $g['text'].' Import the statement for those dates (or the missing rows); if they’re already in another account, check the right account was chosen.',
+                        '/imports', [], $meta($g['missing_pence'])),
+                };
             }
             if ($r['stale']) {
-                $add('reconcile', 3, 'stale:'.$acc->id.':'.$r['last_line'], $acc->name.': nothing imported since '.CarbonImmutable::parse($r['last_line'])->format('j M Y'),
-                    'Import its latest statement, or choose “Hide from checks” on Accounts if it’s closed.', '/imports');
+                $since = CarbonImmutable::parse($r['last_import'] ?? $r['last_line'])->format('j M Y');
+                $add('reconcile', 3, 'stale:'.$acc->id.':'.$r['last_line'], $acc->name.': nothing imported since '.$since,
+                    $acc->parent_account_id
+                        ? 'A statement for one currency doesn’t show another’s. If you used this pocket after '.$since.', import its statement; if not, mark this not relevant (it comes back when the pocket has new lines).'
+                        : 'Import its latest statement, or choose “Hide from checks” on Accounts if it’s closed.', '/imports');
             }
         }
 
@@ -449,8 +516,10 @@ final class TodoList
                 [self::action('doc_approve', $d->id, 'Approve')]);
         }
 
-        // Hide what you snoozed or marked not relevant, count what's left, most urgent first.
-        $items = array_values(array_filter($items, fn ($i) => ! isset($hidden[$i['key']])));
+        // Hide what you snoozed or marked not relevant (or, for everything(), mark it), count what's left, most urgent first.
+        $items = $complete
+            ? array_map(fn ($i) => $i + ['hidden' => isset($hidden[$i['key']]), 'hidden_by' => $hiddenBy[$i['key']] ?? $i['key']], $items)
+            : array_values(array_filter($items, fn ($i) => ! isset($hidden[$i['key']])));
         $counts = array_count_values(array_column($items, 'group'));
         $counts['payments'] = $payments; // only the first few are listed
         $counts = array_filter($counts);
@@ -473,6 +542,29 @@ final class TodoList
         $missing = array_filter(PoStatus::forJobs($candidates), fn ($s) => $s['missing']);
 
         return $candidates->filter(fn (WorkJob $j) => isset($missing[$j->id]))->values();
+    }
+
+    /**
+     * How a payment was made, so it can be decided from the list (or the chat): the time, the account and card, the
+     * payment type, the place, and what was paid in another currency, in that currency's own units ("20:15 ·
+     * Revolut · card •••• 4821 · Card Payment · Lyon, FR · paid €23.00").
+     */
+    public static function howPaid(BankTransaction $tx): string
+    {
+        $foreign = $tx->original_currency && strtoupper($tx->original_currency) !== 'GBP' && $tx->original_amount_minor !== null;
+        $merchant = $tx->merchant_currency && $tx->merchant_amount_minor !== null && strtoupper($tx->merchant_currency) !== 'GBP';
+
+        return implode(' · ', array_filter([
+            $tx->transacted_time ? substr((string) $tx->transacted_time, 0, 5) : null,
+            $tx->account?->name,
+            $tx->card_last4 ? 'card •••• '.$tx->card_last4 : null,
+            $tx->payment_type,
+            $tx->place,
+            // The currency the shop charged ($90.00 from the euro account), else the line's own other currency.
+            $merchant ? 'paid '.Money::formatMinor(abs((int) $tx->merchant_amount_minor), $tx->merchant_currency, false)
+                .($foreign ? ' ('.Money::formatMinor(abs((int) $tx->original_amount_minor), $tx->original_currency, false).')' : '')
+                : ($foreign ? 'paid '.Money::formatMinor(abs((int) $tx->original_amount_minor), $tx->original_currency, false) : null),
+        ]));
     }
 
     /** The first $perGroup items of each kind, with the counts and total of everything. */
@@ -558,17 +650,5 @@ final class TodoList
             fn (CalendarJobLink $l) => ['Check a calendar link'.($l->summary ? ': '.$l->summary : ''), '/jobs/finder']);
 
         return $out;
-    }
-
-    /** Transfers the matcher suggested and you haven't confirmed. @return array{count:int, pence:int, ids:list<int>} */
-    public static function suggestedTransfers(): array
-    {
-        $txs = BankTransaction::query()->where('review_status', 'suggested')
-            ->whereHas('allocations', fn ($a) => $a->where('kind', 'transfer')->whereNull('confirmed_at')->where('decided_by', 'matcher'))
-            ->whereDoesntHave('allocations', fn ($a) => $a->where('kind', '!=', 'transfer'))
-            ->whereNotIn('tax_year', TaxYear::query()->whereNotNull('locked_at')->pluck('label'))
-            ->get(['id', 'amount_pence']);
-
-        return ['count' => $txs->count(), 'pence' => (int) $txs->where('amount_pence', '<', 0)->sum(fn ($t) => -$t->amount_pence), 'ids' => $txs->pluck('id')->all()];
     }
 }

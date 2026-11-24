@@ -13,8 +13,13 @@ export interface Find {
     label: string;
     detail: string | null;
     date: string | null;
+    /** Pence for a payment or money in; for a booking or an invoice, hundredths of its own currency. */
     amount_pence: number | null;
     currency: string | null;
+    /** A payment not decided yet: open it to decide what it is (the job can't take it until then). */
+    undecided?: boolean;
+    /** An invoice that's been issued or paid: it stays with the job (void it and issue a new one to move it). */
+    locked?: 'issued' | 'paid' | null;
 }
 export interface GatherState {
     at: string | null;
@@ -62,7 +67,7 @@ export function JobFinds({
             {f.amount_pence !== null && <span className="tabular-nums">{money(f.amount_pence, f.currency ?? 'GBP')}</span>}
             <span className="flex gap-1">
                 {f.status === 'possible' &&
-                    (f.type === 'payment' && f.detail?.includes('not decided') ? (
+                    (f.type === 'payment' && f.undecided ? (
                         <Button size="sm" variant="outline" onClick={() => onOpenPayment(Number(f.ref))}>
                             Decide
                         </Button>
@@ -71,9 +76,15 @@ export function JobFinds({
                             Link
                         </Button>
                     ))}
-                <Button size="sm" variant="ghost" onClick={() => router.post(`/job-finds/${f.id}/reject`, {}, opts)}>
-                    {f.status === 'linked' ? 'Undo' : 'Not this job'}
-                </Button>
+                {f.status === 'linked' && f.locked ? (
+                    <span className="text-muted-foreground text-xs">
+                        {f.locked === 'paid' ? 'Paid, so it stays with this job' : 'Issued: void it and issue a new one to move it'}
+                    </span>
+                ) : (
+                    <Button size="sm" variant="ghost" onClick={() => router.post(`/job-finds/${f.id}/reject`, {}, opts)}>
+                        {f.status === 'linked' ? 'Undo' : 'Not this job'}
+                    </Button>
+                )}
             </span>
         </li>
     );

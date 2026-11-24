@@ -1,9 +1,10 @@
 import { Money } from '@/components/money';
 import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
-import { day, money } from '@/lib/format';
+import { day, money, moneyMinor } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { Head, Link, router } from '@inertiajs/react';
 import { AlertTriangle, CheckCircle2, FileUp, Undo2 } from 'lucide-react';
@@ -47,12 +48,23 @@ interface Preview {
         currency: string;
         name: string;
         exists: boolean;
+        adopt?: boolean;
         new: number;
         duplicates: number;
+        locked?: number;
         balance: string;
         first: string | null;
         last: string | null;
     }[];
+    /** The main account, when the account chosen is one of its pockets. */
+    family?: string | null;
+    /**
+     * Which of a Business statement's accounts is the main account itself, when that isn't clear: asked once, then
+     * remembered. `chosen` is null until you answer; `none` is the answer for "none of them".
+     */
+    main?: { root: string; options: { key: string; label: string }[]; chosen: string | null; none: string } | null;
+    /** Months with no rate to convert a currency at: enter one to import the file. */
+    missing_rates?: MissingRate[];
     skipped?: Record<string, number>;
     exchanges?: number;
     sample?: {
@@ -60,10 +72,20 @@ interface Preview {
         description: string;
         amount_pence: number;
         balance_pence: number | null;
+        /** The currency the running balance is in (a euro pocket's balance is in euros). */
+        balance_currency?: string;
+        /** The line's amount in its pocket's own currency. */
+        native_minor?: number | null;
         currency: string | null;
         original_minor: number | null;
         duplicate: boolean;
     }[];
+}
+
+interface MissingRate {
+    currency: string;
+    month: string;
+    label: string;
 }
 
 interface Props {
@@ -85,6 +107,91 @@ interface Props {
     }[];
     preview: Preview | null;
     dateFormats: string[];
+}
+
+/** Ask which of a Business statement's accounts is the main account itself, when that isn't clear. */
+function MainChoice({ main, accountId }: { main: NonNullable<Preview['main']>; accountId: number }) {
+    return (
+        <div className={cn('space-y-1 rounded-md p-3', main.chosen === null ? 'bg-amber-50 dark:bg-amber-950/40' : 'bg-muted/50')}>
+            <Label htmlFor="main-pocket" className="text-sm font-medium">
+                Which of this statement’s accounts is {main.root} itself?
+            </Label>
+            <p className="text-muted-foreground text-xs">
+                This statement has more than one account in {main.root}’s currency, and none is called Main or Current. The one you choose goes into{' '}
+                {main.root}; the others each get an account of their own under it. It’s remembered for later statements.
+            </p>
+            <NativeSelect
+                id="main-pocket"
+                className="max-w-sm"
+                value={main.chosen ?? ''}
+                onChange={(e) =>
+                    e.target.value &&
+                    router.post('/imports/preview', { account_id: accountId, main_pocket: e.target.value } as never, {
+                        preserveScroll: true,
+                        preserveState: true,
+                    })
+                }
+            >
+                <option value="">Choose…</option>
+                {main.options.map((o) => (
+                    <option key={o.key} value={o.key}>
+                        {o.label}
+                    </option>
+                ))}
+                <option value={main.none}>None of them: each gets an account of its own, and {main.root} stays empty</option>
+            </NativeSelect>
+        </div>
+    );
+}
+
+/** Why rows of a Revolut statement were left out. */
+const skippedNames: Record<string, string> = { ZERO: 'with no amount' };
+
+/** One box per missing rate: how many of the currency a pound bought that month (HMRC publishes these). */
+function MissingRates({ rates, accountId }: { rates: MissingRate[]; accountId: number }) {
+    const [values, setValues] = useState<Record<string, string>>({});
+    const [saving, setSaving] = useState(false);
+    const key = (r: MissingRate) => `${r.currency}|${r.month}`;
+    const ready = rates.every((r) => Number(values[key(r)]) > 0);
+    const save = () => {
+        setSaving(true);
+        router.post(
+            '/imports/preview',
+            {
+                account_id: accountId,
+                rates: rates.map((r) => ({ currency: r.currency, month: r.month, units_per_gbp: values[key(r)] })),
+            } as never,
+            { preserveScroll: true, onFinish: () => setSaving(false) },
+        );
+    };
+    return (
+        <div className="mt-3 space-y-2 rounded-md bg-white/60 p-3 dark:bg-black/20">
+            <p>
+                There's no exchange rate for these months yet. Enter how many of each currency £1 bought (from HMRC's published monthly rates, or your
+                bank's). It's used for every line in that currency and month that has no sterling figure of its own.
+            </p>
+            <div className="flex flex-wrap items-end gap-3">
+                {rates.map((r) => (
+                    <div key={key(r)} className="space-y-1">
+                        <Label htmlFor={`rate-${key(r)}`} className="text-xs">
+                            {r.currency} per £1, {r.label}
+                        </Label>
+                        <Input
+                            id={`rate-${key(r)}`}
+                            inputMode="decimal"
+                            className="w-36"
+                            placeholder="e.g. 1.1650"
+                            value={values[key(r)] ?? ''}
+                            onChange={(e) => setValues({ ...values, [key(r)]: e.target.value.trim() })}
+                        />
+                    </div>
+                ))}
+                <Button size="sm" disabled={!ready || saving} onClick={save}>
+                    {saving ? 'Saving…' : rates.length === 1 ? 'Use this rate' : 'Use these rates'}
+                </Button>
+            </div>
+        </div>
+    );
 }
 
 const presetNames: Record<string, string> = {
@@ -128,6 +235,7 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
     const [profile, setProfile] = useState<Profile | null>(preview?.profile ?? null);
     const [busy, setBusy] = useState(false);
     const [dragging, setDragging] = useState(false);
+    const revolut = String(preview?.profile.preset ?? '').startsWith('revolut');
 
     const upload = (file: File) => {
         if (!accountId) return;
@@ -220,7 +328,9 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                             <div>
                                 <p className="font-semibold">{preview.filename}</p>
                                 <p className="text-muted-foreground text-sm">
-                                    Into {preview.account.name} · read as {presetNames[preview.profile.preset] ?? preview.profile.preset}
+                                    Into{' '}
+                                    {preview.family ? `${preview.family} and its pockets (you chose ${preview.account.name})` : preview.account.name}{' '}
+                                    · read as {presetNames[preview.profile.preset] ?? preview.profile.preset}
                                 </p>
                             </div>
                             <Button variant="ghost" onClick={() => router.post('/imports/cancel')}>
@@ -275,6 +385,7 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                         {preview.pockets && preview.pockets.length > 0 && (
                             <div className="space-y-2 rounded-lg border p-3 text-sm">
                                 <p className="font-medium">Each currency goes into its own account, checked against its own balance</p>
+                                {preview.main && <MainChoice main={preview.main} accountId={preview.account.id} />}
                                 <ul className="divide-y">
                                     {preview.pockets.map((p) => (
                                         <li key={p.label} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5">
@@ -282,9 +393,11 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                                             <span className="min-w-0 flex-1">
                                                 {p.name}
                                                 {!p.exists && <span className="text-muted-foreground"> (new)</span>}
+                                                {p.adopt && <span className="text-muted-foreground"> (kept in {p.currency} from now on)</span>}
                                             </span>
                                             <span className="text-muted-foreground text-xs">
                                                 {p.new} new{p.duplicates ? `, ${p.duplicates} already in` : ''}
+                                                {p.locked ? `, ${p.locked} in a locked year` : ''}
                                                 {p.first ? ` · ${day(p.first)} – ${day(p.last)}` : ''}
                                             </span>
                                             <span
@@ -310,8 +423,8 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                                         ? ` ${preview.exchanges} currency ${preview.exchanges === 1 ? 'exchange is' : 'exchanges are'} paired as transfers.`
                                         : ''}
                                     {preview.skipped && Object.keys(preview.skipped).length > 0
-                                        ? ` Skipped (not completed): ${Object.entries(preview.skipped)
-                                              .map(([k, v]) => `${v} ${k.toLowerCase()}`)
+                                        ? ` Left out (not completed, or moving nothing): ${Object.entries(preview.skipped)
+                                              .map(([k, v]) => `${v} ${skippedNames[k] ?? k.toLowerCase()}`)
                                               .join(', ')}.`
                                         : ''}
                                 </p>
@@ -320,16 +433,23 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
 
                         {preview.errors && preview.errors.length > 0 && (
                             <div className="rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950/30 dark:text-rose-200">
-                                <p className="font-medium">{preview.error_count} rows can't be read yet. Adjust the columns below.</p>
+                                <p className="font-medium">
+                                    {revolut
+                                        ? `${preview.error_count} ${preview.error_count === 1 ? 'thing needs' : 'things need'} sorting out before this statement can be imported.`
+                                        : `${preview.error_count} rows can't be read yet. Adjust the columns below.`}
+                                </p>
                                 <ul className="mt-1 list-disc pl-5">
                                     {preview.errors.slice(0, 5).map((e) => (
                                         <li key={e}>{e}</li>
                                     ))}
                                 </ul>
+                                {preview.missing_rates && preview.missing_rates.length > 0 && (
+                                    <MissingRates rates={preview.missing_rates} accountId={preview.account.id} />
+                                )}
                             </div>
                         )}
 
-                        {profile && !String(preview.profile.preset).startsWith('revolut') && (
+                        {profile && !revolut && (
                             <details
                                 open={!preview.ok || (preview.errors?.length ?? 0) > 0 || preview.profile.preset === 'custom'}
                                 className="rounded-lg border p-4"
@@ -434,23 +554,41 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                                                 <td className="max-w-96 truncate py-1.5 pr-3">{r.description}</td>
                                                 <td className="py-1.5 pr-3 text-right">
                                                     <Money pence={r.amount_pence} />
+                                                    {r.native_minor !== null && r.native_minor !== undefined && r.balance_currency && (
+                                                        <span className="text-muted-foreground block text-xs tabular-nums">
+                                                            {moneyMinor(r.native_minor, r.balance_currency)}
+                                                        </span>
+                                                    )}
+                                                    {r.currency && r.original_minor !== null && r.currency !== (r.balance_currency ?? 'GBP') && (
+                                                        <span className="text-muted-foreground block text-xs tabular-nums">
+                                                            paid {moneyMinor(r.original_minor, r.currency)}
+                                                        </span>
+                                                    )}
                                                 </td>
                                                 <td className="text-muted-foreground py-1.5 text-right text-xs tabular-nums">
-                                                    {r.balance_pence !== null ? money(r.balance_pence) : ''}
+                                                    {r.balance_pence !== null ? moneyMinor(r.balance_pence, r.balance_currency ?? 'GBP') : ''}
                                                 </td>
                                             </tr>
                                         ))}
                                     </tbody>
                                 </table>
                                 <p className="text-muted-foreground mt-2 text-xs">
-                                    Spending shows as negative. If it's the other way round, tick the sign option above.
+                                    {revolut
+                                        ? 'Spending shows as negative, in pounds; a line in another currency also shows its own amount, and the balance is in the account’s own currency.'
+                                        : "Spending shows as negative. If it's the other way round, tick the sign option above."}
                                 </p>
                             </div>
                         )}
 
                         <div className="flex gap-2">
                             <Button
-                                disabled={!preview.ok || (preview.error_count ?? 0) > 0 || preview.new === 0 || busy}
+                                disabled={
+                                    !preview.ok ||
+                                    (preview.error_count ?? 0) > 0 ||
+                                    preview.new === 0 ||
+                                    (preview.main != null && preview.main.chosen === null) ||
+                                    busy
+                                }
                                 onClick={() => (setBusy(true), router.post('/imports/commit', {}, { onFinish: () => setBusy(false) }))}
                             >
                                 Import {preview.new} transactions

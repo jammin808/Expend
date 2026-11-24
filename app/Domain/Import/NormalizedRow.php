@@ -28,6 +28,12 @@ final class NormalizedRow
         public ?string $fxSource = null,
         public ?int $feeMinor = null,
         public ?string $exchangeKey = null,
+        // The currency the payment was actually made in, when it isn't the account's own: $90.00 paid from a euro
+        // account as €76.64. Signed like the amount.
+        public ?int $merchantAmountMinor = null,
+        public ?string $merchantCurrency = null,
+        // The fee in pounds (a currency exchange's fee is a bank charge, not part of the money exchanged). Not stored.
+        public ?int $feePence = null,
     ) {}
 
     /** The amount and balance the statement itself uses (its own currency). */

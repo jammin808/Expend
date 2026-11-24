@@ -112,7 +112,9 @@ final class RuleLearner
      */
     private function offerFrom(string $merchantKey, Collection $latest, callable $waitingCount, callable $categoryName): ?array
     {
-        $decided = $latest->filter(fn (BankTransaction $t) => $t->allocations->isNotEmpty() && $t->allocations->every(fn (Allocation $a) => $a->decided_by === 'you'))->values();
+        // Decided by you, or a suggestion you accepted (as the Categoriser learns): never what a rule decided.
+        $decided = $latest->filter(fn (BankTransaction $t) => $t->allocations->isNotEmpty() && $t->allocations->every(fn (Allocation $a) => $a->decided_by === 'you'
+            || ($a->confirmed_at !== null && in_array($a->decided_by, ['matcher', 'ai'], true))))->values();
         if ($decided->count() < 2) {
             return null;
         }
@@ -244,6 +246,14 @@ final class RuleLearner
             return null; // a split across jobs or kinds: too specific for a rule
         }
 
-        return ['kind' => $main->kind, 'category_id' => $main->category_id, 'business_pct' => (int) ($main->business_use_pct ?? 100)];
+        // A business and personal split typed by amounts may carry no share (or 100%): its share is then the
+        // business amount's part of the whole.
+        $pct = (int) ($main->business_use_pct ?? 100);
+        $total = (int) $t->allocations->sum('amount_pence');
+        if (count($kinds) === 2 && $main->kind !== 'personal' && $total !== 0 && ($pct <= 0 || $pct >= 100)) {
+            $pct = max(1, min(99, (int) round(100 * (int) $main->amount_pence / $total)));
+        }
+
+        return ['kind' => $main->kind, 'category_id' => $main->category_id, 'business_pct' => $pct];
     }
 }

@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Audit\AuditLog;
+use App\Domain\Fx\ExchangeRates;
 use App\Domain\Import\CsvReader;
 use App\Domain\Import\Importer;
 use App\Domain\Import\ImportProfile;
@@ -9,7 +11,9 @@ use App\Domain\Import\ProfileDetector;
 use App\Domain\Import\RevolutImport;
 use App\Models\Account;
 use App\Models\BankTransaction;
+use App\Models\ExchangeRate;
 use App\Models\ImportBatch;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -19,7 +23,7 @@ use Throwable;
 
 class ImportController extends Controller
 {
-    public function __construct(private Importer $importer) {}
+    public function __construct(private Importer $importer, private ExchangeRates $rates) {}
 
     public function index(Request $request): Response
     {
@@ -29,20 +33,34 @@ class ImportController extends Controller
         if ($pending && is_file($pending['path']) && ($pending['revolut'] ?? null)) {
             $account = Account::query()->find($pending['account_id']);
             try {
-                $read = app(RevolutImport::class)->read($account, $pending['path']);
-                $all = collect($read['pockets'])->flatMap(fn ($p) => $p['rows']);
+                $read = app(RevolutImport::class)->read($account, $pending['path'], $pending['main_pocket'] ?? null);
+                $pockets = collect($read['pockets']);
+                $all = $pockets->flatMap(fn ($p) => $p['rows']);
                 $dates = $all->map(fn ($r) => $r->effectiveDate()->format('Y-m-d'))->sort()->values();
-                $failed = collect($read['pockets'])->first(fn ($p) => $p['balance']['status'] === 'failed');
-                $preview = ['ok' => true, 'new' => collect($read['pockets'])->sum('new'), 'duplicates' => collect($read['pockets'])->sum('duplicates'),
+                $failed = $pockets->first(fn ($p) => $p['balance']['status'] === 'failed');
+                // A few lines from each pocket, so the euro lines can be checked too, each in its own currency.
+                $each = max(2, intdiv(12, max(1, $pockets->count())));
+                $sample = $pockets->flatMap(fn ($p) => collect($p['rows'])->take($each)->map(fn ($r) => [
+                    'date' => $r->effectiveDate()->format('Y-m-d'), 'description' => $r->description, 'amount_pence' => $r->amountPence,
+                    'balance_pence' => $r->statementBalance(), 'balance_currency' => $p['currency'], 'native_minor' => $r->nativeAmountMinor,
+                    // What it was paid in, where that isn't the account's own currency (not the other side of an exchange).
+                    'currency' => $r->merchantCurrency ?? ($r->exchangeKey ? null : $r->originalCurrency),
+                    'original_minor' => $r->merchantAmountMinor ?? ($r->exchangeKey ? null : $r->originalAmountMinor), 'duplicate' => false,
+                ]));
+                $preview = ['ok' => true, 'new' => $pockets->sum('new'), 'duplicates' => $pockets->sum('duplicates'),
                     'errors' => array_slice($read['errors'], 0, 20), 'error_count' => count($read['errors']), 'rows' => $all->count(),
+                    'missing_rates' => $read['missing_rates'],
                     'balance' => $failed ? ['status' => 'failed', 'notes' => $failed['label'].': '.$failed['balance']['notes']]
-                        : (collect($read['pockets'])->every(fn ($p) => $p['balance']['status'] === 'passed') ? ['status' => 'passed', 'notes' => 'Each currency’s running balance adds up'] : ['status' => 'not_available', 'notes' => null]),
+                        : ($pockets->every(fn ($p) => $p['balance']['status'] === 'passed') ? ['status' => 'passed', 'notes' => 'Each currency’s running balance adds up'] : ['status' => 'not_available', 'notes' => null]),
                     'first' => $dates->first(), 'last' => $dates->last(),
-                    'pockets' => collect($read['pockets'])->map(fn ($p) => ['label' => $p['label'], 'currency' => $p['currency'], 'name' => $p['name'], 'exists' => (bool) $p['account'],
-                        'new' => $p['new'], 'duplicates' => $p['duplicates'], 'balance' => $p['balance']['status'], 'first' => $p['first'], 'last' => $p['last']])->values(),
+                    'family' => $read['root']->id !== $account->id ? $read['root']->name : null,
+                    'pockets' => $pockets->map(fn ($p) => ['label' => $p['label'], 'currency' => $p['currency'], 'name' => $p['name'], 'exists' => (bool) $p['account'],
+                        'adopt' => $p['adopt'], 'new' => $p['new'], 'duplicates' => $p['duplicates'], 'locked' => $p['locked'], 'balance' => $p['balance']['status'],
+                        'first' => $p['first'], 'last' => $p['last']])->values(),
                     'skipped' => $read['skipped'], 'exchanges' => $read['exchanges'],
-                    'sample' => $all->take(12)->map(fn ($r) => ['date' => $r->effectiveDate()->format('Y-m-d'), 'description' => $r->description, 'amount_pence' => $r->amountPence,
-                        'balance_pence' => $r->statementBalance(), 'currency' => $r->originalCurrency, 'original_minor' => $r->originalAmountMinor, 'duplicate' => false])->values()];
+                    // Which of the statement's accounts is the main account itself, when that isn't clear.
+                    'main' => $read['main'] ? $read['main'] + ['none' => RevolutImport::NO_MAIN] : null,
+                    'sample' => $sample->values()];
             } catch (Throwable $e) {
                 $preview = ['ok' => false, 'message' => $e->getMessage()];
             }
@@ -91,9 +109,17 @@ class ImportController extends Controller
             'file' => 'nullable|file|mimes:csv,txt,xlsx|max:20480',
             'account_id' => 'required|integer|exists:accounts,id',
             'profile' => 'nullable|array',
+            'rates' => 'nullable|array|max:24',
+            'rates.*.currency' => 'required|string|size:3|alpha',
+            'rates.*.month' => 'required|date_format:Y-m',
+            'rates.*.units_per_gbp' => 'required|numeric|gt:0|max:100000000',
+            'main_pocket' => 'nullable|string|max:300',
         ]);
         $account = Account::query()->findOrFail($data['account_id']);
         $pending = $request->session()->get('import');
+        foreach ($data['rates'] ?? [] as $rate) {
+            $this->setRate(strtoupper($rate['currency']), CarbonImmutable::createFromFormat('!Y-m', $rate['month']), (string) $rate['units_per_gbp']);
+        }
 
         if ($request->hasFile('file')) {
             $dir = storage_path('app/private/uploads');
@@ -110,7 +136,13 @@ class ImportController extends Controller
                 $pending = ['path' => $path, 'filename' => $request->file('file')->getClientOriginalName(), 'account_id' => $account->id, 'profile' => $profile->toArray()];
             }
         } elseif ($pending) {
+            if ($pending['account_id'] !== $account->id) {
+                unset($pending['main_pocket']); // asked about the account chosen before
+            }
             $pending['account_id'] = $account->id;
+            if (! empty($data['main_pocket'])) {
+                $pending['main_pocket'] = $data['main_pocket'];
+            }
             if (! empty($data['profile'])) {
                 $pending['profile'] = ImportProfile::fromArray($data['profile'])->toArray();
             }
@@ -123,6 +155,19 @@ class ImportController extends Controller
         return to_route('imports.index');
     }
 
+    /**
+     * A rate you enter where HMRC has none (or couldn't be reached): used for every line in that currency and month
+     * that has no sterling figure of its own, and recorded in the audit log.
+     */
+    private function setRate(string $currency, CarbonImmutable $month, string $units): void
+    {
+        $before = ExchangeRate::query()->where('currency', $currency)->where('source', 'manual')->whereDate('period_start', $month->format('Y-m-d'))->value('units_per_gbp');
+        $this->rates->setManual($currency, $month, $units);
+        AuditLog::record('fx.manual_rate', 'ExchangeRate', $before !== null ? ['units_per_gbp' => (string) $before] : null,
+            ['currency' => $currency, 'month' => $month->format('Y-m'), 'units_per_gbp' => $units],
+            "You entered the {$currency} rate for {$month->format('F Y')} while importing a statement");
+    }
+
     public function commit(Request $request): RedirectResponse
     {
         $pending = $request->session()->get('import');
@@ -132,7 +177,8 @@ class ImportController extends Controller
 
         if ($pending['revolut'] ?? null) {
             try {
-                $batches = app(RevolutImport::class)->commit(Account::query()->findOrFail($pending['account_id']), $pending['path'], $pending['filename']);
+                $batches = app(RevolutImport::class)->commit(Account::query()->findOrFail($pending['account_id']), $pending['path'], $pending['filename'],
+                    $pending['main_pocket'] ?? null, mustChoose: true);
             } catch (Throwable $e) {
                 return to_route('imports.index')->with('error', $e->getMessage());
             }

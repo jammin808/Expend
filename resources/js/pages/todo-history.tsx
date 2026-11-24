@@ -13,12 +13,12 @@ interface Row {
     currency: string;
     first_seen: string;
     resolved: string | null;
-    resolution: 'resolved' | 'snoozed' | 'dismissed' | null;
+    resolution: 'resolved' | 'snoozed' | 'dismissed' | 'superseded' | null;
     days_open: number;
     reopened: number;
 }
 
-const resolutionLabel = { resolved: 'Dealt with', snoozed: 'Snoozed', dismissed: 'Marked not relevant' };
+const resolutionLabel = { resolved: 'Dealt with', snoozed: 'Snoozed', dismissed: 'Marked not relevant', superseded: 'Joined to another gap' };
 
 /** Amounts in other currencies, kept apart from the pound total: "€1,000.00 and $250.00". */
 function others(byCurrency: Record<string, number>): string | null {
@@ -27,6 +27,43 @@ function others(byCurrency: Record<string, number>): string | null {
         .map(([currency, minor]) => money(minor, currency, { signed: false }));
 
     return parts.length ? parts.join(' and ') : null;
+}
+
+/** One finding: what it was, when it was found and how it ended, with its money. */
+function FindingRow({ r }: { r: Row }) {
+    return (
+        <li className="flex flex-wrap items-baseline gap-x-3 gap-y-1 p-3">
+            <span className="min-w-0 flex-1">
+                {r.href ? (
+                    <Link href={r.href} className="font-medium underline-offset-2 hover:underline">
+                        {r.title}
+                    </Link>
+                ) : (
+                    <span className="font-medium">{r.title}</span>
+                )}
+                <span className="text-muted-foreground block text-xs">
+                    {r.group} · found {day(r.first_seen)}
+                    {r.resolved
+                        ? ` · ${resolutionLabel[r.resolution ?? 'resolved'].toLowerCase()} ${day(r.resolved)} (${r.days_open} days)`
+                        : ` · open ${r.days_open} days`}
+                    {r.reopened ? ` · came back ${r.reopened}×` : ''}
+                </span>
+            </span>
+            {r.amount_pence !== null && (
+                <span className="tabular-nums">{money(Math.abs(r.amount_pence), r.currency ?? 'GBP', { signed: false })}</span>
+            )}
+            <span
+                className={cn(
+                    'rounded-full px-2 py-0.5 text-xs',
+                    !r.resolved && 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100',
+                    r.resolution === 'resolved' && 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100',
+                    (r.resolution === 'snoozed' || r.resolution === 'dismissed' || r.resolution === 'superseded') && 'bg-muted text-muted-foreground',
+                )}
+            >
+                {r.resolved ? resolutionLabel[r.resolution ?? 'resolved'] : 'Open'}
+            </span>
+        </li>
+    );
 }
 
 /** What the to-do list has found over the last year, what's been dealt with, and the money involved. */
@@ -91,42 +128,27 @@ export default function TodoHistory({
                         ))}
                     </ul>
                 )}
-                <ul className="divide-y rounded-xl border text-sm">
-                    {recent.map((r) => (
-                        <li key={r.key} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 p-3">
-                            <span className="min-w-0 flex-1">
-                                {r.href ? (
-                                    <Link href={r.href} className="font-medium underline-offset-2 hover:underline">
-                                        {r.title}
-                                    </Link>
-                                ) : (
-                                    <span className="font-medium">{r.title}</span>
-                                )}
-                                <span className="text-muted-foreground block text-xs">
-                                    {r.group} · found {day(r.first_seen)}
-                                    {r.resolved
-                                        ? ` · ${resolutionLabel[r.resolution ?? 'resolved'].toLowerCase()} ${day(r.resolved)} (${r.days_open} days)`
-                                        : ` · open ${r.days_open} days`}
-                                    {r.reopened ? ` · came back ${r.reopened}×` : ''}
-                                </span>
-                            </span>
-                            {r.amount_pence !== null && (
-                                <span className="tabular-nums">{money(Math.abs(r.amount_pence), r.currency ?? 'GBP', { signed: false })}</span>
-                            )}
-                            <span
-                                className={cn(
-                                    'rounded-full px-2 py-0.5 text-xs',
-                                    !r.resolved && 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100',
-                                    r.resolution === 'resolved' && 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100',
-                                    (r.resolution === 'snoozed' || r.resolution === 'dismissed') && 'bg-muted text-muted-foreground',
-                                )}
-                            >
-                                {r.resolved ? resolutionLabel[r.resolution ?? 'resolved'] : 'Open'}
-                            </span>
-                        </li>
-                    ))}
-                    {recent.length === 0 && <li className="text-muted-foreground p-6 text-center">Nothing found yet.</li>}
-                </ul>
+                {recent.length === 0 ? (
+                    <p className="text-muted-foreground rounded-xl border p-6 text-center text-sm">Nothing found yet.</p>
+                ) : (
+                    (
+                        [
+                            ['Still open', recent.filter((r) => !r.resolved)],
+                            ['Dealt with, snoozed or not relevant', recent.filter((r) => r.resolved)],
+                        ] as const
+                    )
+                        .filter(([, rows]) => rows.length > 0)
+                        .map(([heading, rows]) => (
+                            <section key={heading} className="space-y-2">
+                                <h2 className="text-sm font-medium">{heading}</h2>
+                                <ul className="divide-y rounded-xl border text-sm">
+                                    {rows.map((r) => (
+                                        <FindingRow key={r.key} r={r} />
+                                    ))}
+                                </ul>
+                            </section>
+                        ))
+                )}
             </div>
         </AppLayout>
     );

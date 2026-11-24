@@ -5,7 +5,7 @@ import { StatusPill } from '@/components/status-pill';
 import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { day, decidedByLabels, kindLabels, money, paidWith } from '@/lib/format';
+import { day, decidedByLabels, kindLabels, paidIn, paidWith, rateText } from '@/lib/format';
 import { type CalendarEntry, type Decision, type Item, type JobRef, type Lookups } from '@/types';
 import { router } from '@inertiajs/react';
 import { CalendarDays, History } from 'lucide-react';
@@ -122,12 +122,11 @@ export function ItemDrawer({
                             <Money pence={item.amount_pence} className="text-2xl font-semibold" />
                             <StatusPill status={item.review_status} />
                         </div>
-                        {item.original_currency && item.original_currency !== 'GBP' && (
+                        {paidIn(item) && (
                             <p className="text-muted-foreground -mt-4 text-sm">
-                                Paid in {item.original_currency}: {money(item.original_amount_minor, item.original_currency)}
-                                {item.fx
-                                    ? ` at ${item.fx.units_per_gbp} ${item.original_currency} per £1 (${item.fx.source === 'hmrc_monthly' ? 'HMRC monthly rate' : item.fx.source === 'bank' ? 'the bank’s rate' : item.fx.source === 'exchange' ? 'the exchange it came from' : item.fx.source}${item.fx.rate_date ? `, ${day(item.fx.rate_date)}` : ''})`
-                                    : ''}
+                                Paid {paidIn(item)}
+                                {rateText(item.fx, item.original_currency) ? ` · ${rateText(item.fx, item.original_currency)}` : ''}
+                                {item.fx?.rate_date ? `, ${day(item.fx.rate_date)}` : ''}
                             </p>
                         )}
 

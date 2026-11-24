@@ -8,6 +8,7 @@ use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\ManualExpense;
 use App\Models\WorkJob;
+use App\Support\Money;
 
 /** Shapes models into the arrays the React pages use. */
 final class Present
@@ -31,11 +32,17 @@ final class Present
             'amount_pence' => $tx->amount_pence,
             'original_amount_minor' => $tx->original_amount_minor,
             'original_currency' => $tx->original_currency,
+            // The currency the shop charged, where it isn't the account's own ($90.00 paid from the euro account), in
+            // that currency's own units.
+            'merchant_amount_minor' => $tx->merchant_amount_minor,
+            'merchant_currency' => $tx->merchant_currency,
             // The rate the bank used: how many of the foreign currency per £1.
             'fx' => $tx->fx_source
-                ? ['units_per_gbp' => rtrim(rtrim((string) $tx->fx_units_per_gbp, '0'), '.'), 'rate_date' => $tx->fx_rate_date?->format('Y-m-d'), 'source' => $tx->fx_source]
+                ? ['units_per_gbp' => Money::rate($tx->fx_units_per_gbp), 'rate_date' => $tx->fx_rate_date?->format('Y-m-d'), 'source' => $tx->fx_source]
                 : ($tx->original_currency && $tx->original_amount_minor && $tx->amount_pence
-                    ? ['units_per_gbp' => number_format(abs($tx->original_amount_minor) / abs($tx->amount_pence), 4, '.', ''), 'rate_date' => $tx->effectiveDate()->format('Y-m-d'), 'source' => 'bank']
+                    // Worked out from the line itself: its other currency is kept in that currency's own units (¥1,500 is 1500).
+                    ? ['units_per_gbp' => number_format(Money::major(abs($tx->original_amount_minor), $tx->original_currency) / (abs($tx->amount_pence) / 100), 4, '.', ''),
+                        'rate_date' => $tx->effectiveDate()->format('Y-m-d'), 'source' => 'bank']
                     : null),
             'fee_minor' => $tx->fee_minor,
             'bank_category' => $tx->bank_category,
@@ -58,7 +65,7 @@ final class Present
             'amount_pence' => $e->amount_pence,
             'original_amount_minor' => $e->original_amount_minor,
             'original_currency' => $e->original_currency,
-            'fx' => $e->original_currency ? ['units_per_gbp' => (string) $e->fx_units_per_gbp, 'rate_date' => $e->fx_rate_date?->format('Y-m-d'), 'source' => $e->fx_source] : null,
+            'fx' => $e->original_currency ? ['units_per_gbp' => Money::rate($e->fx_units_per_gbp), 'rate_date' => $e->fx_rate_date?->format('Y-m-d'), 'source' => $e->fx_source] : null,
             'review_status' => $e->review_status,
             'allocations' => $e->relationLoaded('allocations') ? $e->allocations->map(fn (Allocation $a) => self::allocation($a))->values()->all() : [],
         ];
@@ -122,13 +129,17 @@ final class Present
         ];
     }
 
-    /** Jobs running on (or a day either side of) a date: likely homes for a transaction. */
+    /**
+     * Jobs working on (or a day either side of) a date: likely homes for a transaction. By the job's own days, so the
+     * days between a rig and a de-rig don't offer it.
+     */
     public static function jobsNear(string $date): array
     {
-        return WorkJob::query()->with('client')
+        return WorkJob::query()->with(['client', 'days'])
             ->whereDate('starts_on', '<=', date('Y-m-d', strtotime($date.' +1 day')))
             ->whereDate('ends_on', '>=', date('Y-m-d', strtotime($date.' -1 day')))
-            ->orderBy('starts_on')->limit(5)->get()
-            ->map(fn (WorkJob $j) => ['id' => $j->id, 'title' => $j->title, 'client' => $j->client?->name])->all();
+            ->orderBy('starts_on')->limit(20)->get()
+            ->filter(fn (WorkJob $j) => $j->isNear($date))->take(5)
+            ->map(fn (WorkJob $j) => ['id' => $j->id, 'title' => $j->title, 'client' => $j->client?->name])->values()->all();
     }
 }

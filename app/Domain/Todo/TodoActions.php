@@ -10,6 +10,8 @@ use App\Domain\Jobs\JobFinder;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\DecisionService;
 use App\Domain\Ledger\RuleLearner;
+use App\Domain\Matching\Categoriser;
+use App\Domain\Matching\TransferPairer;
 use App\Domain\Travel\TravelMatcher;
 use App\Domain\Verification\Verifier;
 use App\Jobs\ReadDocument;
@@ -24,6 +26,7 @@ use App\Models\Setting;
 use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Models\WorkJob;
+use App\Support\Money;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -67,25 +70,43 @@ final class TodoActions
             'recheck' => $this->recheck($id),
             'inv_chase' => $this->mailer->send(Invoice::query()->findOrFail((int) $id), null, true, once: true, offeredAt: $offeredAt),
             'inv_send' => $this->mailer->send(Invoice::query()->findOrFail((int) $id), once: true, offeredAt: $offeredAt),
-            'transfers_ok' => $this->transfersOk(),
+            'transfers_ok' => $this->transfersOk((int) $id, $offeredAt),
             default => throw new InvalidArgumentException('Unknown action.'),
         };
     }
 
-    /** Confirm every transfer the matcher suggested: your decision, recorded as yours. */
-    private function transfersOk(): string
+    /**
+     * Confirm, as your decision, the suggested transfers that are safe to confirm together: both sides of a pair, and
+     * money leaving an account for another of yours. Only what was suggested when the button was offered ($upTo, the
+     * last suggestion shown; or a Telegram message's date), so a later suggestion is never confirmed unseen. Money
+     * paid in with no other side imported is never confirmed this way: it could be a client paying you.
+     */
+    private function transfersOk(int $upTo, ?CarbonInterface $offeredAt): string
     {
-        $done = 0;
-        foreach (BankTransaction::query()->whereIn('id', TodoList::suggestedTransfers()['ids'])->get() as $tx) {
+        $set = TransferPairer::confirmable($upTo > 0 ? $upTo : null, $offeredAt);
+        foreach (BankTransaction::query()->whereIn('id', $set['ids'] ?: [0])->orderBy('id')->get() as $tx) {
+            $allocations = $tx->allocations()->get();
+            if ($allocations->isNotEmpty() && $allocations->every(fn ($a) => $a->confirmed_at !== null)) {
+                continue; // confirmed with its other side
+            }
             try {
                 $this->writer->confirm($tx);
-                $done++;
             } catch (InvalidArgumentException) {
                 // a locked year or nothing to confirm any more
             }
         }
+        $done = BankTransaction::query()->whereIn('id', $set['ids'] ?: [0])->where('review_status', 'confirmed')->get(['id', 'amount_pence']);
+        $out = (int) -$done->where('amount_pence', '<', 0)->sum('amount_pence');
+        $in = (int) $done->where('amount_pence', '>', 0)->sum('amount_pence');
+        $left = $set['left'] ? ' '.$set['left'].' '.($set['left'] === 1 ? 'payment' : 'payments').' in ('.Money::format($set['left_pence']).') with no other side imported '.($set['left'] === 1 ? 'is' : 'are')
+            .' left for you to check one by one in Transactions: a client could have paid '.($set['left'] === 1 ? 'it' : 'them').'.' : '';
 
-        return $done ? "Confirmed {$done} ".($done === 1 ? 'transfer' : 'transfers').' between your accounts.' : 'Nothing left to confirm.';
+        if (! $done->count()) {
+            return 'Nothing left to confirm.'.$left;
+        }
+
+        return 'Confirmed '.$done->count().' '.($done->count() === 1 ? 'transfer' : 'transfers').' between your accounts ('.Money::format($out).' out'
+            .($in ? ', '.Money::format($in).' in' : '').'). They’re now left out of your income and spending.'.$left;
     }
 
     private function ruleMake(int $txId): string
@@ -120,8 +141,10 @@ final class TodoActions
             return "Already dealt with: {$name} is confirmed.";
         }
         $this->writer->confirm($tx);
+        // Accepting teaches like deciding: the other payments waiting from there follow it (as the Inbox's confirm).
+        $learned = app(Categoriser::class)->learnFrom(collect([$tx->fresh()]));
 
-        return "Accepted: {$name}.";
+        return "Accepted: {$name}.".($learned ? ' Updated the suggestion for '.$learned.' other waiting '.($learned === 1 ? 'payment' : 'payments').' from there.' : '');
     }
 
     private function txPersonal(int $id): string

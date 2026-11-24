@@ -44,7 +44,9 @@ class TravelController extends Controller
             'gmail' => [
                 'configured' => GmailClient::configured(), 'connected' => GmailClient::connected(), 'account' => Setting::get('gmail_account'),
                 'progress' => ScanGmail::progress($label), 'searches' => array_map(fn ($s) => $s['label'], GmailScanner::SEARCHES),
-                'waiting' => (clone $messages)->where('status', 'stored')->where('search', '!=', 'job_documents')->count(),
+                // Only bookings waiting to be read: emails kept by a job's search aren't read as travel unless a
+                // hotels or travel search found them too (then their search says so).
+                'waiting' => (clone $messages)->where('status', 'stored')->whereNotIn('search', ['job_documents', 'job'])->count(),
             ],
             'aiReady' => AiConfig::ready() && Setting::get('ai_extraction') !== 'off',
             'items' => $items->map(fn (TravelItem $i) => self::row($i) + ['check' => $checks[$i->id] ?? null])->values(),

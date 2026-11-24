@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { londonToday } from '@/lib/format';
 import { useForm } from '@inertiajs/react';
 
 export interface JobData {
@@ -34,7 +35,10 @@ export function JobForm({
     job?: JobData;
     clients: { id: number; name: string }[];
     onDone?: () => void;
-    /** Post here instead (for example, adding a possible job from the job finder). */
+    /**
+     * Post here instead (for example, adding a possible job from the job finder or the calendar). Those make a job
+     * you're doing, so Cancelled isn't offered: they don't accept it (they search for the job's costs and fee).
+     */
     submitUrl?: string;
     submitLabel?: string;
     newClient?: string | null;
@@ -45,14 +49,14 @@ export function JobForm({
         title: job?.title ?? '',
         client_id: job?.client_id ? String(job.client_id) : '',
         new_client: newClient ?? '',
-        starts_on: job?.starts_on ?? new Date().toISOString().slice(0, 10),
-        ends_on: job?.ends_on ?? new Date().toISOString().slice(0, 10),
+        starts_on: job?.starts_on ?? londonToday(),
+        ends_on: job?.ends_on ?? londonToday(),
         start_time: job?.start_time ?? '',
         end_time: job?.end_time ?? '',
         location: job?.location ?? '',
         postcode: job?.postcode ?? '',
         fee: job?.fee_pence ? (job.fee_pence / 100).toFixed(2) : '',
-        status: job?.status ?? 'booked',
+        status: submitUrl && job?.status === 'cancelled' ? 'booked' : (job?.status ?? 'booked'),
         notes: job?.notes ?? '',
         po_number: job?.po_number ?? '',
         po_not_required: job?.po_not_required ?? false,
@@ -128,7 +132,7 @@ export function JobForm({
                 <NativeSelect value={form.data.status} onChange={(e) => form.setData('status', e.target.value)}>
                     <option value="booked">Booked</option>
                     <option value="done">Done</option>
-                    <option value="cancelled">Cancelled</option>
+                    {!submitUrl && <option value="cancelled">Cancelled</option>}
                 </NativeSelect>
             </div>
             <div className="space-y-1.5">

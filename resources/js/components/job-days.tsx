@@ -17,6 +17,41 @@ export interface JobDayRow {
 const label = (d: string) =>
     new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 
+const hhmm = (t: string | null) => (t ? t.slice(0, 5) : '');
+
+/**
+ * A day's own start or finish time, saved when you leave the box (a de-rig finishing at 13:00 while the show ran to
+ * 23:00). Once you set it, it's yours: a calendar entry or the job's own times no longer change it.
+ */
+function DayTime({ day: d, field, label: aria }: { day: JobDayRow; field: 'start_time' | 'end_time'; label: string }) {
+    const saved = hhmm(d[field]);
+
+    return (
+        <Input
+            key={`${d.id}-${field}-${saved}`}
+            type="time"
+            className="h-8 w-28"
+            aria-label={aria}
+            defaultValue={saved}
+            onBlur={(e) => {
+                const value = e.target.value;
+                if (value === saved) return;
+                router.patch(
+                    `/job-days/${d.id}`,
+                    {
+                        kind: d.kind,
+                        start_time: hhmm(d.start_time) || null,
+                        end_time: hhmm(d.end_time) || null,
+                        note: d.note,
+                        [field]: value || null,
+                    },
+                    { preserveScroll: true },
+                );
+            }}
+        />
+    );
+}
+
 /**
  * The days a job covers, which needn't be consecutive: a rig day, show days, a de-rig a few days later. Costs,
  * stays and mileage are judged against these days.
@@ -50,7 +85,12 @@ export function JobDays({ jobId, days, kinds }: { jobId: number; days: JobDayRow
                             onChange={(e) =>
                                 router.patch(
                                     `/job-days/${d.id}`,
-                                    { kind: e.target.value, start_time: d.start_time, end_time: d.end_time, note: d.note },
+                                    {
+                                        kind: e.target.value,
+                                        start_time: hhmm(d.start_time) || null,
+                                        end_time: hhmm(d.end_time) || null,
+                                        note: d.note,
+                                    },
                                     opts,
                                 )
                             }
@@ -61,10 +101,10 @@ export function JobDays({ jobId, days, kinds }: { jobId: number; days: JobDayRow
                                 </option>
                             ))}
                         </select>
-                        <span className="text-muted-foreground text-xs">
-                            {d.start_time ? `${d.start_time}${d.end_time ? '–' + d.end_time : ''}` : ''}
-                            {d.from_calendar ? ' · from your calendar' : ''}
-                        </span>
+                        <DayTime day={d} field="start_time" label={`Start on ${label(d.date)}`} />
+                        <span className="text-muted-foreground text-xs">–</span>
+                        <DayTime day={d} field="end_time" label={`Finish on ${label(d.date)}`} />
+                        {d.from_calendar && <span className="text-muted-foreground text-xs">from your calendar</span>}
                         <span className="flex-1" />
                         {days.length > 1 && (
                             <Button

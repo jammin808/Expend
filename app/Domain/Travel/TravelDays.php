@@ -2,6 +2,7 @@
 
 namespace App\Domain\Travel;
 
+use App\Domain\Jobs\JobDays;
 use App\Models\JobDay;
 use App\Models\Setting;
 use App\Models\TravelItem;
@@ -102,7 +103,15 @@ final class TravelDays
 
         $time = $side === 'before' ? $this->time($day?->start_time ?? $job->start_time) : $this->time($day?->end_time ?? $job->end_time);
         $limit = $side === 'before' ? (string) Setting::get('early_start') : (string) Setting::get('late_finish');
-        if ($time && ($side === 'before' ? $time < $limit : $time > $limit)) {
+        // A finish in the small hours is later than any evening limit when the work ran past midnight (a gig from 19:00
+        // to 01:30), not when it started after midnight (a de-rig from 00:00 to 04:00) or its start isn't known: then
+        // it's yours to decide. The start goes with the finish: the day's own, or the job's when the day has no finish
+        // of its own (on a job of several days, the job's start is its first day's, not this one's).
+        $start = $this->time($day?->end_time !== null
+            ? ($day->start_time ?? (count($job->workDates()) === 1 ? $job->start_time : null))
+            : $job->start_time);
+        $late = $side === 'after' && $time && ($time > $limit || ($time < JobDays::OVERNIGHT_UNTIL && $start !== null && $start > $time));
+        if ($time && ($side === 'before' ? $time < $limit : $late)) {
             return $this->result('business', $job, "{$label}, {$miles} miles from home with ".($side === 'before' ? "an early start ({$time})" : "a late finish ({$time})"));
         }
 

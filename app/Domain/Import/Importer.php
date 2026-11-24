@@ -3,6 +3,7 @@
 namespace App\Domain\Import;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\MerchantKey;
 use App\Domain\Matching\Suggester;
 use App\Domain\Matching\TransferPairer;
@@ -19,7 +20,7 @@ use RuntimeException;
 
 final class Importer
 {
-    public function __construct(private Suggester $suggester, private TransferPairer $pairer) {}
+    public function __construct(private Suggester $suggester, private TransferPairer $pairer, private AllocationWriter $writer) {}
 
     /**
      * Read a file with a profile and report what importing it would do, without changing anything.
@@ -127,6 +128,9 @@ final class Importer
                     'fx_rate_date' => $row->fxRateDate,
                     'fx_source' => $row->fxSource,
                     'fee_minor' => $row->feeMinor,
+                    // The currency the shop charged, where it isn't the account's own ($90.00 paid from a euro account).
+                    'merchant_amount_minor' => $row->merchantAmountMinor,
+                    'merchant_currency' => $row->merchantCurrency,
                     'bank_category' => $row->bankCategory,
                     'raw' => $row->raw,
                     ...self::details($row),
@@ -149,14 +153,21 @@ final class Importer
     }
 
     /**
-     * Money moving between your accounts first (both sides imported), then your rules and the matchers, then lines
-     * that are your own money moving even though the other side isn't imported.
+     * What happens after an import, in this order, so nothing overrides what should win:
+     *  1. your rules and the specific matchers (an invoice of the same amount, HMRC, travel): what you've told it, and
+     *     what it can tell for sure;
+     *  2. money moving between your accounts where both sides are imported, never over 1;
+     *  3. guesses from your past decisions and common merchants, for what's still undecided;
+     *  4. lines that are your own money moving even though the other side isn't imported.
      */
     public function afterImport(ImportBatch ...$batches): void
     {
-        $this->pairer->pairAll();
-        $this->suggester->suggestFor(BankTransaction::query()->whereIn('import_batch_id', array_map(fn (ImportBatch $b) => $b->id, $batches))->get());
-        $this->pairer->suggestOneSided();
+        $ids = array_map(fn (ImportBatch $b) => $b->id, $batches);
+        $rows = fn () => BankTransaction::query()->whereIn('import_batch_id', $ids ?: [0])->orderBy('id')->get();
+        $this->suggester->suggestFor($rows(), guess: false);
+        $this->pairer->pairAll($ids);
+        $this->suggester->suggestFor($rows(), match: false);
+        $this->pairer->suggestOneSided(batchIds: $ids);
     }
 
     /**
@@ -181,21 +192,72 @@ final class Importer
 
             return $activated;
         });
+        $this->suggestHeldExchanges($batch);
         $this->afterImport($batch);
 
         return $activated;
     }
 
-    /** Discard a held statement. Its rows are kept, reversed, for the record. */
+    /**
+     * A currency exchange whose sides were paired while one was held (RevolutImport links them, but only suggests
+     * what's active): now both sides count, suggested as the exchange, before anything else guesses at them.
+     */
+    private function suggestHeldExchanges(ImportBatch $batch): void
+    {
+        $done = [];
+        $legs = BankTransaction::query()->where('import_batch_id', $batch->id)->whereNotNull('transfer_pair_id')->whereDoesntHave('allocations')->orderBy('id')->get();
+        foreach ($legs as $tx) {
+            $partner = BankTransaction::query()->find($tx->transfer_pair_id);
+            if (! $partner || $partner->transfer_pair_id !== $tx->id || isset($done[$tx->id]) || ! self::isExchange($tx) || ! self::isExchange($partner)) {
+                continue;
+            }
+            $done[$tx->id] = $done[$partner->id] = true;
+            [$out, $in] = $tx->amount_pence < 0 ? [$tx, $partner] : [$partner, $tx];
+            app(RevolutImport::class)->suggestExchange($out, $in, RevolutImport::exchangeFee($out, $in));
+        }
+    }
+
+    private static function isExchange(BankTransaction $tx): bool
+    {
+        return (bool) preg_match('/^\s*exchange\s*$/i', (string) ($tx->raw['Type'] ?? $tx->raw['type'] ?? ''));
+    }
+
+    /**
+     * Discard a held statement. Its rows are kept, reversed, for the record. Lines in other statements paired with
+     * them (the other side of a currency exchange) are freed, so a corrected statement can pair them again, and a
+     * suggestion that rested on the pair is taken back for you to decide.
+     */
     public function discard(ImportBatch $batch, string $reason): void
     {
         $this->assertStatus($batch, 'quarantined');
-        DB::transaction(function () use ($batch, $reason) {
-            $count = BankTransaction::withoutGlobalScope('active')->where('import_batch_id', $batch->id)->where('state', 'quarantined')
-                ->update(['state' => 'reversed', 'live' => null]);
+        $freed = DB::transaction(function () use ($batch, $reason) {
+            $ids = BankTransaction::withoutGlobalScope('active')->where('import_batch_id', $batch->id)->where('state', 'quarantined')->pluck('id');
+            $partners = BankTransaction::query()->whereIn('transfer_pair_id', $ids->all() ?: [0])->with('allocations')->get();
+            foreach ($partners as $partner) {
+                $was = $partner->transfer_pair_id;
+                $partner->forceFill(['transfer_pair_id' => null])->saveQuietly();
+                AuditLog::record('transfer.unpaired', $partner, ['transfer_pair_id' => $was], ['transfer_pair_id' => null], 'Its other side was in a statement you discarded', 'matcher');
+                $pairOnly = $partner->allocations->isNotEmpty() && $partner->allocations->every(fn (Allocation $a) => $a->decided_by === 'matcher' && ! $a->is_manual
+                    && $a->confirmed_at === null && str_contains((string) $a->reason, 'between your own pockets'));
+                if ($pairOnly && ! $this->isLocked($partner)) {
+                    $this->writer->clear($partner, 'Its other side was in a statement you discarded, so it’s back for you to decide', 'matcher');
+                }
+            }
+            $count = BankTransaction::withoutGlobalScope('active')->whereIn('id', $ids->all() ?: [0])->update(['state' => 'reversed', 'live' => null]);
             $batch->update(['status' => 'discarded', 'review_note' => $reason]);
             AuditLog::record('import.discarded', $batch, ['status' => 'quarantined'], ['status' => 'discarded', 'rows_kept_reversed' => $count], $reason);
+
+            return $partners->pluck('import_batch_id')->unique()->values()->all();
         });
+        if ($freed) {
+            // Still your own money moving (an exchange between your pockets), even with its other side gone.
+            app(TransferPairer::class)->suggestOneSided(batchIds: $freed);
+        }
+    }
+
+    private function isLocked(BankTransaction $tx): bool
+    {
+        return TaxYear::query()->where('label', $this->writer->taxYearOf($tx))->whereNotNull('locked_at')->exists();
     }
 
     /** Bring an undone import back: its rows and your decisions on them, except rows imported again since. */
@@ -211,9 +273,12 @@ final class Importer
                 if (BankTransaction::query()->where('account_id', $tx->account_id)->where('fingerprint', $tx->fingerprint)->where('occurrence', $tx->occurrence)->exists()) {
                     continue; // imported again from another statement since: that copy stays
                 }
-                // Re-pair a card bill or transfer with the same partner, if it's still free; otherwise the pairer looks again.
+                // Re-pair a card bill or transfer with the same partner, if it's still free; otherwise the pairer looks
+                // again. A currency exchange's sides differ by its fee (or by the rate a side was converted at), so
+                // they're known as the two sides of one exchange instead.
                 $partner = $tx->transfer_pair_id ? BankTransaction::query()->find($tx->transfer_pair_id) : null;
-                $repair = $partner && $partner->transfer_pair_id === null && $partner->amount_pence === -$tx->amount_pence;
+                $repair = $partner && $partner->transfer_pair_id === null
+                    && ($partner->amount_pence === -$tx->amount_pence || self::sameExchange($tx, $partner));
                 $tx->forceFill(['state' => 'active', 'live' => true, 'transfer_pair_id' => $repair ? $partner->id : null])->saveQuietly();
                 if ($repair) {
                     $partner->forceFill(['transfer_pair_id' => $tx->id])->saveQuietly();
@@ -221,12 +286,27 @@ final class Importer
                 Allocation::withoutGlobalScope('not_voided')->where('bank_transaction_id', $tx->id)->whereNotNull('voided_at')->update(['voided_at' => null]);
                 $restored++;
             }
-            app(TransferPairer::class)->pairAll();
+            app(TransferPairer::class)->pairAll([$batch->id]);
             $batch->update(['status' => 'committed', 'review_note' => 'Restored: '.$reason]);
             AuditLog::record('import.restored', $batch, ['status' => 'reverted'], ['status' => 'committed', 'restored' => $restored], $reason);
 
             return $restored;
         });
+    }
+
+    /** The two sides of one currency exchange: both exchanges, the same start time or Revolut ID, moving opposite ways. */
+    private static function sameExchange(BankTransaction $a, BankTransaction $b): bool
+    {
+        if (! self::isExchange($a) || ! self::isExchange($b) || ($a->amount_pence < 0) === ($b->amount_pence < 0) || $a->account_id === $b->account_id) {
+            return false;
+        }
+        foreach (['Started Date', 'ID'] as $key) {
+            if (($a->raw[$key] ?? '') !== '' && ($a->raw[$key] ?? null) === ($b->raw[$key] ?? null)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @return Collection<int, BankTransaction> */

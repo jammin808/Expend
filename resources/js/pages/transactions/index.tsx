@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
-import { day, decidedByLabels, kindLabels, money, paidWith } from '@/lib/format';
+import { day, decidedByLabels, kindLabels, londonToday, money, moneyMinor, movedBetweenAccounts, paidIn, paidWith, rateText } from '@/lib/format';
 import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, router, useForm, usePage } from '@inertiajs/react';
 import { Plus } from 'lucide-react';
@@ -34,7 +34,7 @@ function summary(item: Item): string {
 
 function ManualExpenseDialog({ open, onClose, lookups }: { open: boolean; onClose: () => void; lookups: Lookups }) {
     const form = useForm({
-        spent_on: new Date().toISOString().slice(0, 10),
+        spent_on: londonToday(),
         description: '',
         direction: 'out',
         amount: '',
@@ -220,7 +220,7 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                             {totals.transfer_count > 0 && (
                                 <span title="Card bills, top-ups, savings and money moved between your own accounts. Not spending or income, so not in the totals.">
                                     {' '}
-                                    · moved between your accounts {money(Math.abs(totals.transfer_out_pence))} (
+                                    · moved between your accounts {movedBetweenAccounts(totals.transfer_out_pence, totals.transfer_in_pence)} (
                                     {totals.transfer_count.toLocaleString()}, not counted)
                                 </span>
                             )}
@@ -373,12 +373,9 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                                     </td>
                                     <td className="p-2 text-right whitespace-nowrap">
                                         <Money pence={t.amount_pence} />
-                                        {t.original_currency && t.original_currency !== 'GBP' && (
-                                            <p
-                                                className="text-muted-foreground text-xs tabular-nums"
-                                                title={t.fx ? `${t.fx.units_per_gbp} ${t.original_currency} per £1` : undefined}
-                                            >
-                                                {money(t.original_amount_minor, t.original_currency)}
+                                        {paidIn(t) && (
+                                            <p className="text-muted-foreground text-xs tabular-nums" title={rateText(t.fx, t.original_currency)}>
+                                                {paidIn(t)}
                                             </p>
                                         )}
                                     </td>
@@ -440,7 +437,7 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                                         <span className="block truncate">{m.description}</span>
                                         <span className="text-muted-foreground text-xs">
                                             {day(m.date)} · {summary(m)}
-                                            {m.original_currency ? ` · ${money(m.original_amount_minor, m.original_currency)}` : ''}
+                                            {m.original_currency ? ` · ${moneyMinor(m.original_amount_minor, m.original_currency)}` : ''}
                                         </span>
                                     </span>
                                     <Money pence={m.amount_pence} />

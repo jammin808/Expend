@@ -6,7 +6,7 @@ import { Money } from '@/components/money';
 import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
-import { day, decidedByLabels, kindLabels, money, paidWith } from '@/lib/format';
+import { day, decidedByLabels, kindLabels, paidIn, paidWith } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, Link, router, usePage } from '@inertiajs/react';
@@ -250,9 +250,7 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                                         {day(item.date)}
                                         {item.time ? ` ${item.time}` : ''} · {paidWith(item)}
                                         {item.place ? ` · ${item.place}` : ''} · {item.tax_year}
-                                        {item.original_currency && item.original_currency !== 'GBP'
-                                            ? ` · paid ${money(item.original_amount_minor, item.original_currency)}`
-                                            : ''}
+                                        {paidIn(item) ? ` · paid ${paidIn(item)}` : ''}
                                     </span>
                                     <span className="flex items-center gap-1">
                                         <button
@@ -286,7 +284,7 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                                 </div>
                                 <div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-sm">
                                     {item.bank_category && <span>Bank says: {item.bank_category.replace(/_/g, ' ').toLowerCase()}</span>}
-                                    {item.original_currency && <span>Originally {money(item.original_amount_minor, item.original_currency)}</span>}
+                                    {paidIn(item) && <span>Paid {paidIn(item)}</span>}
                                     {(item.merchant_count ?? 1) > 1 && (
                                         <span>
                                             {item.merchant_count} undecided from {item.merchant_key}

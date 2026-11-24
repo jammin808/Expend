@@ -6,7 +6,7 @@ import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/app-layout';
-import { day, money } from '@/lib/format';
+import { day, londonToday, money } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { type Lookups, type SharedData } from '@/types';
 import { Head, Link, router, usePage } from '@inertiajs/react';
@@ -189,7 +189,7 @@ export default function Connections({ nodes, edges, attention, range, jobs, clie
 
     // Start the view at today when it's in range.
     useEffect(() => {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = londonToday();
         if (scroller.current && today >= range.from && today <= range.to) {
             scroller.current.scrollLeft = Math.max(0, LEFT + toDays(origin, today) * ppd - scroller.current.clientWidth * 0.7);
         }
@@ -218,7 +218,7 @@ export default function Connections({ nodes, edges, attention, range, jobs, clie
     };
 
     const sel = selected ? byId[selected] : null;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = londonToday();
 
     return (
         <AppLayout breadcrumbs={[{ title: 'Connections', href: '/connections' }]}>

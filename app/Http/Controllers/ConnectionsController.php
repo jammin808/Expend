@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Matching\OwnAccounts;
+use App\Domain\Matching\TransferPairer;
 use App\Http\Presenters\Present;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -55,7 +57,7 @@ class ConnectionsController extends Controller
         };
 
         // Jobs, and whether each has a PO and an invoice.
-        $jobs = WorkJob::query()->with('client')->whereDate('ends_on', '>=', $f)->whereDate('starts_on', '<=', $t)->orderBy('starts_on')->get();
+        $jobs = WorkJob::query()->with(['client', 'days'])->whereDate('ends_on', '>=', $f)->whereDate('starts_on', '<=', $t)->orderBy('starts_on')->get();
         $po = PoStatus::forJobs($jobs->keyBy('id'));
         foreach ($jobs as $job) {
             $id = 'job:'.$job->id;
@@ -76,13 +78,19 @@ class ConnectionsController extends Controller
         }
         $jobIds = $jobs->pluck('id')->all();
         $jobNode = fn (?int $jobId) => $jobId && isset($nodes['job:'.$jobId]) ? 'job:'.$jobId : null;
-        // Which job is on (or the day either side of) each date, worked out once.
+        // Which job is on (or the day either side of) each date, worked out once: its real days, so the days between a
+        // rig and a de-rig aren't its. A job working the date itself wins over one it's next to.
         $onDay = [];
+        $nextTo = [];
         foreach ($jobs->where('status', '!=', 'cancelled') as $j) {
-            for ($d = CarbonImmutable::parse($j->starts_on->format('Y-m-d'))->subDay(), $n = 0; $d->format('Y-m-d') <= $j->ends_on->copy()->addDay()->format('Y-m-d') && $n < 60; $d = $d->addDay(), $n++) {
-                $onDay[$d->format('Y-m-d')] ??= $j;
+            foreach ($j->workDates() as $d) {
+                $onDay[$d] ??= $j;
+                $day = CarbonImmutable::parse($d);
+                $nextTo[$day->subDay()->format('Y-m-d')] ??= $j;
+                $nextTo[$day->addDay()->format('Y-m-d')] ??= $j;
             }
         }
+        $onDay += $nextTo;
         $jobOn = fn (string $date): ?WorkJob => $onDay[$date] ?? null;
 
         // Possible jobs from the job finder.
@@ -109,7 +117,7 @@ class ConnectionsController extends Controller
             }
             $id = 'cal:'.$key;
             $nodes[$id] = ['id' => $id, 'type' => 'calendar', 'label' => (string) $e->summary ?: '(no title)', 'sub' => trim(($e->all_day ? 'All day' : $e->localStart()->format('H:i')).' · '.$e->location, ' ·'),
-                'date' => $e->day(), 'end' => $e->lastDay()->format('Y-m-d'), 'flags' => [],
+                'date' => $e->day(), 'end' => JobDays::lastDay($e), 'flags' => [],
                 'data' => ['key' => $key, 'location' => $e->location, 'time' => $e->all_day ? null : $e->localStart()->format('H:i'), 'end_time' => $e->all_day || ! $e->ends_at ? null : $e->localEnd()->format('H:i'),
                     'linked_by' => $link?->linked_by, 'not_job' => $notJob, 'work' => $score]];
             if ($linked) {
@@ -189,8 +197,11 @@ class ConnectionsController extends Controller
             $date = $tx->effectiveDate()->format('Y-m-d');
             $jobAllocs = $tx->allocations->whereNotNull('work_job_id');
             $business = $tx->allocations->firstWhere('kind', 'business_expense');
-            if (OwnAccounts::isTransfer($tx)) {
-                continue; // money moving between your accounts is never a job's cost
+            // Money moving between your accounts is never a job's cost, and nor is a fee split off it (a currency
+            // exchange's). A split of a transfer and a real cost (a hotel paid with a top-up) shows only its cost.
+            $spending = $tx->allocations->where('kind', '!=', 'transfer');
+            if (OwnAccounts::isTransfer($tx) && ($spending->isEmpty() || TransferPairer::movesMoney($tx->allocations))) {
+                continue;
             }
             $undecided = $tx->allocations->isEmpty() && $tx->amount_pence < 0 && ! OwnAccounts::reason($tx);
             $near = $tx->amount_pence < 0 && $jobAllocs->isEmpty() && ($business || $undecided) ? $jobOn($date) : null;
@@ -199,11 +210,12 @@ class ConnectionsController extends Controller
             }
             $income = $tx->allocations->contains('kind', 'business_income');
             $id = 'tx:'.$tx->id;
-            $cat = $tx->allocations->first()?->category?->name;
-            $nodes[$id] = ['id' => $id, 'type' => $income ? 'income' : 'expense', 'label' => $tx->counterparty ?: $tx->description, 'sub' => $cat ?? ($undecided ? 'Not decided' : (Allocation::KINDS[$tx->allocations->first()?->kind] ?? '')),
-                'date' => $date, 'amount' => $tx->amount_pence, 'flags' => [],
+            $main = $spending->first() ?? $tx->allocations->first();
+            $cat = $main?->category?->name;
+            $nodes[$id] = ['id' => $id, 'type' => $income ? 'income' : 'expense', 'label' => $tx->counterparty ?: $tx->description, 'sub' => $cat ?? ($undecided ? 'Not decided' : (Allocation::KINDS[$main?->kind] ?? '')),
+                'date' => $date, 'amount' => $spending->count() < $tx->allocations->count() ? (int) $spending->sum('amount_pence') : $tx->amount_pence, 'flags' => [],
                 'data' => ['tx' => $tx->id, 'source' => 'bank', 'account' => $tx->account?->name, 'review_status' => $tx->review_status, 'category' => $cat,
-                    'allowable' => $tx->allocations->first()?->category?->is_allowable]];
+                    'allowable' => $main?->category?->is_allowable]];
             foreach ($jobAllocs as $a) {
                 if ($jn = $jobNode($a->work_job_id)) {
                     $edge($id, $jn, $a->confirmed_at ? 'confirmed' : 'auto');

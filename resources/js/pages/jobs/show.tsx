@@ -11,7 +11,7 @@ import { StatusPill } from '@/components/status-pill';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/app-layout';
-import { day, kindLabels, money, paidWith } from '@/lib/format';
+import { day, kindLabels, money, paidIn, paidWith, rateText } from '@/lib/format';
 import { type InvoiceRow } from '@/pages/invoices/index';
 import { type Item, type Lookups } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
@@ -30,7 +30,18 @@ interface Props {
         id: number;
         date: string;
         description: string;
-        account: string;
+        account: { name: string } | null;
+        time: string | null;
+        place: string | null;
+        card_last4: string | null;
+        payment_type: string | null;
+        original_amount_minor: number | null;
+        original_currency: string | null;
+        merchant_amount_minor?: number | null;
+        merchant_currency?: string | null;
+        fx: { units_per_gbp: string | null; rate_date: string | null; source: string | null } | null;
+        /** The whole payment: the line's amount is the job's part of it. */
+        payment_pence: number;
         kind: string;
         category: string | null;
         amount_pence: number;
@@ -358,9 +369,22 @@ export default function JobShow({
                                         <span className="truncate">{l.description}</span>
                                         <Explain url={`/explain/${l.source}/${l.source_id}`} />
                                     </span>
-                                    <span className="text-muted-foreground text-xs">
-                                        {day(l.date)} · {l.account} · {kindLabels[l.kind]}
+                                    <span className="text-muted-foreground block text-xs">
+                                        {day(l.date)}
+                                        {l.time ? ` ${l.time}` : ''} · {paidWith(l)}
+                                        {l.place ? ` · ${l.place}` : ''}
+                                        {paidIn(l) && (
+                                            <span title={rateText(l.fx, l.original_currency)}>
+                                                {' · paid '}
+                                                {paidIn(l)}
+                                                {l.payment_pence !== l.amount_pence ? ' in all' : ''}
+                                            </span>
+                                        )}
+                                    </span>
+                                    <span className="text-muted-foreground block text-xs">
+                                        {kindLabels[l.kind]}
                                         {l.category ? ` · ${l.category}` : ''}
+                                        {l.payment_pence !== l.amount_pence ? ` · part of ${money(Math.abs(l.payment_pence))}` : ''}
                                         {!l.confirmed ? ' · not confirmed' : ''}
                                     </span>
                                 </span>
@@ -397,9 +421,7 @@ export default function JobShow({
                                             {day(t.date)}
                                             {t.time ? ` ${t.time}` : ''} · {paidWith(t)}
                                             {t.place ? ` · ${t.place}` : ''}
-                                            {t.original_currency && t.original_currency !== 'GBP'
-                                                ? ` · ${money(t.original_amount_minor, t.original_currency)}`
-                                                : ''}
+                                            {paidIn(t) ? ` · paid ${paidIn(t)}` : ''}
                                         </span>
                                     </button>
                                     <span className="flex items-center gap-3">
@@ -428,7 +450,7 @@ export default function JobShow({
                 lookups={lookups}
                 onClose={() => {
                     setDrawer(null);
-                    router.reload({ only: ['lines', 'near', 'totals', 'mileage'] });
+                    router.reload({ only: ['lines', 'near', 'totals', 'mileage', 'finds'] });
                 }}
             />
         </AppLayout>

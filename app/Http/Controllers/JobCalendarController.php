@@ -35,7 +35,7 @@ class JobCalendarController extends Controller
             ->orderBy('starts_at')->limit(1500)->get()
             ->filter(fn (CalendarEvent $e) => $e->day() >= $from->format('Y-m-d') && $e->day() <= $to->format('Y-m-d'))->values();
         $links = CalendarJobLink::query()->whereIn('event_key', $events->map->key())->get()->keyBy('event_key');
-        $jobs = WorkJob::query()->with('client')->where('status', '!=', 'cancelled')
+        $jobs = WorkJob::query()->with(['client', 'days'])->where('status', '!=', 'cancelled')
             ->whereDate('starts_on', '<=', $to->addDays(14)->format('Y-m-d'))->whereDate('ends_on', '>=', $from->subDays(14)->format('Y-m-d'))
             ->orderBy('starts_on')->get();
         $clients = Client::query()->orderBy('name')->get(['id', 'name']);
@@ -49,7 +49,8 @@ class JobCalendarController extends Controller
                 $job = $link?->work_job_id ? $jobs->firstWhere('id', $link->work_job_id) ?? WorkJob::query()->find($link->work_job_id) : null;
 
                 return [
-                    'key' => $e->key(), 'date' => $e->day(), 'last_day' => $e->lastDay()->format('Y-m-d'), 'summary' => $e->summary ?: '(no title)', 'location' => $e->location,
+                    // A gig that ends in the small hours is one day's work, so the form suggests one day.
+                    'key' => $e->key(), 'date' => $e->day(), 'last_day' => JobDays::lastDay($e), 'summary' => $e->summary ?: '(no title)', 'location' => $e->location,
                     'all_day' => $e->all_day, 'start_time' => $e->all_day ? null : $e->localStart()->format('H:i'), 'end_time' => $e->all_day || ! $e->ends_at ? null : $e->localEnd()->format('H:i'),
                     'job' => $job ? ['id' => $job->id, 'title' => $job->title] : null, 'by' => $link?->linked_by, 'not_job' => (bool) $link?->not_job,
                     'looks_like_work' => ! $job && ! $link?->not_job && $finder->workScore($e) >= 2,
@@ -57,7 +58,9 @@ class JobCalendarController extends Controller
                     'client_id' => $clients->first(fn ($c) => self::mentions($e->text(), $c->name))?->id,
                 ];
             })->values(),
-            'jobs' => $jobs->map(fn (WorkJob $j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'ends_on' => $j->ends_on->format('Y-m-d'), 'client' => $j->client?->name])->values(),
+            // With the days each job works, so the page can say which of an entry's dates linking it adds.
+            'jobs' => $jobs->map(fn (WorkJob $j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'ends_on' => $j->ends_on->format('Y-m-d'),
+                'client' => $j->client?->name, 'days' => $j->workDates()])->values(),
             'clients' => $clients,
         ]);
     }
@@ -80,8 +83,13 @@ class JobCalendarController extends Controller
         $data = $request->validate(['date' => 'required|date', 'kind' => 'required|in:'.implode(',', array_keys(JobDay::KINDS)),
             'start_time' => 'nullable|date_format:H:i', 'end_time' => 'nullable|date_format:H:i', 'note' => 'nullable|string|max:200']);
         $date = CarbonImmutable::parse($data['date'])->format('Y-m-d');
-        if (abs(CarbonImmutable::parse($date)->diffInDays($job->starts_on)) > 120) {
-            return back()->with('error', 'That’s more than four months from the job. Make it a separate job.');
+        // Measured from the job's nearest day, so a long job (a season) can have a day added near its end.
+        $first = $job->starts_on->format('Y-m-d');
+        $last = $job->ends_on->format('Y-m-d');
+        $away = $date < $first ? CarbonImmutable::parse($date)->diffInDays(CarbonImmutable::parse($first)) : ($date > $last ? CarbonImmutable::parse($last)->diffInDays(CarbonImmutable::parse($date)) : 0);
+        $span = CarbonImmutable::parse(min($date, $first))->diffInDays(CarbonImmutable::parse(max($date, $last))) + 1;
+        if (abs($away) > 120 || $span > JobDays::MAX_DAYS) {
+            return back()->with('error', 'That’s more than four months from the job (or makes it longer than '.JobDays::MAX_DAYS.' days). Make it a separate job.');
         }
         JobDays::add($job, $date, $data['kind'], $data['start_time'] ?? null, $data['end_time'] ?? null, null, 'you', $data['note'] ?? null);
         $result = $gatherer->gather($job->fresh(), false);
@@ -131,8 +139,13 @@ class JobCalendarController extends Controller
     public function reject(JobFind $find, JobGatherer $gatherer): RedirectResponse
     {
         abort_if($find->status === 'rejected', 404);
+        try {
+            $message = $gatherer->reject($find);
+        } catch (\InvalidArgumentException $e) {
+            return back()->with('error', $e->getMessage()); // a locked year, or an issued invoice: nothing was changed
+        }
 
-        return back()->with('success', $gatherer->reject($find));
+        return back()->with('success', $message);
     }
 
     /** What the search found, for the job's page. */

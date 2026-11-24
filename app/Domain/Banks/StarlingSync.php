@@ -108,7 +108,7 @@ final class StarlingSync
             }
             try {
                 $csv = $this->call("accounts/{$uid}/statement/downloadForDateRange", ['start' => $start->format('Y-m-d'), 'end' => $end->format('Y-m-d')], 'text/csv')->body();
-                $results[] = ['account' => $account->name, 'ok' => true, 'result' => $this->import($account, $csv, $start, $end).$note];
+                $results[] = ['account' => $account->name, 'ok' => true, 'result' => $this->import($account, $csv, $start, $end, (string) $uid).$note];
                 $map[$uid]['synced_to'] = $end->format('Y-m-d');
             } catch (Throwable $e) {
                 $results[] = ['account' => $account->name, 'ok' => false, 'result' => mb_substr($e->getMessage(), 0, 300)];
@@ -209,7 +209,7 @@ final class StarlingSync
             .' this Starling account imported into '.(count($names) === 1 ? 'it' : 'them').", up to {$upTo}";
     }
 
-    private function import(Account $account, string $csv, CarbonImmutable $start, CarbonImmutable $end): string
+    private function import(Account $account, string $csv, CarbonImmutable $start, CarbonImmutable $end, ?string $uid = null): string
     {
         $lines = array_filter(preg_split('/\r?\n/', trim($csv)) ?: []);
         if (count($lines) <= 1) {
@@ -227,15 +227,19 @@ final class StarlingSync
             $name = "Starling {$start->format('j M')}–{$end->format('j M Y')} (automatic).csv";
             $importer = app(Importer::class);
             $preview = $importer->preview($account, $path, $profile);
-            $undone = $preview['errors'] ? [] : self::undone($account, $preview['rows']);
-            if ($undone === []) {
-                $batch = $importer->commit($account, $path, $name, $profile);
+            if ($preview['errors']) {
+                $batch = $importer->commit($account, $path, $name, $profile); // refused with the rows to fix
             } else {
-                // As commit(), without the rows you undid. The balance check still covers the whole statement.
-                $rows = array_values(array_diff_key($preview['rows'], array_flip($undone)));
+                // As commit(), without the rows you undid (the balance check still covers the whole statement), and
+                // with what Starling's feed adds that its statement leaves out: the time, the country and the currency
+                // a card payment abroad was made in.
+                $undone = self::undone($account, $preview['rows']);
+                $rows = $this->withFeedDetails($uid, array_values(array_diff_key($preview['rows'], array_flip($undone))), $start, $end);
                 $batch = $importer->store($account, $rows, $path, $name, $profile->toArray(), $preview['balance'], $preview['first'], $preview['last']);
-                AuditLog::record('import.left_out_undone', $batch, null, ['rows' => count($undone)],
-                    'In an import you undid: restore that import to bring them back with your decisions', 'system');
+                if ($undone) {
+                    AuditLog::record('import.left_out_undone', $batch, null, ['rows' => count($undone)],
+                        'In an import you undid: restore that import to bring them back with your decisions', 'system');
+                }
                 if ($batch->status !== 'quarantined') {
                     $importer->afterImport($batch);
                 }
@@ -243,6 +247,7 @@ final class StarlingSync
         } finally {
             @unlink($path);
         }
+        $undone ??= [];
         $left = count($undone) ? ', '.count($undone).' you undid left out (restore that import in Accounts › Import to bring '.(count($undone) === 1 ? 'it' : 'them').' back)' : '';
 
         return match ($batch->status) {
@@ -288,10 +293,90 @@ final class StarlingSync
         return array_merge([], ...array_values(array_filter($undone, fn ($found, $fp) => count($found) === $counts[$fp], ARRAY_FILTER_USE_BOTH)));
     }
 
-    private function call(string $path, array $query, string $accept, ?string $token = null)
+    /**
+     * Starling's statement has no time, place or currency for a line; its transaction feed has them. Each row is
+     * matched to one feed item (same day in the UK, same amount and direction, and the same payee where there's more
+     * than one), and given the time it was made (UK time), the country when it wasn't the UK, and the amount in the
+     * currency it was paid in. These are added to what's kept from the row (so they show like any statement's) and
+     * never change how a row is recognised again. A token without permission to read the feed, or a feed that can't
+     * be read, leaves the rows as the statement has them.
+     *
+     * @param  list<NormalizedRow>  $rows
+     * @return list<NormalizedRow>
+     */
+    private function withFeedDetails(?string $uid, array $rows, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        if (! $uid || $rows === []) {
+            return $rows;
+        }
+        try {
+            // Once each: a token without permission to read the feed is refused every time.
+            $category = collect($this->call('accounts', [], 'application/json', tries: 1)->json('accounts') ?? [])->firstWhere('accountUid', $uid)['defaultCategory'] ?? null;
+            if (! $category) {
+                return $rows;
+            }
+            $utc = fn (CarbonImmutable $d) => $d->setTimezone('UTC')->format('Y-m-d\TH:i:s.v\Z');
+            $items = $this->call("feed/account/{$uid}/category/{$category}/transactions-between", [
+                'minTransactionTimestamp' => $utc($start->subDays(2)->startOfDay()),
+                'maxTransactionTimestamp' => $utc($end->addDays(2)->endOfDay()),
+            ], 'application/json', tries: 1)->json('feedItems') ?? [];
+        } catch (Throwable) {
+            return $rows;
+        }
+
+        // The feed's items by day (UK) and amount, as the statement has them.
+        $byKey = [];
+        foreach ($items as $i => $item) {
+            $minor = $item['amount']['minorUnits'] ?? null;
+            if (! is_int($minor) || empty($item['transactionTime']) || ($item['status'] ?? '') === 'DECLINED') {
+                continue;
+            }
+            try {
+                $at = CarbonImmutable::parse($item['transactionTime'])->setTimezone('Europe/London');
+            } catch (Throwable) {
+                continue;
+            }
+            $signed = ($item['direction'] ?? '') === 'OUT' ? -$minor : $minor;
+            $byKey[$at->format('Y-m-d').'|'.$signed][] = ['i' => $i, 'at' => $at, 'item' => $item];
+        }
+        $used = [];
+        $name = fn (?string $n) => mb_strtoupper(trim(preg_replace('/\s+/', ' ', (string) $n) ?? ''));
+        foreach ($rows as $k => $row) {
+            $candidates = array_values(array_filter($byKey[$row->effectiveDate()->format('Y-m-d').'|'.$row->amountPence] ?? [], fn ($c) => ! isset($used[$c['i']])));
+            if (count($candidates) > 1) {
+                $candidates = array_values(array_filter($candidates, fn ($c) => $name($c['item']['counterPartyName'] ?? null) !== '' && $name($c['item']['counterPartyName'] ?? null) === $name($row->counterparty)));
+            }
+            if (count($candidates) !== 1) {
+                continue; // none, or more than one that could be it: left as the statement has it
+            }
+            ['i' => $i, 'at' => $at, 'item' => $item] = $candidates[0];
+            $used[$i] = true;
+            // Under the names any statement uses for them (so they're read as one's are), and said where they came from.
+            $extra = ['Time' => $at->format('H:i')];
+            $country = strtoupper((string) ($item['country'] ?? ''));
+            if ($country !== '' && ! in_array($country, ['GB', 'UK'], true)) {
+                $extra['Country'] = $country;
+            }
+            $row = clone $row;
+            $source = $item['sourceAmount'] ?? null;
+            $currency = strtoupper((string) ($source['currency'] ?? ''));
+            if ($row->originalCurrency === null && preg_match('/^[A-Z]{3}$/', $currency) && $currency !== 'GBP' && is_int($source['minorUnits'] ?? null)) {
+                // The feed gives it in the currency's own minor units (¥1,500 is 1500), signed like the line.
+                $row->originalAmountMinor = $row->amountPence < 0 ? -abs($source['minorUnits']) : abs($source['minorUnits']);
+                $row->originalCurrency = $currency;
+                $extra['Paid amount'] = $currency.' '.$source['minorUnits'];
+            }
+            $row->raw = $row->raw + $extra + ['Added from Starling’s feed' => implode(', ', array_keys($extra))];
+            $rows[$k] = $row;
+        }
+
+        return $rows;
+    }
+
+    private function call(string $path, array $query, string $accept, ?string $token = null, int $tries = 2)
     {
         $token ??= Setting::get('starling_token');
-        $response = Http::withToken((string) $token)->accept($accept)->timeout(60)->retry(2, 1000, throw: false)->get(self::API.$path, $query);
+        $response = Http::withToken((string) $token)->accept($accept)->timeout(60)->retry($tries, 1000, throw: false)->get(self::API.$path, $query);
         if ($response->status() === 401 || $response->status() === 403) {
             throw new RuntimeException('Starling refused the token ('.$response->status().'). Check it hasn’t expired and has permission to read accounts and CSV statements.');
         }

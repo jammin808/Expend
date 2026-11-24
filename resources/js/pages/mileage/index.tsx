@@ -4,7 +4,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
-import { day, money } from '@/lib/format';
+import { day, londonToday, money } from '@/lib/format';
 import { Head, Link, router, useForm } from '@inertiajs/react';
 import { Lock, Trash2 } from 'lucide-react';
 import { useState } from 'react';
@@ -70,7 +70,7 @@ export default function Mileage({ year, years, locked, rates, trips, total_pence
     const trip = useForm({
         vehicle_id: vehicles[0]?.id ? String(vehicles[0].id) : '',
         work_job_id: '',
-        trip_on: new Date().toISOString().slice(0, 10),
+        trip_on: londonToday(),
         from_place: 'Home',
         to_place: '',
         miles: '',

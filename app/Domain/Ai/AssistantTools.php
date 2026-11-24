@@ -53,11 +53,11 @@ final class AssistantTools
                     'direction' => ['type' => 'string', 'enum' => ['in', 'out']], 'limit' => $int])],
             ['name' => 'tax_year_overview', 'description' => 'Self-employment figures for a tax year from confirmed decisions, items still pending, pre-filing checks, deadline, and a labelled ESTIMATE of tax and the likely HMRC bill.',
                 'inputSchema' => $obj(['tax_year' => $str], ['tax_year'])],
-            ['name' => 'list_jobs', 'description' => 'Jobs in a date range or matching words, with income, costs, mileage and profit from confirmed records, the PO number (or missing_po when a job has no PO) and whether it has been invoiced.',
+            ['name' => 'list_jobs', 'description' => 'Jobs in a date range or matching words, with the days actually worked (days_worked: a job can have a rig day and a de-rig days later; the days between aren\'t job days), income, costs, mileage and profit from confirmed records, the PO number (or missing_po when a job has no PO) and whether it has been invoiced.',
                 'inputSchema' => $obj(['date_from' => $str, 'date_to' => $str, 'query' => $str])],
             ['name' => 'job_sheet', 'description' => 'Everything about one job: dates, times, venue, travel, accommodation, contacts and other details read from documents (each marked verified or not, with its source), hotel stays and journeys found in Gmail with their booking references, linked costs and income, mileage, documents and invoices.',
                 'inputSchema' => $obj(['job_id' => $int], ['job_id'])],
-            ['name' => 'calendar', 'description' => 'Calendar entries and jobs between two dates.',
+            ['name' => 'calendar', 'description' => 'Calendar entries and jobs between two dates. A job is listed only when one of its days falls in them (days_in_these_dates); the days between a rig and a de-rig aren\'t job days.',
                 'inputSchema' => $obj(['date_from' => $str, 'date_to' => $str], ['date_from', 'date_to'])],
             ['name' => 'search_documents', 'description' => 'Find documents (POs, job invites, production packs, call sheets, bookings, receipts, emails) by words, kind or job.',
                 'inputSchema' => $obj(['query' => $str, 'kind' => ['type' => 'string', 'enum' => array_keys(Document::KINDS)], 'job_id' => $int, 'limit' => $int])],
@@ -146,27 +146,45 @@ final class AssistantTools
             ->when($f['job_id'] ?? null, fn ($q, $v) => $q->whereHas('allocations', fn ($a) => $a->where('work_job_id', $v)))
             ->when($f['category_code'] ?? null, fn ($q, $v) => $q->whereHas('allocations.category', fn ($c) => $c->where('code', $v)));
 
-        $sums = 'COUNT(*) n, COALESCE(SUM(CASE WHEN amount_pence > 0 THEN amount_pence END),0) i, COALESCE(SUM(CASE WHEN amount_pence < 0 THEN amount_pence END),0) o';
-        $count = (clone $q)->count();
-        $totals = OwnAccounts::scopeNotTransfers(clone $q)->selectRaw($sums)->first();
-        $moved = OwnAccounts::scopeTransfers(clone $q)->selectRaw($sums)->first();
+        // Line by line: a currency exchange split into a transfer and its fee counts the fee as spending.
+        $totals = OwnAccounts::lineTotals(clone $q);
         $items = $q->orderByDesc('posted_on')->limit(min(50, max(1, (int) ($f['limit'] ?? 25))))->get();
 
         return [
-            'count' => $count,
-            'total_in' => self::money((int) $totals->i),
-            'total_out' => self::money((int) $totals->o),
-            'between_your_own_accounts' => ['count' => (int) $moved->n, 'in' => self::money((int) $moved->i), 'out' => self::money((int) $moved->o),
-                'note' => 'Transfers between your own accounts (card bills, top-ups, savings) are not spending or income and are left out of total_in and total_out.'],
+            'count' => $totals['count'],
+            'total_in' => self::money($totals['in_pence']),
+            'total_out' => self::money($totals['out_pence']),
+            'between_your_own_accounts' => ['count' => $totals['transfer_count'], 'in' => self::money($totals['transfer_in_pence']), 'out' => self::money($totals['transfer_out_pence']),
+                'note' => 'Transfers between your own accounts (card bills, top-ups, savings, currency exchanges) are not spending or income and are left out of total_in and total_out. A fee split off a transfer counts as spending.'],
             'items' => $items->map(fn (BankTransaction $t) => [
                 'transaction_id' => $t->id, 'date' => $t->effectiveDate()->format('Y-m-d'), 'description' => $t->description,
                 'account' => $t->account->name, 'amount' => self::money($t->amount_pence), 'status' => $t->review_status,
+            ] + self::howPaid($t) + [
                 'decision' => $t->allocations->map(fn ($a) => [
                     'kind' => $a->kind, 'category' => $a->category?->name, 'job' => $a->job?->title, 'amount' => self::money($a->amount_pence),
                     'decided_by' => $a->decided_by, 'confirmed' => $a->confirmed_at !== null,
                 ])->all(),
             ])->all(),
         ];
+    }
+
+    /**
+     * When, where and how a payment was made: the time, the place, the card, the payment type, and what it was paid
+     * in when that isn't pounds (in that currency's own units: ¥1,500, $90.00).
+     *
+     * @return array{time:?string, place:?string, card_last4:?string, payment_type:?string, paid_in:?string}
+     */
+    private static function howPaid(BankTransaction $t): array
+    {
+        $paidIn = null;
+        if ($t->merchant_currency && $t->merchant_amount_minor !== null && strtoupper($t->merchant_currency) !== 'GBP') {
+            $paidIn = Money::formatMinor(abs((int) $t->merchant_amount_minor), $t->merchant_currency, false);
+        } elseif ($t->original_currency && $t->original_amount_minor !== null && strtoupper($t->original_currency) !== 'GBP') {
+            $paidIn = Money::formatMinor(abs((int) $t->original_amount_minor), $t->original_currency, false);
+        }
+
+        return ['time' => $t->transacted_time ? substr((string) $t->transacted_time, 0, 5) : null, 'place' => $t->place, 'card_last4' => $t->card_last4,
+            'payment_type' => $t->payment_type, 'paid_in' => $paidIn];
     }
 
     private function taxYear(string $label): array
@@ -201,11 +219,17 @@ final class AssistantTools
 
     private function jobs(array $f): array
     {
-        $jobs = WorkJob::query()->with('client')
+        $jobs = WorkJob::query()->with(['client', 'days'])
             ->when($f['date_from'] ?? null, fn ($q, $v) => $q->where('ends_on', '>=', $v))
             ->when($f['date_to'] ?? null, fn ($q, $v) => $q->where('starts_on', '<=', $v.' 23:59:59'))
             ->when($f['query'] ?? null, fn ($q, $v) => $q->where(fn ($q) => $q->where('title', 'like', "%{$v}%")->orWhere('location', 'like', "%{$v}%")->orWhereHas('client', fn ($c) => $c->where('name', 'like', "%{$v}%"))))
             ->orderBy('starts_on')->limit(60)->get();
+        // With dates asked for: only jobs with a day in them (not one whose rig is before and de-rig after).
+        if (($f['date_from'] ?? null) || ($f['date_to'] ?? null)) {
+            $from = substr((string) ($f['date_from'] ?? '0000-01-01'), 0, 10);
+            $to = substr((string) ($f['date_to'] ?? '9999-12-31'), 0, 10);
+            $jobs = $jobs->filter(fn (WorkJob $j) => collect($j->workDates())->contains(fn ($d) => $d >= $from && $d <= $to))->values();
+        }
 
         return ['jobs' => $jobs->map(fn (WorkJob $j) => $this->jobSummary($j))->all()];
     }
@@ -219,7 +243,10 @@ final class AssistantTools
 
         return [
             'job_id' => $j->id, 'title' => $j->title, 'client' => $j->client?->name, 'starts_on' => $j->starts_on->format('Y-m-d'),
-            'ends_on' => $j->ends_on->format('Y-m-d'), 'start_time' => $j->start_time ? substr($j->start_time, 0, 5) : null,
+            'ends_on' => $j->ends_on->format('Y-m-d'),
+            // The days actually worked (a rig, a show, a de-rig days later): the days between them aren't job days.
+            'days_worked' => $j->dayList(),
+            'start_time' => $j->start_time ? substr($j->start_time, 0, 5) : null,
             'end_time' => $j->end_time ? substr($j->end_time, 0, 5) : null, 'venue' => $j->location, 'postcode' => $j->postcode, 'status' => $j->status,
             'agreed_fee' => $j->fee_pence ? self::money($j->fee_pence) : null,
             'income_confirmed' => self::money($income), 'costs_confirmed' => self::money($costs), 'mileage_claim' => self::money($mileage),
@@ -255,6 +282,16 @@ final class AssistantTools
                 'verified_against_document' => $f->verified, 'source_document_id' => $f->document_id, 'source' => $f->document?->original_name,
                 'received' => $f->document?->received_at?->format('Y-m-d'),
             ])->all(),
+            // The payments linked to the job: when, where, which card, and the currency paid in.
+            'linked_payments' => BankTransaction::query()->with(['account', 'allocations' => fn ($a) => $a->where('work_job_id', $id)->with('category')])
+                ->whereHas('allocations', fn ($a) => $a->where('work_job_id', $id))->orderBy('posted_on')->limit(100)->get()
+                ->map(fn (BankTransaction $t) => [
+                    'transaction_id' => $t->id, 'date' => $t->effectiveDate()->format('Y-m-d'), 'description' => $t->counterparty ?: $t->description,
+                    'account' => $t->account?->name, 'payment' => self::money($t->amount_pence),
+                ] + self::howPaid($t) + [
+                    'for_this_job' => $t->allocations->map(fn ($a) => ['kind' => $a->kind, 'category' => $a->category?->name, 'amount' => self::money($a->amount_pence),
+                        'confirmed' => $a->confirmed_at !== null])->all(),
+                ])->all(),
             'documents' => Document::query()->where('work_job_id', $id)->get(['id', 'original_name', 'kind', 'summary', 'received_at'])->toArray(),
             'invoices' => Invoice::query()->where('work_job_id', $id)->get()->map(fn ($i) => ['invoice_id' => $i->id, 'number' => $i->number, 'status' => $i->status, 'total' => self::money($i->total_minor), 'due' => $i->due_date?->format('Y-m-d')])->all(),
             'stays_and_travel' => TravelItem::query()->where('work_job_id', $id)->orderBy('starts_on')->get()->map(fn ($t) => [
@@ -292,8 +329,12 @@ final class AssistantTools
                     'until' => $e->all_day ? $e->lastDay()->format('Y-m-d') : $e->localEnd()?->format('Y-m-d H:i'),
                     'what' => $e->summary, 'where' => $e->location,
                 ])->all(),
-            'jobs' => WorkJob::query()->where('starts_on', '<=', $to->format('Y-m-d'))->where('ends_on', '>=', $from->format('Y-m-d'))->orderBy('starts_on')->get()
-                ->map(fn ($j) => ['job_id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'ends_on' => $j->ends_on->format('Y-m-d'), 'venue' => $j->location])->all(),
+            // Jobs with a day in these dates (the days between a rig and a de-rig aren't the job's), with those days.
+            'jobs' => WorkJob::query()->with('days')->whereDate('starts_on', '<=', $to->format('Y-m-d'))->whereDate('ends_on', '>=', $from->format('Y-m-d'))->orderBy('starts_on')->get()
+                ->map(fn (WorkJob $j) => [$j, collect($j->dayList())->filter(fn ($d) => $d['date'] >= $from->format('Y-m-d') && $d['date'] <= $to->format('Y-m-d'))->values()->all()])
+                ->filter(fn ($row) => $row[1] !== [])
+                ->map(fn ($row) => ['job_id' => $row[0]->id, 'title' => $row[0]->title, 'starts_on' => $row[0]->starts_on->format('Y-m-d'), 'ends_on' => $row[0]->ends_on->format('Y-m-d'),
+                    'days_in_these_dates' => $row[1], 'venue' => $row[0]->location, 'status' => $row[0]->status])->values()->all(),
         ];
     }
 
@@ -376,10 +417,12 @@ final class AssistantTools
     private function merchants(array $f): array
     {
         $label = UkTaxYear::fromLabel($f['tax_year'] ?? '')->label();
-        $rows = OwnAccounts::scopeNotTransfers(BankTransaction::query())->where('tax_year', $label)
+        // Only the spending (or income) part of each payment: a transfer split off it isn't the merchant's.
+        $part = OwnAccounts::spendingPenceSql();
+        $rows = OwnAccounts::scopeWithSpendingLines(BankTransaction::query())->where('tax_year', $label)
             ->when(($f['direction'] ?? 'out') === 'in', fn ($q) => $q->where('amount_pence', '>', 0), fn ($q) => $q->where('amount_pence', '<', 0))
-            ->selectRaw("merchant_key, COUNT(*) n, SUM(amount_pence) total, SUM(CASE WHEN review_status = 'confirmed' THEN 1 ELSE 0 END) confirmed")
-            ->groupBy('merchant_key')->orderByRaw('ABS(SUM(amount_pence)) DESC')->limit(40)->get();
+            ->selectRaw("merchant_key, COUNT(*) n, SUM({$part}) total, SUM(CASE WHEN review_status = 'confirmed' THEN 1 ELSE 0 END) confirmed")
+            ->groupBy('merchant_key')->orderByRaw("ABS(SUM({$part})) DESC")->limit(40)->get();
 
         return ['tax_year' => $label, 'merchants' => $rows->map(fn ($r) => [
             'merchant' => $r->merchant_key, 'transactions' => (int) $r->n, 'total' => self::money((int) $r->total), 'confirmed' => (int) $r->confirmed,

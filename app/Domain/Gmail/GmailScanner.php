@@ -92,6 +92,13 @@ final class GmailScanner
     {
         $seen = GmailMessage::query()->where('message_id', $id)->first();
         if ($seen && ($seen->document_id || $seen->status !== 'failed')) {
+            // Already kept. One first found by a job's own search (a hotel booking that names the venue's town) and
+            // now found by the hotel or travel search is read as a stay or journey now: the job search never does.
+            if ($seen->document_id && $seen->status === 'stored' && in_array($seen->search, ['job', 'job_documents'], true) && ! in_array($search, ['job', 'job_documents'], true)) {
+                $seen->update(['search' => $search]);
+                ReadTravelEmail::dispatch($seen->id);
+            }
+
             return null; // already read; a message that failed to download is tried again
         }
         $from = $subject = $sentAt = null;
@@ -118,7 +125,12 @@ final class GmailScanner
             'sent_at' => $sentAt, 'document_id' => $document->id,
         ]);
 
-        if (! in_array($search, ['job_documents', 'job'], true)) {
+        // A booking from a hotel or travel company found by a job's search is read as a stay or journey too.
+        $travel = in_array($search, ['job_documents', 'job'], true) ? self::travelSearchFor($from) : $search;
+        if ($travel !== null) {
+            if ($travel !== $search) {
+                $logged->update(['search' => $travel]);
+            }
             ReadTravelEmail::dispatch($logged->id);
         } elseif (Setting::get('ai_extraction') === 'on' && AiConfig::ready() && $document->kind === 'email' && $document->status === 'new' && mb_strlen((string) $document->text) > 300) {
             // The email itself is read too (attachments already are): POs and job details are often in the body.
@@ -133,6 +145,26 @@ final class GmailScanner
     public static function canUseAi(): bool
     {
         return AiConfig::ready() && Setting::get('ai_extraction') !== 'off';
+    }
+
+    /** The hotel or travel search whose senders include this one ("hotels" for premierinn.com), if any. */
+    public static function travelSearchFor(?string $from): ?string
+    {
+        if (! $from || ! preg_match('/@([a-z0-9.-]+)/i', $from, $m)) {
+            return null;
+        }
+        $domain = strtolower(rtrim($m[1], '.'));
+        foreach (['hotels', 'travel'] as $search) {
+            preg_match('/from:\(([^)]*)\)/i', self::SEARCHES[$search]['query'], $q);
+            foreach (preg_split('/\s+OR\s+/i', $q[1] ?? '') ?: [] as $d) {
+                $d = strtolower(trim($d));
+                if ($d !== '' && ($domain === $d || str_ends_with($domain, '.'.$d))) {
+                    return $search;
+                }
+            }
+        }
+
+        return null;
     }
 
     /** @return array{0:?string, 1:?string} */

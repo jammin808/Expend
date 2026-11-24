@@ -78,6 +78,9 @@ export interface Item {
     amount_pence: number;
     original_amount_minor: number | null;
     original_currency: string | null;
+    /** The currency the shop charged, when it isn't the account's own ($90.00 from a euro account), in its own units. */
+    merchant_amount_minor?: number | null;
+    merchant_currency?: string | null;
     bank_category?: string | null;
     review_status: 'unreviewed' | 'suggested' | 'confirmed';
     transfer_pair_id?: number | null;
@@ -86,7 +89,7 @@ export interface Item {
     merchant_count?: number;
     events?: CalendarEntry[];
     jobs_near?: JobRef[];
-    fx?: { units_per_gbp: string; rate_date: string | null; source: string | null } | null;
+    fx?: { units_per_gbp: string | null; rate_date: string | null; source: string | null } | null;
 }
 
 export interface CalendarEntry {

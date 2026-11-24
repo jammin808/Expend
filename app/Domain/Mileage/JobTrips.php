@@ -62,8 +62,8 @@ final class JobTrips
             }
             $oneWay = round($straight * self::ROAD_FACTOR, 1);
             $days = count($dates);
-            $stayed = $travel['stayed'];
-            // With a stay, one return trip per run of consecutive days (a rig, then a de-rig days later, is two runs).
+            // A run of consecutive days you stayed nearby for is one return trip; a run without a stay is a return
+            // trip each day (a rig with a hotel, then a de-rig days later driven there and back, is 1 + 1).
             $runs = [];
             foreach ($dates as $d) {
                 $last = end($runs);
@@ -73,7 +73,9 @@ final class JobTrips
                     $runs[] = [$d];
                 }
             }
-            $allDates = $stayed ? array_map(fn ($r) => $r[0], $runs) : $dates;
+            $stayedRuns = array_values(array_filter($runs, fn ($r) => (bool) array_intersect($r, $travel['woke'])));
+            $stayed = $stayedRuns !== [];
+            $allDates = array_merge(...array_map(fn ($r) => in_array($r, $stayedRuns, true) ? [$r[0]] : $r, $runs));
             $tripDates = array_values(array_filter($allDates, fn ($d) => ! in_array(UkTaxYear::fromDate($d)->label(), $locked, true)));
             if ($tripDates === [] || UkTaxYear::fromDate($tripDates[0])->label() !== $year->label()) {
                 continue; // nothing left to add, or offered on an earlier year's page
@@ -85,6 +87,7 @@ final class JobTrips
                 'venue' => $job->location, 'postcode' => $job->postcode, 'one_way' => $oneWay, 'trips' => $trips, 'miles' => round($oneWay * 2 * $trips, 1),
                 'trip_dates' => $tripDates,
                 'why' => match (true) {
+                    $stayed && count($stayedRuns) < count($runs) => count($allDates).' return trips: one for each visit you stayed nearby for, and one for each day you drove there and back',
                     $stayed && count($runs) > 1 => count($runs).' separate visits, staying nearby: a return trip for each',
                     $stayed => 'One return trip; you stayed nearby',
                     $days > 1 => "{$days} days without a stay: a return trip each day",
@@ -139,7 +142,8 @@ final class JobTrips
      * wasn't for work, so it never counts.
      *
      * @param  list<string>  $dates  the job's working days
-     * @return array{journey:bool, stayed:bool}
+     * @return array{journey:bool, woke:list<string>} whether you went by train, plane or coach, and the working days
+     *                                                you woke up at a hotel on
      */
     private static function travelFor(WorkJob $job, array $dates): array
     {
@@ -178,9 +182,12 @@ final class JobTrips
         };
         $relevant = $items->filter($fits);
 
+        $woke = $relevant->where('kind', 'hotel')->flatMap(fn (TravelItem $h) => array_map(fn ($n) => CarbonImmutable::parse($n)->addDay()->format('Y-m-d'), $h->nights()))
+            ->filter(fn ($d) => in_array($d, $dates, true))->unique()->values()->all();
+
         return [
             'journey' => $relevant->whereIn('kind', self::JOURNEYS)->isNotEmpty(),
-            'stayed' => $relevant->where('kind', 'hotel')->isNotEmpty(),
+            'woke' => $woke,
         ];
     }
 }

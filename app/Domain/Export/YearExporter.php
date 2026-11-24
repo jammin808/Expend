@@ -7,6 +7,7 @@ use App\Domain\Tax\ReturnSummary;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\ManualExpense;
+use App\Support\Money;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\XLSX\Writer;
 
@@ -34,14 +35,21 @@ final class YearExporter
         $writer->addRow(Row::fromValues(['Still to decide (not counted)', $summary['pending']['unreviewed_count'] + $summary['pending']['suggested_count']]));
 
         $writer->addNewSheetAndMakeItCurrent()->setName('Transactions');
-        $writer->addRow(Row::fromValues(['Date', 'Account', 'Description', 'Amount', 'Original amount', 'Currency', 'Decision', 'Category', 'Job', 'Line amount', 'Business %', 'Status', 'Decided by', 'Note']));
+        // Each line as the ledger shows it: when, which account and card, where, the currency it was paid in and the rate.
+        $writer->addRow(Row::fromValues(['Date', 'Time', 'Account', 'Card', 'Payment type', 'Place', 'Description', 'Amount', 'Original amount', 'Currency',
+            'Rate (per £1)', 'Rate used', 'Paid amount', 'Paid currency', 'Decision', 'Category', 'Job', 'Line amount', 'Business %', 'Status', 'Decided by', 'Note']));
 
         BankTransaction::query()->where('tax_year', $label)->with(['account', 'allocations.category', 'allocations.job'])
             ->orderBy('posted_on')->orderBy('id')->chunk(500, function ($txs) use ($writer) {
                 foreach ($txs as $tx) {
                     $base = [
-                        $tx->effectiveDate()->format('Y-m-d'), $tx->account->name, self::safe($tx->description), self::pounds($tx->amount_pence),
-                        $tx->original_amount_minor !== null ? $tx->original_amount_minor / 100 : '', $tx->original_currency ?? '',
+                        $tx->effectiveDate()->format('Y-m-d'), $tx->transacted_time ? substr((string) $tx->transacted_time, 0, 5) : '', $tx->account->name,
+                        $tx->card_last4 ? '•••• '.$tx->card_last4 : '', self::safe((string) $tx->payment_type), self::safe((string) $tx->place),
+                        self::safe($tx->description), self::pounds($tx->amount_pence), ...self::original($tx->original_amount_minor, $tx->original_currency, $tx->amount_pence,
+                            $tx->fx_units_per_gbp, $tx->fx_source),
+                        // The currency the shop charged, where it isn't the account's own ($90.00 from the euro account).
+                        $tx->merchant_currency && $tx->merchant_amount_minor !== null ? Money::major((int) $tx->merchant_amount_minor, $tx->merchant_currency) : '',
+                        $tx->merchant_currency && $tx->merchant_amount_minor !== null ? $tx->merchant_currency : '',
                     ];
                     if ($tx->allocations->isEmpty()) {
                         $writer->addRow(Row::fromValues([...$base, 'Undecided', '', '', '', '', 'unreviewed', '', '']));
@@ -53,8 +61,8 @@ final class YearExporter
             });
 
         ManualExpense::query()->where('tax_year', $label)->with(['allocations.category', 'allocations.job'])->orderBy('spent_on')->each(function (ManualExpense $e) use ($writer) {
-            $base = [$e->spent_on->format('Y-m-d'), 'Manual: '.$e->paid_with, self::safe($e->description), self::pounds($e->amount_pence),
-                $e->original_amount_minor !== null ? $e->original_amount_minor / 100 : '', $e->original_currency ?? ''];
+            $base = [$e->spent_on->format('Y-m-d'), '', 'Manual: '.$e->paid_with, '', '', '', self::safe($e->description), self::pounds($e->amount_pence),
+                ...self::original($e->original_amount_minor, $e->original_currency, $e->amount_pence, $e->fx_units_per_gbp, $e->fx_source), '', ''];
             foreach ($e->allocations as $a) {
                 $writer->addRow(Row::fromValues([...$base, ...self::allocationCells($a)]));
             }
@@ -78,6 +86,35 @@ final class YearExporter
             self::pounds($a->amount_pence), $a->business_use_pct ?? '', $a->confirmed_at ? 'confirmed' : 'suggested',
             $a->decided_by, self::safe((string) $a->note),
         ];
+    }
+
+    private const RATE_SOURCES = [
+        'hmrc_monthly' => 'HMRC monthly rate', 'manual' => 'Your rate', 'exchange' => 'The exchange it came from',
+        'document' => 'The document’s sterling figure', 'bank' => 'The bank’s rate',
+    ];
+
+    /**
+     * The amount in the currency it was paid in (in that currency's own units: ¥1,500 is 1500), the currency, and the
+     * rate to the pound with where it came from. With no rate stored, the bank's own: what it charged in pounds.
+     *
+     * @return array{0:float|string, 1:string, 2:float|string, 3:string}
+     */
+    private static function original(?int $minor, ?string $currency, int $pence, mixed $rate, ?string $source): array
+    {
+        if ($minor === null || ! $currency) {
+            return ['', $currency ?? '', '', ''];
+        }
+        $amount = Money::major($minor, $currency);
+        if (strtoupper($currency) === 'GBP') {
+            return [$amount, $currency, '', ''];
+        }
+        if ($rate === null || (float) $rate <= 0) {
+            $rate = $pence !== 0 && $minor !== 0 ? round(abs($amount) / (abs($pence) / 100), 6) : null;
+            // Where the sterling came from stays as stored (a pocket's exchange); only a line with none is the bank's.
+            $source = $rate !== null ? ($source ?: 'bank') : $source;
+        }
+
+        return [$amount, $currency, $rate !== null ? (float) $rate : '', $source ? (self::RATE_SOURCES[$source] ?? $source) : ''];
     }
 
     private static function pounds(int $pence): float

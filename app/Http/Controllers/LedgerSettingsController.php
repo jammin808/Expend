@@ -61,13 +61,18 @@ class LedgerSettingsController extends Controller
         }
         AuditLog::record('settings.updated', 'Settings', null, collect($data)->except('calendar_ics_url')->all() + $own);
 
-        $found = 0;
+        $found = $cleared = 0;
         if ($ownChanged) {
+            // Checked again with the new names and accounts: new transfers are suggested, and earlier suggestions
+            // that no longer fit go back to be decided (never one you've confirmed).
             $pairer = app(TransferPairer::class);
             $found = $pairer->pairAll() + $pairer->suggestOneSided();
+            $cleared = $pairer->cleared;
         }
 
-        return back()->with('success', 'Settings saved.'.($found ? " Found {$found} more transfers between your accounts to confirm." : ''));
+        return back()->with('success', 'Settings saved.'
+            .($found ? " Found {$found} more ".($found === 1 ? 'transfer' : 'transfers').' between your accounts to confirm.' : '')
+            .($cleared ? " {$cleared} earlier transfer ".($cleared === 1 ? 'suggestion no longer fits and is' : 'suggestions no longer fit and are').' back for you to decide.' : ''));
     }
 
     public function syncCalendar(CalendarSync $sync): RedirectResponse

@@ -46,8 +46,13 @@ final class Explainer
 
         // Another currency: how its sterling amount was worked out.
         if ($isBank && $item->original_currency && $item->original_currency !== 'GBP' && $item->original_amount_minor) {
-            $paid = Money::format(abs($item->original_amount_minor), $item->original_currency, false);
-            $rate = $item->fx_units_per_gbp ? rtrim(rtrim((string) $item->fx_units_per_gbp, '0'), '.') : null;
+            // In the currency's own units (¥1,500 is 1500); the shop's own currency first, when it charged in another
+            // ($90.00 paid from the euro account as €76.64).
+            $paid = Money::formatMinor(abs($item->original_amount_minor), $item->original_currency, false);
+            if ($item->merchant_currency && $item->merchant_amount_minor !== null && $item->merchant_currency !== $item->original_currency) {
+                $paid = Money::formatMinor(abs((int) $item->merchant_amount_minor), $item->merchant_currency, false).' ('.$paid.' from '.($item->account?->name ?? 'the account').')';
+            }
+            $rate = Money::rate($item->fx_units_per_gbp);
             $notes[] = 'Paid '.$paid.'; it counts as '.Money::format(abs($amount)).' for tax, '.match ($item->fx_source) {
                 'exchange' => 'the pounds the currency was bought with in the exchange it came from',
                 'hmrc_monthly' => 'at HMRC’s monthly rate for '.($item->fx_rate_date?->format('F Y') ?? 'that month').($rate ? " ({$rate} per £1)" : ''),
@@ -57,8 +62,11 @@ final class Explainer
         }
 
         // Context from your own records.
-        $jobs = WorkJob::query()->where('status', '!=', 'cancelled')->whereDate('starts_on', '<=', CarbonImmutable::parse($date)->addDay()->format('Y-m-d'))
-            ->whereDate('ends_on', '>=', CarbonImmutable::parse($date)->subDay()->format('Y-m-d'))->get();
+        // Jobs working that day or the day either side (travel there and back): not the days between a rig and a
+        // de-rig, which aren't working days.
+        $jobs = WorkJob::query()->with('days')->where('status', '!=', 'cancelled')->whereDate('starts_on', '<=', CarbonImmutable::parse($date)->addDay()->format('Y-m-d'))
+            ->whereDate('ends_on', '>=', CarbonImmutable::parse($date)->subDay()->format('Y-m-d'))->get()
+            ->filter(fn (WorkJob $j) => $j->isNear(CarbonImmutable::parse($date)->format('Y-m-d')))->values();
         $isTravel = $category && (str_starts_with($category->code, 'travel') || $category->code === 'travel');
         if ($jobs->isNotEmpty()) {
             // Only what fits the money: spending can be a cost of the job, money in its income. A transfer, a tax
@@ -77,8 +85,8 @@ final class Explainer
         } elseif ($isTravel) {
             $notes[] = 'There’s no job on or around this date. Travel is only allowable for business journeys (to a venue, client or temporary workplace, not ordinary commuting to a regular base). If it was for work, add the job; otherwise it’s personal.';
         }
-        if ($main?->job && $jobs->isEmpty()) {
-            $notes[] = 'It’s linked to '.$main->job->title.', which wasn’t on or next to this date. Check the link is right.';
+        if ($main?->job && ! $main->job->isNear($date)) {
+            $notes[] = 'It’s linked to '.$main->job->title.', which wasn’t on or next to this date (none of its days). Check the link is right.';
         }
         if ($category && ! $category->is_allowable) {
             $notes[] = 'The category “'.$category->name.'” isn’t allowable for tax: it’s recorded, but it doesn’t reduce your profit.';

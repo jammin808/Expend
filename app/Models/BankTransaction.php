@@ -18,7 +18,7 @@ class BankTransaction extends Model
         'account_id', 'import_batch_id', 'posted_on', 'transaction_on', 'description', 'counterparty',
         'reference', 'amount_pence', 'balance_after_pence', 'original_amount_minor', 'original_currency',
         'raw', 'fingerprint', 'occurrence', 'transacted_time', 'place', 'card_last4', 'payment_type',
-        'balance_after_minor', 'fee_minor',
+        'balance_after_minor', 'fee_minor', 'merchant_amount_minor', 'merchant_currency',
     ];
 
     protected $guarded = ['id'];
@@ -32,6 +32,7 @@ class BankTransaction extends Model
         'original_amount_minor' => 'integer',
         'balance_after_minor' => 'integer',
         'fee_minor' => 'integer',
+        'merchant_amount_minor' => 'integer',
         'fx_rate_date' => 'date',
     ];
 

@@ -51,7 +51,9 @@ class TodoController extends Controller
     /** What has been found and dealt with: the history behind the list, with the money involved. */
     public function history(): Response
     {
-        FindingsRegistry::sync();
+        // Recorded again only when something the list is made from has changed, and never waiting for a run
+        // already under way (the page shows what's recorded).
+        FindingsRegistry::refresh();
 
         return Inertia::render('todo-history', FindingsRegistry::summary());
     }

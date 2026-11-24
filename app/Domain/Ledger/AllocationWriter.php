@@ -122,16 +122,20 @@ final class AllocationWriter
         $this->afterYou($source);
     }
 
-    /** Remove the decision so the item goes back to the Inbox. */
-    public function clear(BankTransaction|ManualExpense $source, ?string $reason = null): void
+    /**
+     * Remove the decision so the item goes back to the Inbox.
+     *
+     * @param  string  $actor  who cleared it, for the history: 'you', or 'matcher' when an outdated suggestion is taken back
+     */
+    public function clear(BankTransaction|ManualExpense $source, ?string $reason = null, string $actor = 'you'): void
     {
         $this->assertUnlocked($this->taxYearOf($source));
 
-        DB::transaction(function () use ($source, $reason) {
+        DB::transaction(function () use ($source, $reason, $actor) {
             $before = $source->allocations()->get()->map(fn ($a) => $this->snapshot($a))->all();
             $source->allocations()->delete();
             $source->forceFill(['review_status' => 'unreviewed'])->saveQuietly();
-            AuditLog::record('allocation.cleared', $source, $before ?: null, null, $reason);
+            AuditLog::record('allocation.cleared', $source, $before ?: null, null, $reason, $actor);
         });
     }
 

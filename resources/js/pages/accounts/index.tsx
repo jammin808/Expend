@@ -2,7 +2,7 @@ import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import AppLayout from '@/layouts/app-layout';
-import { day, money } from '@/lib/format';
+import { balanceText, day } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { Head, Link, router, useForm } from '@inertiajs/react';
 import { CircleCheck, TriangleAlert } from 'lucide-react';
@@ -23,8 +23,9 @@ interface AccountRow {
         method: 'running_balance' | 'statement_balances' | 'none';
         checked_to: string | null;
         balance_pence: number | null;
-        gaps: { from: string; to: string; missing_pence: number; text: string }[];
+        gaps: { from: string; to: string; missing_pence: number; text: string; kind?: 'missing' | 'extra' | 'misdated' }[];
         last_line: string | null;
+        last_import?: string | null;
         stale: boolean;
         text: string;
     };
@@ -37,6 +38,9 @@ function Reconcile({ a }: { a: AccountRow }) {
     const form = useForm({ as_of: '', balance: '', note: '' });
     const r = a.reconcile;
     const ok = r.method !== 'none' && r.gaps.length === 0;
+    // A currency pocket's balances are in its own currency, as its statement shows them, and kept in that currency's
+    // own minor units (whole yen for a yen pocket): the running balance from its statement and the ones typed in.
+    const currency = a.currency ?? 'GBP';
 
     return (
         <div className="w-full space-y-2 text-sm">
@@ -50,10 +54,12 @@ function Reconcile({ a }: { a: AccountRow }) {
                 {r.text}
                 {ok && r.balance_pence !== null && (
                     <span className="text-muted-foreground">
-                        {a.kind === 'credit_card' ? 'Owed' : 'Balance'} {money(r.balance_pence, a.currency ?? 'GBP', { signed: false })}
+                        {balanceText(a.kind, r.balance_pence, currency, r.method === 'running_balance' ? 'bank' : 'owed')}
                     </span>
                 )}
-                {r.stale && r.last_line && <span className="text-amber-700 dark:text-amber-300">Nothing imported since {day(r.last_line)}.</span>}
+                {r.stale && (r.last_import ?? r.last_line) && (
+                    <span className="text-amber-700 dark:text-amber-300">Nothing imported since {day(r.last_import ?? r.last_line)}.</span>
+                )}
                 <button type="button" className="text-muted-foreground underline underline-offset-2" onClick={() => setOpen((o) => !o)}>
                     {open ? 'Hide' : 'Statement balances'}
                 </button>
@@ -109,7 +115,7 @@ function Reconcile({ a }: { a: AccountRow }) {
                             {a.balances.map((b) => (
                                 <li key={b.id} className="flex items-center justify-between gap-2 py-1">
                                     <span>
-                                        {day(b.as_of)} · {money(b.balance_pence, 'GBP', { signed: false })}
+                                        {day(b.as_of)} · {balanceText(a.kind, b.balance_pence, currency)}
                                         {b.note ? ` · ${b.note}` : ''}
                                     </span>
                                     <Button

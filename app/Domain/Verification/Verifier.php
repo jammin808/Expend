@@ -10,7 +10,9 @@ use App\Domain\Documents\DocumentIntake;
 use App\Domain\Documents\Grounding;
 use App\Domain\Documents\TextExtractor;
 use App\Domain\Gmail\GmailClient;
+use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
+use App\Domain\Jobs\JobGatherer;
 use App\Domain\Travel\TravelReader;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -228,22 +230,36 @@ final class Verifier
             return ['ok' => true, 'why' => ['the job’s PO number is in it']];
         }
         unset($po);
+        // Its own words: an email's subject and body, without its headers or the headers of emails it quotes. The
+        // date an email was sent isn't the date of the job.
+        $content = self::contentOf($text);
         $dated = false;
         foreach (array_slice($job->workDates(), 0, 31) as $date) {
-            if (self::dateInText($text, $date)) {
+            if (self::dateInText($content, $date)) {
                 $dated = true;
                 $why[] = 'it gives '.CarbonImmutable::parse($date)->format('j M Y');
                 break;
             }
         }
+        // Named outright: its client, exact venue (not one that could be anywhere, like "London"), postcode, or its
+        // whole title. A single word of the title, or a vague venue, is only a mention: never enough to link it.
         $named = null;
+        $strong = false;
         $norm = Grounding::normalise($text);
         foreach (array_filter([$job->client?->name, $job->location, $job->postcode]) as $name) {
             $n = Grounding::normalise(preg_replace('/\b(ltd|limited|plc|llp|the)\b/i', '', $name));
             if (mb_strlen($n) >= 3 && str_contains($norm, $n)) {
-                $named = $name;
-                break;
+                $vague = $name === $job->location && JobGatherer::vaguePlace($job->location);
+                $named ??= $name;
+                if (! $vague) {
+                    [$named, $strong] = [$name, true];
+                    break;
+                }
             }
+        }
+        $title = Grounding::normalise((string) $job->title);
+        if (! $strong && mb_strlen($title) >= 8 && preg_match('/\S\s+\S/u', trim((string) $job->title)) && str_contains($norm, $title)) {
+            [$named, $strong] = [$job->title, true];
         }
         if (! $named) {
             preg_match_all('/[\p{L}\p{N}]{5,}/u', mb_strtolower($job->title), $m);
@@ -258,7 +274,18 @@ final class Verifier
             $why[] = 'it mentions '.$named;
         }
 
-        return ['ok' => $dated && $named !== null, 'why' => $why];
+        return ['ok' => $dated && $strong, 'why' => $why];
+    }
+
+    /**
+     * A document's own words for the date test: an email's subject (what it's about, "Call sheet - Wed 14 May")
+     * and its body, without the email's headers or the quoted headers of earlier emails (JobGatherer::withoutHeaders).
+     */
+    public static function contentOf(string $text): string
+    {
+        preg_match_all('/^[>\s]*Subject:[ \t]*(.+)$/mi', $text, $m);
+
+        return trim(implode("\n", $m[1])."\n".JobGatherer::withoutHeaders($text));
     }
 
     /**
@@ -439,7 +466,7 @@ final class Verifier
         }
         if ($event->day() !== ($s['date'] ?? null)) {
             $source['date'] = $event->day();
-            $source['to'] = $event->lastDay()->format('Y-m-d');
+            $source['to'] = JobDays::lastDay($event); // an entry ending in the small hours is one day
 
             return [true, 'Still in your calendar, moved to '.CarbonImmutable::parse($event->day())->format('D j M Y')];
         }
@@ -456,7 +483,7 @@ final class Verifier
             $checks[] = ['what' => 'Title', 'ok' => false, 'note' => 'The entry was renamed to “'.mb_substr((string) $event->summary, 0, 80).'”'];
         }
         if ($event && $job) {
-            $ok = $job->starts_on->format('Y-m-d') <= $event->lastDay()->addDay()->format('Y-m-d') && $job->ends_on->format('Y-m-d') >= CarbonImmutable::parse($event->day())->subDay()->format('Y-m-d');
+            $ok = $job->starts_on->format('Y-m-d') <= CarbonImmutable::parse(JobDays::lastDay($event))->addDay()->format('Y-m-d') && $job->ends_on->format('Y-m-d') >= CarbonImmutable::parse($event->day())->subDay()->format('Y-m-d');
             $checks[] = ['what' => 'Dates', 'ok' => $ok, 'note' => $ok ? 'On the job’s dates' : 'The job’s dates no longer match the entry'];
         }
 

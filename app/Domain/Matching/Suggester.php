@@ -13,6 +13,7 @@ use App\Models\MerchantRule;
 use App\Models\TaxYear;
 use App\Models\TravelItem;
 use App\Support\Money;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
 
 /**
@@ -37,8 +38,21 @@ final class Suggester
 
     public function __construct(private AllocationWriter $writer, private TravelDays $days, private Categoriser $categoriser) {}
 
-    /** @param Collection<int, BankTransaction> $transactions */
-    public function suggestFor(Collection $transactions): int
+    /**
+     * Suggest for each line nobody has decided. $match runs your rules and the specific matchers (an invoice of the
+     * same amount, HMRC, fines, car hire, travel); $guess runs the Categoriser (your past decisions, the bank's
+     * category, common merchants). An import runs them apart, with transfer pairing in between, so your rules and
+     * invoice matches come before pairing and pairing comes before a guess.
+     *
+     * Money the line itself shows is your own moving (your name as the payer or payee, a savings pot or exchange, a
+     * top-up from your own card, a card's bill payment, another account of yours named on it) is never matched to an
+     * invoice as income or to HMRC, travel and the like: the transfer passes pair it or suggest it as a transfer, and
+     * the invoice is left for the client's payment. A line naming somebody else is never your own money, so a
+     * client's payment is still matched. Your rules still apply to it.
+     *
+     * @param  Collection<int, BankTransaction>  $transactions
+     */
+    public function suggestFor(Collection $transactions, bool $match = true, bool $guess = true): int
     {
         $rules = MerchantRule::query()->get()->keyBy('merchant_key');
         $penalty = Category::query()->where('code', 'travel_penalties')->value('id');
@@ -50,44 +64,65 @@ final class Suggester
         $turnover = Category::query()->where('code', 'turnover')->value('id');
         $openInvoices = Invoice::query()->where('status', 'issued')->where('currency', 'GBP')->get();
         $received = null; // worked out the first time money comes in, below
+        OwnAccounts::flush();
+        if ($match && $transactions instanceof EloquentCollection) {
+            $transactions->loadMissing('account'); // OwnAccounts::reason() reads each line's account
+        }
 
         foreach ($transactions as $tx) {
-            if (in_array($tx->tax_year, $locked, true) || $tx->allocations()->exists()) {
+            if (in_array($tx->tax_year, $locked, true) || $tx->allocations()->exists() || (! $match && $tx->transfer_pair_id)) {
                 continue;
             }
 
             $text = $tx->description.' '.$tx->counterparty;
 
-            if ($tx->amount_pence > 0 && $turnover) {
-                // Only an invoice nothing has come in for yet (counted as everywhere else: payments linked to it,
-                // and income recorded for its job).
-                $received ??= InvoicePayments::received($openInvoices);
-                $invoice = $openInvoices->first(fn ($i) => $i->total_minor === $tx->amount_pence && ($received[$i->id]['paid'] ?? 0) === 0
-                    && (! $i->issue_date || $tx->posted_on->gte($i->issue_date->copy()->subDays(3))));
-                if ($invoice) {
-                    $lines = AllocationWriter::lines($tx->amount_pence, 'business_income', $turnover, $invoice->work_job_id);
-                    $lines[0]['invoice_id'] = $invoice->id;
-                    $made += (int) $this->writer->decide($tx, $lines, 'matcher', false, "Matches invoice {$invoice->number} for ".Money::format($invoice->total_minor));
+            if ($match) {
+                $own = OwnAccounts::reason($tx) !== null;
+                if (! $own && $tx->amount_pence > 0 && $turnover) {
+                    // Only an invoice nothing has come in for yet (counted as everywhere else: payments linked to it,
+                    // and income recorded for its job).
+                    $received ??= InvoicePayments::received($openInvoices);
+                    $invoice = $openInvoices->first(fn ($i) => $i->total_minor === $tx->amount_pence && ($received[$i->id]['paid'] ?? 0) === 0
+                        && (! $i->issue_date || $tx->posted_on->gte($i->issue_date->copy()->subDays(3))));
+                    if ($invoice) {
+                        $lines = AllocationWriter::lines($tx->amount_pence, 'business_income', $turnover, $invoice->work_job_id);
+                        $lines[0]['invoice_id'] = $invoice->id;
+                        $made += (int) $this->writer->decide($tx, $lines, 'matcher', false, "Matches invoice {$invoice->number} for ".Money::format($invoice->total_minor));
+
+                        continue;
+                    }
+                }
+
+                if (($rule = $rules->get($tx->merchant_key)) && RuleLearner::appliesTo($rule, $tx->amount_pence)) {
+                    $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, $rule->work_job_id, $rule->business_pct);
+                    $made += (int) $this->writer->decide($tx, $lines, 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}", $rule->id);
 
                     continue;
                 }
+                if (! $own) {
+                    $found = null;
+                    if ($tx->amount_pence < 0 && preg_match(self::HMRC_PATTERN, $text)) {
+                        $found = [AllocationWriter::lines($tx->amount_pence, 'tax_payment'), 'Looks like a payment to HMRC (personal tax, not a business expense)'];
+                    } elseif ($tx->amount_pence < 0 && $penalty && preg_match(self::PENALTY_PATTERN, $text)) {
+                        $found = [AllocationWriter::lines($tx->amount_pence, 'business_expense', $penalty), 'Looks like a fine or penalty charge, which is never allowable'];
+                    } elseif ($tx->amount_pence < 0 && $carHire && preg_match(self::CAR_HIRE_PATTERN, $text)) {
+                        $found = [AllocationWriter::lines($tx->amount_pence, 'business_expense', $carHire), 'Looks like car hire, usually a business expense. Check it was for work, and link the job'];
+                    } elseif ($tx->amount_pence < 0 && ($travel = $this->travelSuggestion($tx, $text))) {
+                        $found = [$travel['lines'], $travel['reason']];
+                    }
+                    if ($found) {
+                        $made += (int) $this->writer->decide($tx, $found[0], 'matcher', false, $found[1]);
+
+                        continue;
+                    }
+                }
             }
 
-            if (($rule = $rules->get($tx->merchant_key)) && RuleLearner::appliesTo($rule, $tx->amount_pence)) {
-                $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, $rule->work_job_id, $rule->business_pct);
-                $made += (int) $this->writer->decide($tx, $lines, 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}", $rule->id);
-            } elseif ($tx->amount_pence < 0 && preg_match(self::HMRC_PATTERN, $text)) {
-                $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'tax_payment'), 'matcher', false, 'Looks like a payment to HMRC (personal tax, not a business expense)');
-            } elseif ($tx->amount_pence < 0 && $penalty && preg_match(self::PENALTY_PATTERN, $text)) {
-                $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'business_expense', $penalty), 'matcher', false, 'Looks like a fine or penalty charge, which is never allowable');
-            } elseif ($tx->amount_pence < 0 && $carHire && preg_match(self::CAR_HIRE_PATTERN, $text)) {
-                $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'business_expense', $carHire), 'matcher', false, 'Looks like car hire, usually a business expense. Check it was for work, and link the job');
-            } elseif ($tx->amount_pence < 0 && ($travel = $this->travelSuggestion($tx, $text))) {
-                $made += (int) $this->writer->decide($tx, $travel['lines'], 'matcher', false, $travel['reason']);
-            } elseif ($learned = $this->categoriser->propose($tx)) {
-                // Learned from your decisions, the bank's category, or a list of common merchants.
+            if ($guess && ($learned = $this->categoriser->propose($tx))) {
+                // Learned from your decisions, the bank's category, or a list of common merchants. Marked as the
+                // Categoriser's own, so your later decisions can update it (Categoriser::learnFrom).
                 try {
-                    $made += (int) $this->writer->decide($tx, $learned['lines'], 'matcher', false, $learned['reason']);
+                    $made += (int) $this->categoriser->suggest($tx, $learned);
                 } catch (\InvalidArgumentException) {
                     // doesn't fit this payment
                 }

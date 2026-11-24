@@ -98,10 +98,26 @@ final class DocumentIntake
     public static function emailText(string $raw): string
     {
         $message = (new MailMimeParser)->parse($raw, false);
-        $body = $message->getTextContent() ?? strip_tags((string) $message->getHtmlContent());
+        $body = $message->getTextContent() ?? self::htmlText((string) $message->getHtmlContent());
         $header = 'From: '.$message->getHeaderValue('From')."\nTo: ".$message->getHeaderValue('To')."\nDate: ".$message->getHeaderValue('Date')."\nSubject: ".$message->getHeaderValue('Subject');
 
         return trim($header."\n\n".preg_replace("/\n{3,}/", "\n\n", (string) $body));
+    }
+
+    /**
+     * An HTML-only email's text, with a line break where each block ended (a paragraph, a line break, a quoted
+     * reply), so a quoted email's "From: … Sent: …" header stays on lines of its own (and is recognised as one), and
+     * entities read as the characters they stand for.
+     */
+    public static function htmlText(string $html): string
+    {
+        $html = preg_replace('#<(script|style|head)\b[^>]*>.*?</\1\s*>#is', ' ', $html) ?? $html;
+        $html = preg_replace('#<br\s*/?>|</(p|div|blockquote|tr|li|h[1-6]|table|ul|ol)\s*>|<(hr)\b[^>]*>#i', "\n", $html) ?? $html;
+        $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = str_replace("\u{00A0}", ' ', $text);
+        $text = preg_replace('/[ \t]+/u', ' ', $text) ?? $text;
+
+        return trim(preg_replace("/[ \t]*\n[ \t]*/", "\n", $text) ?? $text);
     }
 
     public static function guessMime(string $ext): string

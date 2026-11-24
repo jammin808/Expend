@@ -52,11 +52,9 @@ class TransactionController extends Controller
             : $query->orderByDesc('posted_on')->orderByDesc('id');
 
         $page = $query->paginate(50)->withQueryString();
-        // Money moving between your own accounts is shown, but it isn't spending or income, so it's totalled apart.
-        $sums = 'COUNT(*) as n, SUM(CASE WHEN amount_pence < 0 THEN amount_pence ELSE 0 END) as out_pence, SUM(CASE WHEN amount_pence > 0 THEN amount_pence ELSE 0 END) as in_pence';
-        $count = (clone $query)->reorder()->count();
-        $totals = OwnAccounts::scopeNotTransfers((clone $query)->reorder())->selectRaw($sums)->first();
-        $moved = OwnAccounts::scopeTransfers((clone $query)->reorder())->selectRaw($sums)->first();
+        // Money moving between your own accounts is shown, but it isn't spending or income, so it's totalled apart,
+        // line by line: a currency exchange split into a £1,000 transfer and its £5 fee is £5 spent and £1,000 moved.
+        $sums = OwnAccounts::lineTotals((clone $query)->reorder());
 
         $manual = ManualExpense::query()->with(['allocations.category', 'allocations.job'])
             ->when($f['year'] ?? null, fn ($q, $v) => $q->where('tax_year', $v))->orderByDesc('spent_on')->limit(100)->get();
@@ -67,8 +65,7 @@ class TransactionController extends Controller
                 'current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'total' => $page->total(),
                 'links' => ['prev' => $page->previousPageUrl(), 'next' => $page->nextPageUrl()],
             ],
-            'totals' => ['count' => $count, 'out_pence' => (int) $totals->out_pence, 'in_pence' => (int) $totals->in_pence,
-                'transfer_count' => (int) $moved->n, 'transfer_out_pence' => (int) $moved->out_pence, 'transfer_in_pence' => (int) $moved->in_pence],
+            'totals' => $sums,
             'manual' => $manual->map(fn ($e) => Present::manual($e))->values(),
             'filters' => $f,
             'lookups' => Present::lookups(),
@@ -127,23 +124,45 @@ class TransactionController extends Controller
             $out[] = ['type' => 'transfer', 'label' => 'Other side: '.($pair->account?->name ?? 'another account'), 'detail' => $pair->effectiveDate()->format('j M Y').' · '.Money::format($pair->amount_pence),
                 'href' => '/transactions?account='.$pair->account_id.'&q='.urlencode($pair->counterparty ?: $pair->description)];
         }
-        // Receipts read from email or uploads for this amount, within a few days.
-        $amounts = array_values(array_filter([abs($item->amount_pence), $item->original_amount_minor ? abs($item->original_amount_minor) : null]));
-        $date = $item->effectiveDate();
+        // Receipts read from email or uploads for this amount, dated within a few days of it. A receipt is often
+        // uploaded or forwarded long after the payment (at the month's end, at tax time), so it's found by its
+        // amount and the date on it, whenever it arrived; one with no date on it by when it arrived.
+        // A receipt's amount is in hundredths of its currency (as read); the line's other currencies (the account's
+        // own, and the one the shop charged in) are kept in each currency's own units, so they're put in hundredths.
+        $amounts = array_values(array_unique(array_filter([abs($item->amount_pence),
+            $item->original_amount_minor ? Money::toHundredths(abs($item->original_amount_minor), $item->original_currency) : null,
+            $item->merchant_amount_minor ? Money::toHundredths(abs((int) $item->merchant_amount_minor), $item->merchant_currency) : null])));
+        $date = CarbonImmutable::parse($item->effectiveDate()->format('Y-m-d'));
         $receipts = Document::query()->where('kind', 'receipt')->whereNotNull('extraction')
-            ->where(fn ($q) => $q->whereNull('received_at')->orWhereBetween('received_at', [$date->copy()->subDays(10)->format('Y-m-d 00:00:00'), $date->copy()->addDays(10)->format('Y-m-d 23:59:59')]))
-            ->limit(200)->get(['id', 'parent_id', 'original_name', 'email_subject', 'extraction', 'received_at'])
+            ->whereIn('extraction->receipt->amount_minor', array_merge($amounts, array_map('strval', $amounts)))
+            ->where(fn ($q) => $q->whereNull('received_at')->orWhere('received_at', '>=', $date->subDays(10)->format('Y-m-d 00:00:00')))
+            ->orderBy('received_at')->orderBy('id')->limit(200)->get(['id', 'parent_id', 'original_name', 'email_subject', 'extraction', 'received_at'])
             ->filter(function (Document $d) use ($amounts, $date) {
                 $r = $d->extraction['receipt'] ?? null;
+                if (! $r || ! in_array((int) ($r['amount_minor'] ?? 0), $amounts, true)) {
+                    return false;
+                }
                 $on = $r['date'] ?? null;
+                if ($on) {
+                    try {
+                        return abs(CarbonImmutable::parse($on)->startOfDay()->diffInDays($date)) <= 4;
+                    } catch (\Throwable) {
+                        return false; // a date that can't be read isn't a match
+                    }
+                }
 
-                return $r && in_array((int) ($r['amount_minor'] ?? 0), $amounts, true) && (! $on || abs(CarbonImmutable::parse($on)->diffInDays($date)) <= 4);
+                return ! $d->received_at || abs(CarbonImmutable::parse($d->received_at->format('Y-m-d'))->diffInDays($date)) <= 10;
             });
         foreach ($receipts as $d) {
             $out[] = ['type' => 'receipt', 'label' => 'Receipt: '.($d->extraction['receipt']['merchant'] ?? $d->email_subject ?? $d->original_name), 'detail' => 'Same amount'.(($d->extraction['receipt']['date'] ?? null) ? ', '.CarbonImmutable::parse($d->extraction['receipt']['date'])->format('j M Y') : ''),
                 'href' => '/documents/'.($d->parent_id ?? $d->id)];
         }
-        foreach (JobFind::query()->with('job')->whereIn('type', ['payment', 'income'])->where('ref', (string) $item->id)->whereIn('status', ['possible', 'linked'])->get() as $f) {
+        // What a job's search found it for, as things stand now (as the job page shows it): not once it's on a job
+        // (that job is listed above), nor once you've decided it as something a job can't take.
+        $onAJob = $item->allocations->contains(fn ($a) => $a->work_job_id !== null);
+        $decidedOtherwise = $item->allocations->contains(fn ($a) => $a->confirmed_at !== null || $a->is_manual)
+            && ! $item->allocations->contains(fn ($a) => in_array($a->kind, ['business_expense', 'business_income'], true));
+        foreach ($onAJob || $decidedOtherwise ? [] : JobFind::query()->with('job')->whereIn('type', ['payment', 'income'])->where('ref', (string) $item->id)->whereIn('status', ['possible', 'linked'])->get() as $f) {
             if ($f->job && ! collect($out)->contains(fn ($o) => $o['type'] === 'job' && $o['href'] === '/jobs/'.$f->job->id)) {
                 $out[] = ['type' => 'job', 'label' => 'May be for '.$f->job->title, 'detail' => $f->detail, 'href' => '/jobs/'.$f->job->id];
             }

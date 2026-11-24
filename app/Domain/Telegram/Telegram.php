@@ -90,9 +90,12 @@ final class Telegram
         }
         $summary = collect($list['counts'])->map(fn ($n, $g) => '• '.$n.' '.mb_strtolower(TodoList::GROUPS[$g]))->implode("\n");
         self::reply($chatId, "This week: {$list['total']} ".($list['total'] === 1 ? 'thing needs' : 'things need')." you.\n{$summary}\n\nThe most urgent below. Everything: ".url('/todo'));
+        $items = array_slice($list['items'], 0, $max);
         $sent = 0;
-        foreach (array_slice($list['items'], 0, $max) as $item) {
-            // In the item's own currency (an invoice in euros, a stay booked in dollars).
+        foreach ($items as $item) {
+            // In the item's own currency (an invoice in euros, a stay booked in dollars), in hundredths of it whatever
+            // the currency, as invoices and bookings are kept. A payment's detail says how it was paid
+            // (TodoList::howPaid): the time, account, card, place and the currency it was paid in.
             $amount = isset($item['amount']) && $item['amount'] !== null ? ' ('.Money::format($item['amount'], $item['currency'] ?? 'GBP').')' : '';
             self::sendWithButtons($chatId, $item['title'].$amount.($item['detail'] ? "\n".$item['detail'] : ''),
                 array_map(fn ($a) => [$a['label'], $a['code'], $a['id']], $item['actions']));
@@ -248,6 +251,7 @@ final class Telegram
             $lines[] = '• '.$fact->label.': '.$fact->value.($fact->verified ? '' : ' (unverified)');
         }
         if ($po = $document->extraction['po'] ?? null) {
+            // A PO's amounts are read in hundredths of its currency (pence, cents), whatever the currency: format()'s.
             $lines[] = 'PO '.($po['po_number'] ?? '').': '.count($po['lines']).' lines, '.Money::format($po['lines_total_minor'], $po['currency'] ?? 'GBP')
                 .($po['lines_match_total'] === false ? ' — doesn’t match the stated total, check it' : '').'.';
         }

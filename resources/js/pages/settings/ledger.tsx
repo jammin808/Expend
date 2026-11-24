@@ -57,7 +57,7 @@ export default function LedgerSettings({ settings, calendar, own }: Props) {
                     <section className="space-y-4">
                         <HeadingSmall
                             title="Your names and accounts"
-                            description="Money moving between your own accounts isn’t spending or income. Payments to or from these names, and lines naming these accounts, are treated as transfers and left out of every total. Your imported accounts are recognised already."
+                            description="Money moving between your own accounts isn’t spending or income. Payments to or from these names, and moves to or from these accounts, are suggested as transfers for you to confirm, and kept out of income and spending. Your imported accounts are recognised already."
                         />
                         <div className="grid gap-3 sm:grid-cols-2">
                             <div className="space-y-1.5">
@@ -84,6 +84,10 @@ export default function LedgerSettings({ settings, calendar, own }: Props) {
                                     value={form.data.own_other_accounts}
                                     onChange={(e) => form.setData('own_other_accounts', e.target.value)}
                                 />
+                                <p className="text-muted-foreground text-xs">
+                                    Only a move to or from one counts (“To Nationwide savings”, “PayPal transfer”), never a purchase. Don’t list a
+                                    wallet you pay through, such as PayPal: import its statement instead, or what you buy with it is counted nowhere.
+                                </p>
                             </div>
                         </div>
                     </section>

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\JobGatherer;
 use App\Domain\Jobs\PoStatus;
@@ -18,6 +19,7 @@ use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Models\WorkJob;
 use App\Support\Money;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -117,6 +119,9 @@ class JobFinderController extends Controller
         $data['postcode'] = ! empty($data['postcode']) ? strtoupper(trim($data['postcode'])) : null;
         $data['status'] = $data['status'] ?? 'booked';
         unset($data['new_client'], $data['fee']);
+        if ($long = self::tooLong($data)) {
+            return back()->with('error', $long);
+        }
 
         $job = $finder->accept($candidate, $data, $links);
 
@@ -165,6 +170,8 @@ class JobFinderController extends Controller
                 $event = CalendarEvent::query()->where('uid', $link->event_uid)->get()->first(fn (CalendarEvent $e) => $e->key() === $link->event_key);
                 if ($event) {
                     $finder->unlinkCalendar($event, $link->work_job_id);
+                } elseif ($link->job) {
+                    $finder->rejectCalendarKeyFor($link->event_key, $link->job); // gone from your calendar: its days come off the job too
                 } else {
                     $link->update(['work_job_id' => null, 'linked_by' => 'you', 'rejected' => array_values(array_unique([...($link->rejected ?? []), $link->work_job_id]))]);
                 }
@@ -210,6 +217,9 @@ class JobFinderController extends Controller
         ]);
         $event = JobFinder::event($data['key'], $data['date']);
         abort_unless($event, 404);
+        if ($long = self::tooLong($data)) {
+            return back()->with('error', $long);
+        }
         if (! empty($data['new_client'])) {
             $data['client_id'] = Client::query()->firstOrCreate(['name' => trim($data['new_client'])])->id;
         }
@@ -219,10 +229,12 @@ class JobFinderController extends Controller
         $fields['status'] = $data['status'] ?? 'booked';
         $fields['po_not_required'] = (bool) ($data['po_not_required'] ?? false);
 
-        $job = DB::transaction(function () use ($fields, $event, $finder) {
+        $job = DB::transaction(function () use ($fields, $data, $event, $finder) {
             $job = WorkJob::query()->create($fields);
             AuditLog::record('job.created', $job, null, $job->toArray(), 'From a calendar entry');
-            $finder->linkCalendar($event, $job, 'you', 'You made this entry a job');
+            // The entry's days within the dates you typed (not every day it covers), with its kind (rig, show, de-rig).
+            $finder->linkCalendar($event, $job, 'you', 'You made this entry a job', [$job->starts_on->format('Y-m-d'), $job->ends_on->format('Y-m-d')]);
+            JobDays::useFormTimes($job, $data);
 
             return $job;
         });
@@ -232,6 +244,14 @@ class JobFinderController extends Controller
             .(PoStatus::forJobs([$job->fresh()])[$job->id]['missing'] ? ' It has no PO yet, so it’s flagged until one is linked.' : '');
 
         return ($data['then'] ?? null) === 'job' ? redirect('/jobs/'.$job->id)->with('success', $message) : back()->with('success', $message);
+    }
+
+    /** A job longer than JobDays::MAX_DAYS can't keep all its days: it's refused with a message rather than cut short. */
+    private static function tooLong(array $data): ?string
+    {
+        $days = (int) CarbonImmutable::parse($data['starts_on'])->diffInDays(CarbonImmutable::parse($data['ends_on'])) + 1;
+
+        return $days > JobDays::MAX_DAYS ? 'A job can cover at most '.JobDays::MAX_DAYS.' days. Make it separate jobs.' : null;
     }
 
     /** Mark a calendar entry "not a job" (or undo that). */
@@ -251,11 +271,12 @@ class JobFinderController extends Controller
         $links = CalendarJobLink::query()->get()->keyBy('event_key');
         $checks = Verification::forMany('calendar_link', $links->where('work_job_id', $job->id)->pluck('id'));
 
+        // A week either side, like the job's search: a de-rig a few days later is offered here too.
         return CalendarEvent::query()
-            ->where('starts_at', '>=', $job->starts_on->copy()->subDays(2)->format('Y-m-d 00:00:00'))
-            ->where('starts_at', '<=', $job->ends_on->copy()->addDays(2)->format('Y-m-d 23:59:59'))
-            ->orderBy('starts_at')->limit(60)->get()
-            ->filter(fn (CalendarEvent $e) => $e->day() >= $job->starts_on->copy()->subDay()->format('Y-m-d') && $e->day() <= $job->ends_on->copy()->addDay()->format('Y-m-d'))->values()
+            ->where('starts_at', '>=', $job->starts_on->copy()->subDays(8)->format('Y-m-d 00:00:00'))
+            ->where('starts_at', '<=', $job->ends_on->copy()->addDays(8)->format('Y-m-d 23:59:59'))
+            ->orderBy('starts_at')->limit(120)->get()
+            ->filter(fn (CalendarEvent $e) => $e->day() >= $job->starts_on->copy()->subDays(7)->format('Y-m-d') && $e->day() <= $job->ends_on->copy()->addDays(7)->format('Y-m-d'))->values()
             ->map(function (CalendarEvent $e) use ($links, $job, $checks) {
                 $link = $links[$e->key()] ?? null;
 

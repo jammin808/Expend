@@ -4,6 +4,7 @@ namespace App\Domain\Invoices;
 
 use App\Models\Allocation;
 use App\Models\Invoice;
+use App\Support\Money;
 
 /**
  * What has come in for invoices, counted the same way everywhere: the to-do list, the invoices pages, the overdue
@@ -159,8 +160,9 @@ final class InvoicePayments
             return ['GBP', $a->amount_pence];
         }
 
-        // This line's share of the payment, in the currency it came in.
-        return [$currency, self::share($a->amount_pence, abs($source->original_amount_minor), abs($source->amount_pence))];
+        // This line's share of the payment, in the currency it came in. The line keeps it in that currency's own
+        // units (¥1,500 is 1500); invoices are in hundredths of theirs, so it's put in hundredths to compare.
+        return [$currency, (int) Money::toHundredths(self::share($a->amount_pence, abs($source->original_amount_minor), abs($source->amount_pence)), $currency)];
     }
 
     /** $amount × $of / $per in whole units, rounded half away from zero, without floats. */

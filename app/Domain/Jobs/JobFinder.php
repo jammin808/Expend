@@ -15,6 +15,7 @@ use App\Models\Client;
 use App\Models\Document;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
+use App\Models\JobFind;
 use App\Models\Setting;
 use App\Models\TravelItem;
 use App\Models\Verification;
@@ -81,7 +82,7 @@ final class JobFinder
         $this->clientsLoaded = true;
         $stats = ['linked' => 0, 'proposed' => 0, 'ai_checked' => 0, 'ai_rejected' => 0, 'considered' => 0];
 
-        $jobs = WorkJob::query()->with('client')->where('status', '!=', 'cancelled')
+        $jobs = WorkJob::query()->with(['client', 'days'])->where('status', '!=', 'cancelled')
             ->whereDate('ends_on', '>=', $from->subDays(3)->format('Y-m-d'))->whereDate('starts_on', '<=', $to->addDays(3)->format('Y-m-d'))->get();
         $jobPos = $this->jobPoNumbers($jobs);
 
@@ -183,7 +184,9 @@ final class JobFinder
         return DB::transaction(function () use ($candidate, $fields, &$links) {
             $job = WorkJob::query()->create($fields + ['status' => 'booked']);
             AuditLog::record('job.created', $job, null, $job->toArray(), 'From the job finder');
-            $links = $this->linkSources($candidate, $job);
+            // Its calendar entries bring only their days within the dates you gave the job.
+            $links = $this->linkSources($candidate, $job, [$job->starts_on->format('Y-m-d'), $job->ends_on->format('Y-m-d')]);
+            JobDays::useFormTimes($job, $fields);
             $candidate->update(['status' => 'accepted', 'work_job_id' => $job->id, 'decided_at' => now()]);
             $this->followUp($job);
 
@@ -245,9 +248,11 @@ final class JobFinder
      * Link a possible job's sources to the job, skipping any you've since linked to a different job yourself. A
      * document brings its email and the email's other attachments only when none of them is for another job.
      *
+     * @param  array{0:string, 1:string}|null  $within  for a new job, the dates you gave it: its calendar entries' days
+     *                                                  outside them aren't added
      * @return array{linked:int, missed:list<string>} how many were linked, and the labels of those that couldn't be
      */
-    public function linkSources(JobCandidate $candidate, WorkJob $job): array
+    public function linkSources(JobCandidate $candidate, WorkJob $job, ?array $within = null): array
     {
         $linked = 0;
         $missed = [];
@@ -257,7 +262,7 @@ final class JobFinder
             if ($source['type'] === 'calendar' && ($event = self::event($source['id'], $source['date'] ?? null))) {
                 $link = CalendarJobLink::query()->where('event_key', $event->key())->first();
                 if (! ($link?->linked_by === 'you' && $link->work_job_id && $link->work_job_id !== $job->id)) {
-                    $this->linkCalendar($event, $job, 'you', 'Added from the job finder');
+                    $this->linkCalendar($event, $job, 'you', 'Added from the job finder', $within);
                     $done = true;
                 }
             } elseif ($source['type'] === 'document' && ($doc = Document::query()->with('parent')->find($source['id']))) {
@@ -285,9 +290,12 @@ final class JobFinder
 
     /**
      * Link a calendar entry to a job. Automation never changes a link you made, an entry you marked "not a job", or
-     * link it to a job you unlinked it from.
+     * link it to a job you unlinked it from. An entry you link adds its days to the job; with $within (the dates you
+     * typed when making the job from it) only its days within those dates.
+     *
+     * @param  array{0:string, 1:string}|null  $within
      */
-    public function linkCalendar(CalendarEvent $event, WorkJob $job, string $by, ?string $reason = null): CalendarJobLink
+    public function linkCalendar(CalendarEvent $event, WorkJob $job, string $by, ?string $reason = null, ?array $within = null): CalendarJobLink
     {
         $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
         if ($by !== 'you' && $link->exists && (($link->linked_by === 'you' && ($link->work_job_id || $link->not_job)) || in_array($job->id, $link->rejected ?? [], true))) {
@@ -301,16 +309,23 @@ final class JobFinder
             JobDays::forgetCalendar($previous, $event);
         }
         if ($by === 'you') {
-            JobDays::fromCalendar($job, $event); // an entry you link is one of the job's days (a rig day, a de-rig days later)
+            JobDays::fromCalendar($job, $event, $within[0] ?? null, $within[1] ?? null); // an entry you link is one of the job's days (a rig day, a de-rig days later)
         }
 
         return $saved;
     }
 
-    /** "Not this job": unlinked by you, and never linked to that job automatically again. Other jobs are still possible. */
+    /**
+     * "Not this job": unlinked by you, and never linked to that job automatically again. Other jobs are still possible.
+     * When the entry is on another job by now (you moved it there since), that link stays: only "not this job" is
+     * recorded for the job you said.
+     */
     public function unlinkCalendar(CalendarEvent $event, ?int $fromJobId = null): CalendarJobLink
     {
         $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
+        if ($fromJobId && $link->work_job_id && $link->work_job_id !== $fromJobId) {
+            return $this->rejectCalendarFor($event, $fromJobId);
+        }
         $reject = $fromJobId ?? $link->work_job_id;
         if ($link->work_job_id && ($was = WorkJob::query()->find($link->work_job_id))) {
             JobDays::forgetCalendar($was, $event);
@@ -318,6 +333,83 @@ final class JobFinder
 
         return $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false,
             'rejected' => array_values(array_unique([...($link->rejected ?? []), ...($reject ? [$reject] : [])])) ?: null, 'reason' => 'Not this job'], 'you');
+    }
+
+    /**
+     * An entry the search (or the job finder) linked comes off the job because what it was linked for has gone (the
+     * day it was on is no longer one of the job's days). Never one you linked, and not remembered as "not this job":
+     * a later search can suggest it again.
+     */
+    public function unlinkAutomatic(CalendarEvent $event, WorkJob $job, string $reason): void
+    {
+        $link = CalendarJobLink::query()->where('event_key', $event->key())->first();
+        if (! $link || $link->work_job_id !== $job->id || $link->linked_by === 'you') {
+            return;
+        }
+        $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'rules', 'not_job' => false, 'rejected' => $link->rejected, 'reason' => $reason], 'rules');
+    }
+
+    /**
+     * "Not part of this job" for an entry that isn't on it: remembered where every search looks (the job finder and
+     * the job's own search), so neither links it to that job. A link to another job, or "not a job", is left as it is.
+     */
+    public function rejectCalendarFor(CalendarEvent $event, int $jobId): CalendarJobLink
+    {
+        $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
+        if ($link->work_job_id === $jobId) {
+            return $this->unlinkCalendar($event, $jobId);
+        }
+        if (in_array($jobId, $link->rejected ?? [], true)) {
+            return $link;
+        }
+        $fields = ['rejected' => array_values(array_unique([...($link->rejected ?? []), $jobId]))];
+
+        return $this->saveCalendarLink($link, $event, $fields + ($link->exists
+            ? ['reason' => $link->reason]
+            : ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false, 'reason' => 'Not this job']), 'you');
+    }
+
+    /**
+     * "Not part of this job" for an entry that has gone from your calendar since: its link is updated by its key, and
+     * the days it added come off the job. Returns whether anything was linked to that job.
+     */
+    public function rejectCalendarKeyFor(string $key, WorkJob $job): bool
+    {
+        $link = CalendarJobLink::query()->where('event_key', $key)->first();
+        if (! $link) {
+            return false;
+        }
+        $before = $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected']);
+        $on = $link->work_job_id === $job->id;
+        $link->fill(['rejected' => array_values(array_unique([...($link->rejected ?? []), $job->id]))]
+            + ($on ? ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false, 'reason' => 'Not this job'] : []))->save();
+        AuditLog::record('calendar.linked', $link, $before, $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected', 'summary']), 'Not this job (the entry is no longer in your calendar)');
+        if ($on) {
+            JobDays::forgetCalendarKey($job, $key, (string) $link->summary);
+        }
+
+        return $on;
+    }
+
+    /**
+     * "Not part of this job" for a document that isn't on it: remembered on the document (and the rest of its email),
+     * so no search links it to that job. Where it's linked now is left as it is.
+     */
+    public function rejectDocumentFor(Document $document, WorkJob $job): void
+    {
+        if ($document->work_job_id === $job->id) {
+            $this->linkDocument($document, null, 'you');
+
+            return;
+        }
+        foreach ([$document, ...$document->children()->get()] as $d) {
+            if ($d->work_job_id === $job->id || in_array($job->id, $d->job_rejected ?? [], true)) {
+                continue;
+            }
+            $before = ['job_rejected' => $d->job_rejected];
+            $d->update(['job_rejected' => array_values(array_unique([...($d->job_rejected ?? []), $job->id]))]);
+            AuditLog::record('document.job_rejected', $d, $before, ['job_rejected' => $d->job_rejected], 'Not part of '.$job->title);
+        }
     }
 
     /** "Not a job": never proposed or linked automatically. */
@@ -458,13 +550,20 @@ final class JobFinder
                 }
             });
 
+        // Only drafts: an issued invoice can't be changed. One you said isn't this job's isn't linked to it again.
         $invoices = 0;
         if ($po = self::normalisePo($job->po_number)) {
-            foreach (Invoice::query()->whereNull('work_job_id')->whereNotNull('po_number')->get() as $invoice) {
-                if (self::normalisePo($invoice->po_number) === $po) {
+            $rejected = JobFind::query()->where('work_job_id', $job->id)->where('type', 'invoice')->where('status', 'rejected')->pluck('ref')->map(fn ($r) => (int) $r)->all();
+            foreach (Invoice::query()->whereNull('work_job_id')->whereNotNull('po_number')->where('status', 'draft')->whereNotIn('id', $rejected ?: [0])->get() as $invoice) {
+                if (self::normalisePo($invoice->po_number) !== $po) {
+                    continue;
+                }
+                try {
                     $invoice->update(['work_job_id' => $job->id]);
-                    AuditLog::record('invoice.job_linked', $invoice, null, ['work_job_id' => $job->id], 'Same PO number as the job', 'rules');
+                    AuditLog::record('invoice.job_linked', $invoice, ['work_job_id' => null], ['work_job_id' => $job->id], 'Same PO number as the job', 'rules');
                     $invoices++;
+                } catch (Throwable $e) {
+                    report($e);
                 }
             }
         }
@@ -505,7 +604,7 @@ final class JobFinder
             }
             $out[] = [
                 'key' => 'cal:'.$event->key(), 'type' => 'calendar', 'id' => $event->key(), 'label' => (string) $event->summary,
-                'from' => $event->day(), 'to' => $event->lastDay()->format('Y-m-d'), 'rejected' => $link?->rejected ?? [],
+                'from' => $event->day(), 'to' => JobDays::lastDay($event), 'rejected' => $link?->rejected ?? [],
                 'title' => $event->summary, 'client' => $this->clientIn($text), 'location' => self::isLink((string) $event->location) ? null : $event->location,
                 'postcode' => self::postcodeIn((string) $event->location), 'po' => null,
                 'start_time' => $event->all_day ? null : $event->localStart()->format('H:i'),
@@ -629,7 +728,21 @@ final class JobFinder
         $po = self::normalisePo($s['po']);
         $from = $s['from'] ? CarbonImmutable::parse($s['from']) : null;
         $to = $s['to'] ? CarbonImmutable::parse($s['to']) : $from;
-        $sameDay = $from ? $jobs->filter(fn (WorkJob $j) => $j->starts_on->lte($to) && $j->ends_on->gte($from))->count() : 0;
+        // How far the signal is from the job's nearest real day: the days between a rig and a de-rig aren't its dates.
+        $gapTo = function (WorkJob $j) use ($from, $to): int {
+            $best = PHP_INT_MAX;
+            foreach ($j->workDates() as $d) {
+                $d = CarbonImmutable::parse($d);
+                $best = min($best, (int) abs($d->lt($from) ? $from->diffInDays($d) : ($d->gt($to) ? $d->diffInDays($to) : 0)));
+                if ($best === 0) {
+                    break;
+                }
+            }
+
+            return $best;
+        };
+        $gaps = $from ? $jobs->mapWithKeys(fn (WorkJob $j) => [$j->id => $gapTo($j)])->all() : [];
+        $sameDay = count(array_filter($gaps, fn ($g) => $g === 0));
 
         foreach ($jobs as $job) {
             if (in_array($job->id, $s['rejected'] ?? [], true)) {
@@ -642,8 +755,7 @@ final class JobFinder
                 $why[] = "same PO number ({$s['po']})";
             }
             if ($from) {
-                $gap = $job->starts_on->gt($to) ? $job->starts_on->diffInDays($to) : ($job->ends_on->lt($from) ? $from->diffInDays($job->ends_on) : 0);
-                $gap = (int) abs($gap);
+                $gap = $gaps[$job->id];
                 if ($gap === 0) {
                     $score += 3;
                     $why[] = 'on the job’s dates';
@@ -717,7 +829,17 @@ final class JobFinder
         if ($s['type'] === 'document' && ($doc = Document::query()->with('parent')->find($s['id']))) {
             [$target, $attachments] = $this->linkTarget($doc, $job, $jobPos);
             $text = $attachments ? self::documentText($target) : trim(($doc->parent?->text ?? '')."\n".$doc->text);
-            if (! Verifier::jobEvidence($text, $job, $s['po'])['ok']) {
+            // A venue that could be anywhere ("London", "Manchester") doesn't say a document is this job's.
+            $check = $job;
+            if ($job->location && JobGatherer::vaguePlace($job->location)) {
+                $check = clone $job;
+                $check->location = null;
+            }
+            $ev = Verifier::jobEvidence($text, $check, $s['po']);
+            // Unless it quotes the job's PO number, the job's date has to be in what it says: an email's own headers
+            // (and those of emails quoted in it) only say when it was sent.
+            $content = trim(($doc->parent ?? $doc)->email_subject."\n".JobGatherer::withoutHeaders($text));
+            if (! $ev['ok'] || ($ev['why'] !== ['the job’s PO number is in it'] && ! Verifier::jobEvidence($content, $check)['ok'])) {
                 return false;
             }
 

@@ -155,18 +155,21 @@ Artisan::command('ledger:findings', function () {
 })->purpose('Record what the to-do list finds and what has been dealt with since');
 
 Artisan::command('ledger:categorise', function (Categoriser $categoriser) {
+    // The whole suggestion chain (your rules, open invoices, HMRC, fines, car hire and travel, then what you decided
+    // before), as for a new statement: never the learned guesses alone, which would ignore your rules and invoices.
     $made = 0;
-    BankTransaction::query()->where('review_status', 'unreviewed')->whereDoesntHave('allocations')->orderBy('id')
+    BankTransaction::query()->where('review_status', 'unreviewed')->whereDoesntHave('allocations')->whereNull('transfer_pair_id')->orderBy('id')
         ->chunkById(300, function ($txs) use ($categoriser, &$made) {
             $made += $categoriser->suggestFor($txs);
         });
-    $this->info("Suggested {$made} from your past decisions, the bank's categories and common merchants.");
-})->purpose('Suggest what each undecided payment is, learned from your decisions');
+    $this->info("Suggested {$made} from your rules, open invoices, travel and HMRC patterns, your past decisions, the bank's categories and common merchants.");
+})->purpose('Suggest what each undecided payment is, from your rules, invoices and past decisions');
 
 Artisan::command('ledger:transfers', function (TransferPairer $pairer) {
     $pairs = $pairer->pairAll();
     $one = $pairer->suggestOneSided();
-    $this->info("Paired {$pairs} transfers; suggested {$one} more from your names and accounts.");
+    $this->info("Paired {$pairs} transfers; suggested {$one} more from your names and accounts."
+        .($pairer->cleared ? " Took back {$pairer->cleared} earlier suggestions that no longer hold." : ''));
 })->purpose('Find money moving between your own accounts, so it is never counted as spending or income');
 
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();

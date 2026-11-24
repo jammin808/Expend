@@ -9,6 +9,7 @@ use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\TaxYear;
 use App\Models\TravelItem;
+use App\Support\Money;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 
@@ -173,7 +174,8 @@ final class TravelMatcher
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label');
         $taken = TravelItem::query()->whereNotNull('bank_transaction_id')->where('id', '!=', $item->id)->pluck('bank_transaction_id');
 
-        $base = fn () => OwnAccounts::scopeNotTransfers(BankTransaction::query())->where('amount_pence', '<', 0)
+        // A payment with a part that's spending: a stay paid together with a top-up is still found.
+        $base = fn () => OwnAccounts::scopeWithSpendingLines(BankTransaction::query())->where('amount_pence', '<', 0)
             ->whereBetween('posted_on', [$from->format('Y-m-d'), $to->format('Y-m-d')])
             ->whereNotIn('id', $taken)->whereNotIn('tax_year', $locked)
             ->where('description', 'not like', '%UBER%EATS%');
@@ -182,9 +184,16 @@ final class TravelMatcher
                 return $q;
             }
 
-            return $item->currency === 'GBP'
-                ? $q->where('amount_pence', -$item->amount_minor)
-                : $q->where('original_currency', $item->currency)->whereIn('original_amount_minor', [$item->amount_minor, -$item->amount_minor]);
+            if ($item->currency === 'GBP') {
+                return $q->where('amount_pence', -$item->amount_minor);
+            }
+            // A booking's price is kept in hundredths of its currency; a statement line's other currency in that
+            // currency's own units (¥15,000 is 15000). Either the account's own currency (a euro pocket) or the one
+            // the shop charged in ($90.00 paid from the euro account).
+            $own = Money::fromHundredths($item->amount_minor, $item->currency);
+
+            return $q->where(fn ($q) => $q->where(fn ($q) => $q->where('original_currency', $item->currency)->whereIn('original_amount_minor', [$own, -$own]))
+                ->orWhere(fn ($q) => $q->where('merchant_currency', $item->currency)->whereIn('merchant_amount_minor', [$own, -$own])));
         };
         $named = function ($q, array $words) {
             return $q->where(function ($q) use ($words) {

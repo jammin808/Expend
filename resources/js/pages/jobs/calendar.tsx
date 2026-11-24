@@ -3,6 +3,7 @@ import { JobsTabs } from '@/components/jobs-tabs';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/app-layout';
+import { datesBetween, londonToday } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { Head, Link, router } from '@inertiajs/react';
 import { Briefcase, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
@@ -30,11 +31,12 @@ interface JobOption {
     starts_on: string;
     ends_on: string;
     client: string | null;
+    /** The days it's worked (a rig and a de-rig days later have a gap between them). Older servers don't send it. */
+    days?: string[];
 }
 
 const dayLabel = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 const monthLabel = (m: string) => new Date(m + '-01T12:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-const today = new Date().toISOString().slice(0, 10);
 
 /** Your calendar a month at a time. Click any entry to say it's a job, part of one, or not work. */
 export default function JobCalendar({
@@ -54,6 +56,8 @@ export default function JobCalendar({
 }) {
     const [open, setOpen] = useState<Entry | null>(null);
     const [workOnly, setWorkOnly] = useState(false);
+    // Worked out on every render, in UK time: the page can stay open past midnight.
+    const today = londonToday();
     const shown = events.filter((e) => !workOnly || e.job || e.looks_like_work);
     const days = useMemo(() => {
         const out: Record<string, Entry[]> = {};
@@ -153,7 +157,9 @@ export default function JobCalendar({
 
             <Dialog open={!!open} onOpenChange={(o) => !o && setOpen(null)}>
                 <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-                    {open && <EntryPanel key={open.key + open.date} e={open} jobs={jobs} clients={clients} onDone={() => setOpen(null)} />}
+                    {open && (
+                        <EntryPanel key={open.key + open.date} e={open} jobs={jobs} clients={clients} today={today} onDone={() => setOpen(null)} />
+                    )}
                 </DialogContent>
             </Dialog>
         </AppLayout>
@@ -178,14 +184,30 @@ function Status({ e }: { e: Entry }) {
     return null;
 }
 
-function EntryPanel({ e, jobs, clients, onDone }: { e: Entry; jobs: JobOption[]; clients: { id: number; name: string }[]; onDone: () => void }) {
+function EntryPanel({
+    e,
+    jobs,
+    clients,
+    today,
+    onDone,
+}: {
+    e: Entry;
+    jobs: JobOption[];
+    clients: { id: number; name: string }[];
+    today: string;
+    onDone: () => void;
+}) {
     const [mode, setMode] = useState<'new' | 'existing'>('new');
     const near = [...jobs].sort(
         (a, b) => Math.abs(Date.parse(a.starts_on) - Date.parse(e.date)) - Math.abs(Date.parse(b.starts_on) - Date.parse(e.date)),
     );
     const [jobId, setJobId] = useState<string>(near[0] ? String(near[0].id) : '');
     const chosen = jobs.find((j) => String(j.id) === jobId);
-    const outside = !!chosen && (e.date < chosen.starts_on || e.last_day > chosen.ends_on);
+    // The entry's dates that aren't one of the job's days yet: linking adds them. Without the job's own days, only
+    // its first and last are known, and a day in between may or may not be one of them.
+    const entryDates = datesBetween(e.date, e.last_day);
+    const added = chosen?.days ? entryDates.filter((d) => !chosen.days!.includes(d)) : null;
+    const beyond = !!chosen && (e.date < chosen.starts_on || e.last_day > chosen.ends_on);
     const opts = { preserveScroll: true, onSuccess: onDone };
 
     return (
@@ -304,9 +326,17 @@ function EntryPanel({ e, jobs, clients, onDone }: { e: Entry; jobs: JobOption[];
                                 ))}
                             </select>
                             <p className="text-muted-foreground">
-                                {outside
-                                    ? 'This day is added to the job’s days (a rig, travel or de-rig day). The days in between aren’t counted unless you add them.'
-                                    : 'This entry’s day is one of the job’s days.'}
+                                {!chosen
+                                    ? null
+                                    : added === null
+                                      ? beyond
+                                          ? 'This day is added to the job’s days (a rig, travel or de-rig day). The days in between aren’t counted unless you add them.'
+                                          : 'If this day isn’t one of the job’s days yet, it’s added to them (a rig, travel or de-rig day).'
+                                      : added.length === 0
+                                        ? entryDates.length > 1
+                                            ? 'This entry’s days are already the job’s days.'
+                                            : 'This entry’s day is already one of the job’s days.'
+                                        : `${added.map(dayLabel).join(', ')} ${added.length === 1 ? 'is' : 'are'} added to the job’s days (a rig, travel or de-rig day).${beyond ? ' The days in between aren’t counted unless you add them.' : ''}`}
                             </p>
                             <Button
                                 disabled={!jobId}

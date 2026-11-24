@@ -25,6 +25,12 @@ final class YearChecks
             $txs = BankTransaction::query()->where('account_id', $account->id)
                 ->whereBetween('posted_on', [$year->startsOn()->subMonth(), $year->endsOn()->addMonth()])
                 ->orderBy('posted_on')->orderBy('id')->get(['id', 'posted_on', 'transaction_on', 'amount_pence', 'balance_after_pence', 'import_batch_id']);
+            // A main account that has never had lines of its own while its pockets have (a Revolut Business
+            // statement whose accounts each went into one of their own): its statements are its pockets'.
+            if ($txs->isEmpty() && ! BankTransaction::query()->where('account_id', $account->id)->exists()
+                && BankTransaction::query()->whereIn('account_id', Account::query()->where('parent_account_id', $account->id)->select('id'))->exists()) {
+                continue;
+            }
 
             $cells = [];
             foreach ($months as $month) {
