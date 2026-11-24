@@ -47,6 +47,14 @@ final class GmailScanner
     /** The searches that find emails about work, read as job documents (not as stays or journeys). */
     public const JOB_SEARCHES = ['job_documents', 'job', 'opportunities'];
 
+    /**
+     * The longest search you can save, in bytes: well above the longest built-in one, so a built-in search can still be
+     * added to. Even if every byte had to be URL-encoded, the request stays well under Google's 16 KB URL limit. A
+     * built-in search sent back unchanged is always accepted, whatever its length: it's stored as "use the built-in
+     * search".
+     */
+    public const MAX_QUERY_LENGTH = 3000;
+
     public function __construct(private DocumentIntake $intake) {}
 
     public static function query(string $search): string

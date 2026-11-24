@@ -24,6 +24,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Throwable;
@@ -277,11 +278,38 @@ class IntegrationSettingsController extends Controller
         $data = $request->validate([
             'client_id' => ['nullable', 'string', 'max:300', 'regex:/^[\w.-]+\.apps\.googleusercontent\.com$/'],
             'client_secret' => 'nullable|string|max:300',
-            'queries' => 'array', 'queries.*' => 'nullable|string|max:2000',
+            'queries' => 'array',
+            'queries.*' => ['bail', 'nullable', 'string', function (string $attribute, mixed $value, \Closure $fail) {
+                $key = substr($attribute, strlen('queries.'));
+                $search = GmailScanner::SEARCHES[$key] ?? null;
+                $value = trim($value);
+                // The page sends every box, changed or not, so a built-in search sent back unchanged is always fine.
+                if ($search !== null && $value === $search['query']) {
+                    return;
+                }
+                if (strlen($value) > GmailScanner::MAX_QUERY_LENGTH) {
+                    $fail('The “'.($search['label'] ?? $key).'” search (under Edit the Gmail searches) is too long: at most '
+                        .number_format(GmailScanner::MAX_QUERY_LENGTH).' characters. Empty the box to go back to the built-in search.');
+                }
+            }],
             'label_invoiced' => 'boolean',
         ], ['client_id.regex' => 'The client ID ends in .apps.googleusercontent.com. Copy it from the Google Cloud console.']);
 
-        Setting::put('google_client_id', $data['client_id'] ? trim($data['client_id']) : null);
+        $clientId = ($data['client_id'] ?? null) ? trim($data['client_id']) : null;
+        // A secret belongs to one Google client too: a new client ID with the old secret would fail at Google's sign-in.
+        if ($clientId !== null && $clientId !== Setting::get('google_client_id') && empty($data['client_secret'])) {
+            throw ValidationException::withMessages([
+                'client_secret' => 'A new client ID needs its own client secret: paste the secret from the same Google client, then save.',
+            ]);
+        }
+        // A connection belongs to the Google client that made it: Google won't renew it for a different one, so the
+        // old one is removed (and revoked) and the page offers Connect Gmail again.
+        $switched = $clientId !== Setting::get('google_client_id') && GmailClient::connected();
+        if ($switched) {
+            GmailClient::disconnect();
+            Setting::put('gmail_last_result', null);
+        }
+        Setting::put('google_client_id', $clientId);
         if (! empty($data['client_secret'])) {
             Setting::put('google_client_secret', trim($data['client_secret']));
         }
@@ -292,7 +320,11 @@ class IntegrationSettingsController extends Controller
         Setting::put('gmail_label_invoiced', (bool) ($data['label_invoiced'] ?? true));
         AuditLog::record('settings.gmail', 'Settings', null, ['client_id' => $data['client_id'] ?? null, 'secret_changed' => ! empty($data['client_secret']), 'label_invoiced' => (bool) ($data['label_invoiced'] ?? true)]);
 
-        return back()->with('success', 'Gmail settings saved.');
+        return back()->with('success', match (true) {
+            $switched && $clientId === null => 'Gmail settings saved. With no client ID, the Gmail connection has been removed.',
+            $switched => 'Gmail settings saved. The old connection was made with a different Google client, so it has been removed: press Connect Gmail.',
+            default => 'Gmail settings saved.',
+        });
     }
 
     public function connectGmail(): RedirectResponse|\Symfony\Component\HttpFoundation\Response
