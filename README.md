@@ -245,7 +245,19 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in payload.enc -out payload.ta
 tar -xzf payload.tar.gz   # database.sql and private/ (uploaded statements)
 ```
 
-Then load `database.sql` into an empty database. Try this once before you rely on it.
+Then load `database.sql` into an empty database.
+
+To check a backup really restores, on your own computer (where the private key is), download a backup and its `.sha256` and run:
+
+```bash
+bash deploy/restore-check.sh ledger-<stamp>.tar ledger-backup-private.pem
+# and, with MySQL or MariaDB installed locally, load it into a new empty database too:
+RESTORE_DB_USER=root MYSQL_PWD=... bash deploy/restore-check.sh ledger-<stamp>.tar ledger-backup-private.pem --load ledger_restore_check
+```
+
+It checks the checksum, decrypts into a temporary folder, checks the dump is complete and has every main table, counts the
+uploaded files, optionally loads it and counts rows, then deletes the decrypted copy. `tests/Feature/BackupRestoreTest.php`
+runs `backup.sh` and this check end to end on MariaDB (`DB_CONNECTION=mysql php artisan test --filter=BackupRestore`).
 
 ## Where things live
 
