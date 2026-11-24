@@ -2,6 +2,7 @@
 
 namespace App\Domain\Travel;
 
+use App\Models\JobDay;
 use App\Models\Setting;
 use App\Models\TravelItem;
 use App\Models\WorkJob;
@@ -27,19 +28,20 @@ final class TravelDays
         $next = $n->addDay();
         $jobs = $this->jobsAround($n);
 
+        [$tonight, $tomorrow] = [$n->format('Y-m-d'), $next->format('Y-m-d')];
         foreach ($jobs as $job) {
-            if ($job->starts_on->lte($n) && $job->ends_on->gte($next)) {
+            if ($job->worksOn($tonight) && $job->worksOn($tomorrow)) {
                 return $this->result('business', $job, 'between two working days of '.$this->name($job));
             }
         }
         foreach ($jobs as $job) {
-            if ($job->starts_on->isSameDay($next)) {
-                return $this->edge($job, 'before');
+            if ($job->worksOn($tomorrow)) {
+                return $this->edge($job, 'before', $tomorrow);
             }
         }
         foreach ($jobs as $job) {
-            if ($job->ends_on->isSameDay($n)) {
-                return $this->edge($job, 'after');
+            if ($job->worksOn($tonight)) {
+                return $this->edge($job, 'after', $tonight);
             }
         }
 
@@ -53,12 +55,14 @@ final class TravelDays
         $jobs = $this->jobsAround($d);
 
         foreach ($jobs as $job) {
-            if ($job->starts_on->lte($d) && $job->ends_on->gte($d)) {
-                return $this->result('business', $job, 'on a working day of '.$this->name($job));
+            if ($job->worksOn($d->format('Y-m-d'))) {
+                $kind = $job->dayOn($d->format('Y-m-d'))?->kind;
+
+                return $this->result('business', $job, 'on '.($kind && $kind !== 'work' ? 'the '.mb_strtolower(JobDay::KINDS[$kind]).' day' : 'a working day').' of '.$this->name($job));
             }
         }
         foreach ($jobs as $job) {
-            $side = $job->starts_on->isSameDay($d->addDay()) ? 'before' : ($job->ends_on->isSameDay($d->subDay()) ? 'after' : null);
+            $side = $job->worksOn($d->addDay()->format('Y-m-d')) ? 'before' : ($job->worksOn($d->subDay()->format('Y-m-d')) ? 'after' : null);
             if (! $side) {
                 continue;
             }
@@ -81,8 +85,9 @@ final class TravelDays
     }
 
     /** Night before the first day or after the last: distance from home plus the job's start or finish time. */
-    private function edge(WorkJob $job, string $side): array
+    private function edge(WorkJob $job, string $side, ?string $workDay = null): array
     {
+        $day = $workDay ? $job->dayOn($workDay) : null;
         $miles = $this->milesFromHome($job);
         $label = "the night {$side} ".$this->name($job);
         if ($miles === null) {
@@ -95,7 +100,7 @@ final class TravelDays
             return $this->result('review', $job, "{$label}, only {$miles} miles from home: unusual to claim");
         }
 
-        $time = $side === 'before' ? $this->time($job->start_time) : $this->time($job->end_time);
+        $time = $side === 'before' ? $this->time($day?->start_time ?? $job->start_time) : $this->time($day?->end_time ?? $job->end_time);
         $limit = $side === 'before' ? (string) Setting::get('early_start') : (string) Setting::get('late_finish');
         if ($time && ($side === 'before' ? $time < $limit : $time > $limit)) {
             return $this->result('business', $job, "{$label}, {$miles} miles from home with ".($side === 'before' ? "an early start ({$time})" : "a late finish ({$time})"));
@@ -110,7 +115,7 @@ final class TravelDays
         return WorkJob::query()->where('status', '!=', 'cancelled')
             ->whereDate('starts_on', '<=', $day->addDays(2)->format('Y-m-d'))
             ->whereDate('ends_on', '>=', $day->subDays(2)->format('Y-m-d'))
-            ->orderBy('starts_on')->get();
+            ->with('days')->orderBy('starts_on')->get();
     }
 
     private function result(string $verdict, ?WorkJob $job, string $reason): array

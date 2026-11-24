@@ -186,7 +186,6 @@ function EntryPanel({ e, jobs, clients, onDone }: { e: Entry; jobs: JobOption[];
     const [jobId, setJobId] = useState<string>(near[0] ? String(near[0].id) : '');
     const chosen = jobs.find((j) => String(j.id) === jobId);
     const outside = !!chosen && (e.date < chosen.starts_on || e.last_day > chosen.ends_on);
-    const [extend, setExtend] = useState(true);
     const opts = { preserveScroll: true, onSuccess: onDone };
 
     return (
@@ -304,21 +303,14 @@ function EntryPanel({ e, jobs, clients, onDone }: { e: Entry; jobs: JobOption[];
                                     </option>
                                 ))}
                             </select>
-                            {outside && (
-                                <label className="flex items-center gap-2">
-                                    <input type="checkbox" checked={extend} onChange={(ev) => setExtend(ev.target.checked)} />
-                                    This day is outside the job’s dates: stretch the job to include it (for a load-in, travel day or de-rig)
-                                </label>
-                            )}
+                            <p className="text-muted-foreground">
+                                {outside
+                                    ? 'This day is added to the job’s days (a rig, travel or de-rig day). The days in between aren’t counted unless you add them.'
+                                    : 'This entry’s day is one of the job’s days.'}
+                            </p>
                             <Button
                                 disabled={!jobId}
-                                onClick={() =>
-                                    router.post(
-                                        '/calendar/link-job',
-                                        { key: e.key, date: e.date, job_id: Number(jobId), extend: outside && extend },
-                                        opts,
-                                    )
-                                }
+                                onClick={() => router.post('/calendar/link-job', { key: e.key, date: e.date, job_id: Number(jobId) }, opts)}
                             >
                                 Link and find what belongs to it
                             </Button>

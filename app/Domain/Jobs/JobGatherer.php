@@ -151,14 +151,14 @@ final class JobGatherer
             if ($link?->work_job_id || $link?->not_job || in_array($job->id, $link?->rejected ?? [], true) || isset($this->rejected['calendar:'.$ref])) {
                 continue;
             }
-            $inRange = $e->day() >= $from->format('Y-m-d') && $e->day() <= $to->format('Y-m-d');
+            $inRange = $job->worksOn($e->day());
             $same = $titles && in_array(self::norm($e->summary), $titles, true);
             $label = ($e->summary ?: 'Calendar entry').' · '.CarbonImmutable::parse($e->day())->format('D j M');
             if ($same && $inRange) {
                 $this->finder->linkCalendar($e, $job, 'rules', 'The same entry as this job’s other days');
                 $this->add('calendar', $ref, 'linked', $label, 'The same entry as this job’s other days', $e->day());
             } elseif ($same) {
-                $this->add('calendar', $ref, 'possible', $label, 'The same entry, just outside the job’s dates: another day of it (a load-in or de-rig)?', $e->day());
+                $this->add('calendar', $ref, 'possible', $label, 'The same entry on a day that isn’t one of the job’s days yet: another day of it (a load-in or de-rig)?', $e->day());
             } elseif ($inRange && $this->mentionsJob($e->text(), $job)) {
                 $this->add('calendar', $ref, 'possible', $label, 'On the job’s dates and mentions '.$this->mentionsJob($e->text(), $job), $e->day());
             }
@@ -202,12 +202,14 @@ final class JobGatherer
     {
         $from = $job->starts_on->copy()->subDay()->format('Y-m-d');
         $to = $job->ends_on->copy()->addDay()->format('Y-m-d');
+        // Its days and the day either side of each (travel there and back), not the days between a rig and a de-rig.
+        $dates = collect($job->workDates())->flatMap(fn ($d) => [CarbonImmutable::parse($d)->subDay()->format('Y-m-d'), $d, CarbonImmutable::parse($d)->addDay()->format('Y-m-d')])->unique()->flip();
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label')->all();
         $txs = OwnAccounts::scopeNotTransfers(BankTransaction::query())->with(['allocations', 'account'])
             ->where('amount_pence', '<', 0)->whereNotIn('tax_year', $locked)
             ->whereBetween('posted_on', [$from, $job->ends_on->copy()->addDays(3)->format('Y-m-d')])
             ->orderBy('posted_on')->limit(300)->get()
-            ->filter(fn (BankTransaction $t) => ($d = $t->effectiveDate()->format('Y-m-d')) >= $from && $d <= $to);
+            ->filter(fn (BankTransaction $t) => isset($dates[$t->effectiveDate()->format('Y-m-d')]));
 
         foreach ($txs as $tx) {
             $ref = (string) $tx->id;
@@ -217,6 +219,7 @@ final class JobGatherer
             $a = $tx->allocations;
             $mine = fn () => $tx->fresh('allocations')->allocations->contains(fn (Allocation $x) => $x->work_job_id === $job->id);
             $label = ($tx->counterparty ?: $tx->description).' · '.$tx->effectiveDate()->format('D j M');
+            $onDay = $job->worksOn($tx->effectiveDate()->format('Y-m-d'));
             $automatic = $a->isNotEmpty() && $a->every(fn (Allocation $x) => $x->confirmed_at === null && ! $x->is_manual && in_array($x->decided_by, ['matcher', 'ai'], true));
 
             if ($a->contains(fn (Allocation $x) => $x->work_job_id !== null)) {
@@ -232,7 +235,7 @@ final class JobGatherer
                     if ($mine()) {
                         $this->add('payment', $ref, 'linked', $label, 'Suggested as this job’s cost (confirm it in the Inbox)', $tx->effectiveDate()->format('Y-m-d'), $tx->amount_pence);
                     } elseif ($tx->fresh('allocations')->allocations->isEmpty()) {
-                        $this->add('payment', $ref, 'possible', $label, 'Paid during the job and not decided yet: was it for it?', $tx->effectiveDate()->format('Y-m-d'), $tx->amount_pence);
+                        $this->add('payment', $ref, 'possible', $label, ($onDay ? 'Paid on one of the job’s days' : 'Paid the day before or after one of the job’s days').' and not decided yet: was it for it?', $tx->effectiveDate()->format('Y-m-d'), $tx->amount_pence);
                     }
                 } elseif ($a->contains('kind', 'business_expense')) {
                     if ($automatic) {

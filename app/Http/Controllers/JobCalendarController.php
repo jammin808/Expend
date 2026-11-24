@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\Grounding;
+use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\JobGatherer;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
 use App\Models\Client;
+use App\Models\JobDay;
 use App\Models\JobFind;
 use App\Models\WorkJob;
 use Carbon\CarbonImmutable;
@@ -60,22 +62,52 @@ class JobCalendarController extends Controller
         ]);
     }
 
-    /** "Part of a job I already have": link the entry (stretching the job's dates to cover it, if you say so) and search again. */
+    /** "Part of a job I already have": link the entry, which adds its day to the job's days (a rig day, a de-rig), and search again. */
     public function linkToJob(Request $request, JobFinder $finder, JobGatherer $gatherer): RedirectResponse
     {
-        $data = $request->validate(['key' => 'required|string|size:40', 'date' => 'required|date_format:Y-m-d', 'job_id' => 'required|integer|exists:work_jobs,id', 'extend' => 'boolean']);
+        $data = $request->validate(['key' => 'required|string|size:40', 'date' => 'required|date_format:Y-m-d', 'job_id' => 'required|integer|exists:work_jobs,id']);
         $event = JobFinder::event($data['key'], $data['date']);
         abort_unless($event, 404);
         $job = WorkJob::query()->findOrFail($data['job_id']);
-        if (($data['extend'] ?? false) && ($event->day() < $job->starts_on->format('Y-m-d') || $event->lastDay()->format('Y-m-d') > $job->ends_on->format('Y-m-d'))) {
-            $before = $job->only(['starts_on', 'ends_on']);
-            $job->update(['starts_on' => min($job->starts_on->format('Y-m-d'), $event->day()), 'ends_on' => max($job->ends_on->format('Y-m-d'), $event->lastDay()->format('Y-m-d'))]);
-            AuditLog::record('job.updated', $job, $before, $job->only(['starts_on', 'ends_on']), 'Stretched to cover a calendar entry you linked');
-        }
         $finder->linkCalendar($event, $job, 'you', 'You linked this entry to the job');
         $result = $gatherer->gather($job);
 
-        return redirect('/jobs/'.$job->id)->with('success', 'Linked the calendar entry. '.$result['summary']);
+        return redirect('/jobs/'.$job->id)->with('success', 'Linked the calendar entry and added '.CarbonImmutable::parse($event->day())->format('D j M').' to the job’s days. '.$result['summary']);
+    }
+
+    public function addDay(Request $request, WorkJob $job, JobGatherer $gatherer): RedirectResponse
+    {
+        $data = $request->validate(['date' => 'required|date', 'kind' => 'required|in:'.implode(',', array_keys(JobDay::KINDS)),
+            'start_time' => 'nullable|date_format:H:i', 'end_time' => 'nullable|date_format:H:i', 'note' => 'nullable|string|max:200']);
+        $date = CarbonImmutable::parse($data['date'])->format('Y-m-d');
+        if (abs(CarbonImmutable::parse($date)->diffInDays($job->starts_on)) > 120) {
+            return back()->with('error', 'That’s more than four months from the job. Make it a separate job.');
+        }
+        JobDays::add($job, $date, $data['kind'], $data['start_time'] ?? null, $data['end_time'] ?? null, null, 'you', $data['note'] ?? null);
+        $result = $gatherer->gather($job->fresh(), false);
+
+        return back()->with('success', 'Added '.CarbonImmutable::parse($date)->format('D j M').'. '.$result['summary']);
+    }
+
+    public function updateDay(Request $request, JobDay $day): RedirectResponse
+    {
+        $data = $request->validate(['kind' => 'required|in:'.implode(',', array_keys(JobDay::KINDS)), 'start_time' => 'nullable|date_format:H:i', 'end_time' => 'nullable|date_format:H:i', 'note' => 'nullable|string|max:200']);
+        $before = $day->only(['kind', 'start_time', 'end_time', 'note']);
+        $day->update($data + ['source' => 'you']);
+        AuditLog::record('job.day_updated', $day->job, $before, $day->only(['kind', 'start_time', 'end_time', 'note']));
+
+        return back()->with('success', 'Saved.');
+    }
+
+    public function removeDay(JobDay $day): RedirectResponse
+    {
+        try {
+            JobDays::remove($day);
+        } catch (\InvalidArgumentException $e) {
+            return back()->with('error', $e->getMessage());
+        }
+
+        return back()->with('success', 'Removed that day.');
     }
 
     /** "Search again" on a job: its documents, emails, payments, calendar days and fee. */

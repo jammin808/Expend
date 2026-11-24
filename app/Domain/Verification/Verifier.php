@@ -215,10 +215,10 @@ final class Verifier
         }
         unset($po);
         $dated = false;
-        for ($d = CarbonImmutable::parse($job->starts_on->format('Y-m-d')), $i = 0; $d->lte($job->ends_on) && $i < 21; $d = $d->addDay(), $i++) {
-            if (self::dateInText($text, $d->format('Y-m-d'))) {
+        foreach (array_slice($job->workDates(), 0, 31) as $date) {
+            if (self::dateInText($text, $date)) {
                 $dated = true;
-                $why[] = 'it gives '.$d->format('j M Y');
+                $why[] = 'it gives '.CarbonImmutable::parse($date)->format('j M Y');
                 break;
             }
         }

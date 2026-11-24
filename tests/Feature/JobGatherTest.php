@@ -162,7 +162,7 @@ class JobGatherTest extends TestCase
         $s = $this->scenario();
         $job = WorkJob::query()->create(['title' => 'Acme Awards', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-15', 'status' => 'done']);
 
-        $this->post('/calendar/link-job', ['key' => $s['derig']->key(), 'date' => '2025-05-17', 'job_id' => $job->id, 'extend' => true])
+        $this->post('/calendar/link-job', ['key' => $s['derig']->key(), 'date' => '2025-05-17', 'job_id' => $job->id])
             ->assertRedirect('/jobs/'.$job->id);
         $this->assertSame($job->id, CalendarJobLink::query()->where('event_key', $s['derig']->key())->value('work_job_id'));
         $this->assertSame('2025-05-17', $job->fresh()->ends_on->format('Y-m-d'));

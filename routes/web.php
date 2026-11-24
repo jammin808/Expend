@@ -104,6 +104,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('jobs/calendar', [JobCalendarController::class, 'index'])->name('jobs.calendar');
     Route::post('calendar/link-job', [JobCalendarController::class, 'linkToJob'])->name('calendar.linkJob');
     Route::post('jobs/{job}/gather', [JobCalendarController::class, 'gather'])->middleware('throttle:20,1')->name('jobs.gather');
+    Route::post('jobs/{job}/days', [JobCalendarController::class, 'addDay'])->name('jobs.days.store');
+    Route::patch('job-days/{day}', [JobCalendarController::class, 'updateDay'])->name('jobs.days.update');
+    Route::delete('job-days/{day}', [JobCalendarController::class, 'removeDay'])->name('jobs.days.destroy');
     Route::post('job-finds/{find}/accept', [JobCalendarController::class, 'accept'])->name('jobFinds.accept');
     Route::post('job-finds/{find}/reject', [JobCalendarController::class, 'reject'])->name('jobFinds.reject');
     Route::post('calendar/not-job', [JobFinderController::class, 'calendarNotJob'])->name('calendar.notJob');

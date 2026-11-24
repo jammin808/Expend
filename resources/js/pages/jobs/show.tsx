@@ -2,6 +2,7 @@ import { CheckBadge, type Check } from '@/components/check-badge';
 import { DocLine, InvoicedTick, type DocRow, type Invoiced } from '@/components/doc-line';
 import { Explain } from '@/components/explain';
 import { ItemDrawer } from '@/components/item-drawer';
+import { JobDays, type JobDayRow } from '@/components/job-days';
 import { JobFinds, type Find, type GatherState } from '@/components/job-finds';
 import { JobForm, type JobData } from '@/components/job-form';
 import { JobSheet, type SheetFact } from '@/components/job-sheet';
@@ -75,6 +76,8 @@ interface Props {
     }[];
     finds: Find[];
     gather: GatherState;
+    days: JobDayRow[];
+    day_kinds: Record<string, string>;
 }
 
 const byLabel = (by: string | null) => (by === 'you' ? 'linked by you' : by === 'ai' ? 'linked by AI (checked)' : by ? 'linked automatically' : '');
@@ -95,6 +98,8 @@ export default function JobShow({
     travel,
     finds,
     gather,
+    days,
+    day_kinds,
 }: Props) {
     const link = (data: Record<string, string | number>) => router.post(`/jobs/${job.id}/links`, data, { preserveScroll: true });
     const [editing, setEditing] = useState(false);
@@ -159,6 +164,8 @@ export default function JobShow({
                         </p>
                     )
                 )}
+
+                <JobDays jobId={job.id} days={days} kinds={day_kinds} />
 
                 <JobFinds jobId={job.id} finds={finds} gather={gather} onOpenPayment={(id) => setDrawer({ source: 'bank', id })} />
 

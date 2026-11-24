@@ -44,13 +44,31 @@ final class JobTrips
                 continue;
             }
             $oneWay = round($straight * self::ROAD_FACTOR, 1);
-            $days = (int) $job->starts_on->diffInDays($job->ends_on) + 1;
+            $dates = $job->workDates();
+            $days = count($dates);
             $stayed = $travel->where('kind', 'hotel')->isNotEmpty();
-            $trips = $stayed || $days === 1 ? 1 : $days;
+            // With a stay, one return trip per run of consecutive days (a rig, then a de-rig days later, is two runs).
+            $runs = [];
+            foreach ($dates as $d) {
+                $last = end($runs);
+                if ($last && CarbonImmutable::parse($last[count($last) - 1])->addDay()->format('Y-m-d') === $d) {
+                    $runs[count($runs) - 1][] = $d;
+                } else {
+                    $runs[] = [$d];
+                }
+            }
+            $tripDates = $stayed ? array_map(fn ($r) => $r[0], $runs) : $dates;
+            $trips = count($tripDates);
             $out[] = [
                 'job_id' => $job->id, 'title' => $job->title, 'starts_on' => $job->starts_on->format('Y-m-d'), 'ends_on' => $job->ends_on->format('Y-m-d'),
                 'venue' => $job->location, 'postcode' => $job->postcode, 'one_way' => $oneWay, 'trips' => $trips, 'miles' => round($oneWay * 2 * $trips, 1),
-                'why' => $trips > 1 ? "{$days} days without a stay: a return trip each day" : ($stayed ? 'One return trip; you stayed nearby' : 'One return trip'),
+                'trip_dates' => $tripDates,
+                'why' => match (true) {
+                    $stayed && count($runs) > 1 => count($runs).' separate visits, staying nearby: a return trip for each',
+                    $stayed => 'One return trip; you stayed nearby',
+                    $trips > 1 => "{$days} days without a stay: a return trip each day",
+                    default => 'One return trip',
+                },
             ];
         }
 
@@ -65,9 +83,8 @@ final class JobTrips
             if (! in_array($p['job_id'], $jobIds, true)) {
                 continue;
             }
-            $start = CarbonImmutable::parse($p['starts_on']);
-            for ($i = 0; $i < $p['trips']; $i++) {
-                $day = $start->addDays($i);
+            foreach ($p['trip_dates'] as $date) {
+                $day = CarbonImmutable::parse($date);
                 MileageTrip::query()->create([
                     'vehicle_id' => $vehicleId, 'work_job_id' => $p['job_id'], 'trip_on' => $day->format('Y-m-d'), 'tax_year' => UkTaxYear::fromDate($day)->label(),
                     'from_place' => 'Home', 'to_place' => trim(($p['venue'] ?? '').' '.$p['postcode']), 'miles' => number_format($p['one_way'] * 2, 1, '.', ''),

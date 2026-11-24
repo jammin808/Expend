@@ -243,8 +243,17 @@ final class JobFinder
             return $link;
         }
 
-        return $this->saveCalendarLink($link, $event, ['work_job_id' => $job->id, 'linked_by' => $by, 'not_job' => false,
+        $previous = $link->work_job_id && $link->work_job_id !== $job->id ? WorkJob::query()->find($link->work_job_id) : null;
+        $saved = $this->saveCalendarLink($link, $event, ['work_job_id' => $job->id, 'linked_by' => $by, 'not_job' => false,
             'rejected' => array_values(array_diff($link->rejected ?? [], [$job->id])) ?: null, 'reason' => $reason], $by);
+        if ($previous) {
+            JobDays::forgetCalendar($previous, $event);
+        }
+        if ($by === 'you') {
+            JobDays::fromCalendar($job, $event); // an entry you link is one of the job's days (a rig day, a de-rig days later)
+        }
+
+        return $saved;
     }
 
     /** "Not this job": unlinked by you, and never linked to that job automatically again. Other jobs are still possible. */
@@ -252,6 +261,9 @@ final class JobFinder
     {
         $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
         $reject = $fromJobId ?? $link->work_job_id;
+        if ($link->work_job_id && ($was = WorkJob::query()->find($link->work_job_id))) {
+            JobDays::forgetCalendar($was, $event);
+        }
 
         return $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false,
             'rejected' => array_values(array_unique([...($link->rejected ?? []), ...($reject ? [$reject] : [])])) ?: null, 'reason' => 'Not this job'], 'you');

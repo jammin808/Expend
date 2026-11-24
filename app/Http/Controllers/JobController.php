@@ -14,6 +14,7 @@ use App\Models\Document;
 use App\Models\DocumentFact;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
+use App\Models\JobDay;
 use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Models\WorkJob;
@@ -121,6 +122,9 @@ class JobController extends Controller
             'documents' => $documents->map(fn ($d) => DocumentController::row($d) + ['invoiced' => $invoicedDocs[$d->id] ?? null, 'linked_by' => $d->job_linked_by, 'check' => $docChecks[$d->id] ?? null]),
             'calendar' => JobFinderController::calendarFor($job),
             'finds' => JobCalendarController::finds($job),
+            'days' => $job->days()->get()->map(fn (JobDay $d) => ['id' => $d->id, 'date' => $d->on_date->format('Y-m-d'), 'kind' => $d->kind, 'start_time' => $d->start_time,
+                'end_time' => $d->end_time, 'note' => $d->note, 'source' => $d->source, 'from_calendar' => (bool) $d->calendar_key])->values(),
+            'day_kinds' => JobDay::KINDS,
             'gather' => ['at' => $job->gathered_at?->format('Y-m-d H:i'), 'state' => $job->gather_state, 'gmail_query' => JobGatherer::gmailQuery($job)],
             'travel' => $travel->map(fn (TravelItem $t) => [
                 'id' => $t->id, 'kind' => TravelItem::KINDS[$t->kind] ?? $t->kind, 'provider' => $t->provider, 'place' => $t->kind === 'hotel' ? $t->place : trim($t->place.' → '.$t->destination, ' →'),
