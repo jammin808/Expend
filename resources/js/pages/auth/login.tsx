@@ -102,6 +102,10 @@ export default function Login({ status, canResetPassword, canRegister }: LoginPr
             </form>
 
             {status && <div className="mb-4 text-center text-sm font-medium text-green-600">{status}</div>}
+
+            <div className="text-muted-foreground text-center text-xs">
+                <TextLink href={route('privacy')}>Privacy</TextLink>
+            </div>
         </AuthLayout>
     );
 }
