@@ -85,6 +85,7 @@ export default function Documents({
                         <option value="held">Waiting for approval</option>
                         <option value="new">Not read yet</option>
                         <option value="extracted">Read</option>
+                        <option value="waiting_budget">Waiting for AI budget</option>
                         <option value="failed">Couldn’t be read</option>
                     </NativeSelect>
                 </div>

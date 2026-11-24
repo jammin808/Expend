@@ -37,9 +37,16 @@ interface Props {
     counts: { accounts: number; transactions: number; to_review: number; jobs_without_po: number };
     todo: { total: number; items: { key: string; title: string; detail: string | null; href: string | null; priority: number }[] };
     twoFactor: boolean;
+    /** The first lines of the latest morning report (null until there's one from the last two days). */
+    overnight?: {
+        line: string;
+        at: string | null;
+        trial: boolean;
+        items: { title: string; amount: number | null; currency: string; direction: string | null }[];
+    } | null;
 }
 
-export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo }: Props) {
+export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo, overnight }: Props) {
     // A return filed is done; one being amended is still to finish until the last day to amend it.
     const done = (y: YearCard) => y.status === 'filed' || (!!y.amending && !y.amend_open);
     const outstanding = years.filter((y) => !done(y));
@@ -91,6 +98,35 @@ export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo }: 
                         </Button>
                     </div>
                 </div>
+
+                {overnight && (
+                    <section className="space-y-2 rounded-xl border p-4">
+                        <div className="flex items-center justify-between gap-2">
+                            <h2 className="font-semibold">
+                                Overnight{overnight.trial && <span className="text-muted-foreground text-sm font-normal"> (trial run)</span>}
+                            </h2>
+                            <Link href="/intel" className="text-sm underline underline-offset-2">
+                                The full report
+                            </Link>
+                        </div>
+                        <p className="text-sm">{overnight.line}</p>
+                        {overnight.items.length > 0 && (
+                            <ul className="space-y-1 text-sm">
+                                {overnight.items.map((i, n) => (
+                                    <li key={n} className="flex items-start gap-2">
+                                        <span className="mt-1.5 size-2 shrink-0 rounded-full bg-sky-500" />
+                                        <span className="min-w-0">
+                                            {i.title}
+                                            {i.amount !== null && i.direction && i.direction !== 'none' && (
+                                                <span className="text-muted-foreground tabular-nums"> · {money(Math.abs(i.amount), i.currency)}</span>
+                                            )}
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </section>
+                )}
 
                 {todo.total > 0 && (
                     <section className="space-y-2 rounded-xl border p-4">

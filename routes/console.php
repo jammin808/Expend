@@ -1,12 +1,18 @@
 <?php
 
 use App\Console\Commands\IntelBackfill;
+use App\Domain\Ai\AiUsage;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Banks\StarlingSync;
 use App\Domain\Calendar\CalendarSync;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Intel\AuditContext;
+use App\Domain\Intel\Cycle\CycleRunner;
+use App\Domain\Intel\Cycle\Steps\RelateCategorise;
+use App\Domain\Intel\Cycle\Steps\RelateTransfers;
+use App\Domain\Intel\Cycle\Steps\VerifyAuditChain;
+use App\Domain\Intel\Detectors\Health;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\Opportunities;
@@ -14,46 +20,36 @@ use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\TransferPairer;
 use App\Domain\Telegram\Telegram;
+use App\Domain\Todo\Dismissals;
 use App\Domain\Todo\FindingsRegistry;
-use App\Domain\Todo\TodoList;
 use App\Domain\Verification\Verifier;
 use App\Jobs\FindJobs;
 use App\Jobs\ScanGmail;
 use App\Jobs\SyncGmailLabels;
-use App\Models\BankTransaction;
+use App\Models\CycleRun;
+use App\Models\CycleRunStep;
+use App\Models\Finding;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\Setting;
-use App\Models\TodoDismissal;
 use App\Models\User;
 use App\Support\Money;
 use App\Support\UkTaxYear;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('ledger:verify-audit', function () {
-    // Safe while events are being written: AuditLog::verify() checks the events against the chain's head as it read it.
-    $result = AuditLog::verify();
-    $before = Setting::get(TodoList::AUDIT_RESULT);
-    // Kept for the to-do list, which puts a broken chain first (TodoList::health()) until a check finds it intact.
-    $kept = ['ok' => $result['ok'], 'checked' => $result['checked'], 'broken_at' => $result['broken_at'], 'at' => now()->toIso8601String()];
+    // The same check as the nightly cycle's verify.audit_chain: kept for the to-do list, a break told on Telegram at once.
+    $result = VerifyAuditChain::check();
     if ($result['ok']) {
-        Setting::put(TodoList::AUDIT_RESULT, $kept);
         $this->info("Audit log intact ({$result['checked']} events).");
 
         return 0;
     }
-    Log::critical('Audit log chain is broken', $result);
-    // Told on Telegram at once, once for each break: the same break found again the next night is already on the
-    // to-do list. A message that couldn't be sent (Telegram not paired) is tried again at the next check.
-    $known = is_array($before) && ($before['ok'] ?? true) === false && ($before['broken_at'] ?? null) === $result['broken_at'];
-    $kept['alerted_at'] = $known && ! empty($before['alerted_at']) ? $before['alerted_at']
-        : (Telegram::auditAlarm($result) ? now()->toIso8601String() : null);
-    Setting::put(TodoList::AUDIT_RESULT, $kept);
-    TodoList::forget();
     $this->error("Audit log chain broken at event {$result['broken_at']} after {$result['checked']} good events.");
 
     return 1;
@@ -74,7 +70,13 @@ Artisan::command('ledger:sync-calendar', function (CalendarSync $sync) {
 })->purpose('Refresh calendar events from the private iCal feed');
 
 Artisan::command('ledger:find-jobs {year? : A tax year such as 2024-25; default the last 30 months and the next year} {--no-ai : Rules only}', function (JobFinder $finder, Verifier $verifier) {
-    $r = $finder->run($this->argument('year'), ! $this->option('no-ai'));
+    // One run of the job finder at a time (shared with the queued FindJobs and the nightly cycle's relate.jobs).
+    [$ran, $r] = JobFinder::exclusively(fn () => $finder->run($this->argument('year'), ! $this->option('no-ai')), 120);
+    if (! $ran) {
+        $this->warn('The job finder is already running (queued, or in the nightly check). Try again in a few minutes.');
+
+        return 0;
+    }
     $open = JobCandidate::query()->where('status', 'open')->get()->each(fn ($c) => $verifier->candidate($c))->count();
     $this->info("Linked {$r['linked']} to existing jobs, {$r['proposed']} possible jobs proposed ({$open} open). AI asked about {$r['ai_checked']} calendar entries; {$r['ai_rejected']} answers failed the check against the entry and were ignored.");
 
@@ -90,7 +92,8 @@ Artisan::command('ledger:opportunities', function (Opportunities $opportunities)
 })->purpose('Keep job opportunities up to date: match them to your jobs and close the ones that have passed (never makes a job)');
 
 Artisan::command('ledger:recheck {--limit=80} {--second-reads=5} {--no-gmail : Don’t fetch emails again from Gmail}', function (Verifier $verifier) {
-    $r = $verifier->recheck((int) $this->option('limit'), (int) $this->option('second-reads'), ! $this->option('no-gmail'));
+    // Its second reads are double-checks: held to that share of the month's AI budget.
+    $r = AiUsage::withPurpose('verify', fn () => $verifier->recheck((int) $this->option('limit'), (int) $this->option('second-reads'), ! $this->option('no-gmail')));
     $this->info("Re-checked {$r['checked']} AI findings against their sources; {$r['warnings']} need a look.");
 
     return 0;
@@ -117,11 +120,18 @@ Artisan::command('ledger:invoice-nudges', function () {
     }
     Telegram::allowButtons();
     $n = 0;
-    // Not about one you snoozed or marked not relevant on the to-do list: it's the same invoice_overdue item there.
-    $hidden = TodoDismissal::activeKeys();
-    $overdue = Invoice::query()->where('status', 'issued')->whereNotNull('due_date')->whereDate('due_date', '<', today())
-        ->where(fn ($q) => $q->whereNull('overdue_nudged_at')->orWhere('overdue_nudged_at', '<', now()->subDays(7)))->get()
-        ->reject(fn (Invoice $i) => isset($hidden['invoice_overdue:'.$i->id]))->values();
+    // The overdue invoices are the to-do list's invoice.overdue findings, one logic for both: brought up to date first
+    // (FindingsRegistry::refresh(), as the Monday digest does), then those still open. One you snoozed or marked not
+    // relevant on the to-do list isn't open, so it isn't nudged about. Your snoozes are read as they are now
+    // (Dismissals::hiddenNow()), not only as last recorded: when something else is recording the findings at this
+    // moment (refresh() then doesn't wait), one whose snooze has just ended is still nudged about.
+    FindingsRegistry::refresh();
+    $ids = Finding::query()->where(fn ($q) => $q->whereNull('resolved_at')->orWhereIn('resolution', ['snoozed', 'dismissed']))
+        ->where(fn ($q) => $q->where('code', 'invoice.overdue')->orWhere(fn ($q) => $q->whereNull('code')->where('key', 'like', 'invoice_overdue:%')))
+        ->get(['key'])->filter(fn (Finding $f) => Dismissals::hiddenNow($f->key) === null)
+        ->map(fn (Finding $f) => (int) substr($f->key, strlen('invoice_overdue:')))->filter()->values()->all();
+    $overdue = Invoice::query()->whereIn('id', $ids ?: [0])->where('status', 'issued')->whereNotNull('due_date')->whereDate('due_date', '<', today())
+        ->where(fn ($q) => $q->whereNull('overdue_nudged_at')->orWhere('overdue_nudged_at', '<', now()->subDays(7)))->orderBy('id')->get();
     // What has come in for each, counted as the to-do list counts it (payments linked to it, income for its job).
     $received = InvoicePayments::received($overdue);
     foreach ($overdue as $invoice) {
@@ -155,7 +165,22 @@ Artisan::command('ledger:fetch-email', function (MailboxFetcher $fetcher) {
 
         return 0;
     }
-    $result = $fetcher->fetch();
+    // How it went, kept for the health check (health.mailbox) only when that changes: read, or not (since when). Kept
+    // every five minutes, it would empty the to-do list's cache each time.
+    $last = Setting::get(Health::MAILBOX_RESULT);
+    $wasOk = is_array($last) ? ($last['ok'] ?? null) : null;
+    try {
+        $result = $fetcher->fetch();
+    } catch (Throwable $e) {
+        if ($wasOk !== false) {
+            Setting::put(Health::MAILBOX_RESULT, ['ok' => false, 'at' => now()->toIso8601String(), 'error' => mb_substr($e->getMessage(), 0, 200)]);
+        }
+
+        throw $e;
+    }
+    if ($wasOk !== true) {
+        Setting::put(Health::MAILBOX_RESULT, ['ok' => true, 'at' => now()->toIso8601String()]);
+    }
     $this->info("Took in {$result['taken']} emails, held {$result['held']} for approval.");
 
     return 0;
@@ -193,42 +218,155 @@ Artisan::command('ledger:findings', function () {
 Artisan::command('ledger:categorise', function (Categoriser $categoriser) {
     // The whole suggestion chain (your rules, open invoices, HMRC, fines, car hire and travel, then what you decided
     // before), as for a new statement: never the learned guesses alone, which would ignore your rules and invoices.
+    // The same work as the nightly cycle's relate.categorise, 300 at a time.
     $made = 0;
-    BankTransaction::query()->where('review_status', 'unreviewed')->whereDoesntHave('allocations')->whereNull('transfer_pair_id')->orderBy('id')
-        ->chunkById(300, function ($txs) use ($categoriser, &$made) {
-            $made += $categoriser->suggestFor($txs);
-        });
+    $after = 0;
+    while (true) {
+        [$n, $last] = RelateCategorise::chunk($categoriser, $after);
+        if ($last === null) {
+            break;
+        }
+        $made += $n;
+        $after = $last;
+    }
     $this->info("Suggested {$made} from your rules, open invoices, travel and HMRC patterns, your past decisions, the bank's categories and common merchants.");
 })->purpose('Suggest what each undecided payment is, from your rules, invoices and past decisions');
 
 Artisan::command('ledger:transfers', function (TransferPairer $pairer) {
-    $pairs = $pairer->pairAll();
-    $one = $pairer->suggestOneSided();
+    // The same work as the nightly cycle's relate.transfers.
+    ['paired' => $pairs, 'one_sided' => $one, 'cleared' => $cleared, 'ambiguous' => $ambiguous] = RelateTransfers::work($pairer);
     $this->info("Paired {$pairs} transfers; suggested {$one} more from your names and accounts."
-        .($pairer->cleared ? " Took back {$pairer->cleared} earlier suggestions that no longer hold." : '')
-        .($pairer->ambiguous ? " {$pairer->ambiguous} ".($pairer->ambiguous === 1 ? 'line' : 'lines').' left for you: which partner is right isn’t clear.' : ''));
+        .($cleared ? " Took back {$cleared} earlier suggestions that no longer hold." : '')
+        .($ambiguous ? " {$ambiguous} ".($ambiguous === 1 ? 'line' : 'lines').' left for you: which partner is right isn’t clear.' : ''));
 })->purpose('Find money moving between your own accounts, so it is never counted as spending or income');
 
-// The nightly work runs on London time, so it stays in the same quiet hours (and in order) all year round.
+// The nightly cycle (docs/intelligence-cycle.md section 6): tick is scheduled every minute; run and status are for you
+// on the server. While intel_cycle is off, tick does nothing.
+Artisan::command('ledger:cycle {action : tick, run, status, or mode to switch it} {value? : run: nightly, morning or manual (nightly when not given); mode: off, shadow or on} {--force : run: start a new run even if this one ran today}', function (CycleRunner $runner) {
+    $action = (string) $this->argument('action');
+    $value = $this->argument('value');
+    if ($action === 'tick') {
+        $r = $runner->tick();
+        if ($r['started'] || $r['queued']) {
+            $this->line(trim(($r['started'] ? "Started {$r['started']}. " : '').($r['queued'] ? "Queued the next step of run {$r['queued']}." : '')));
+        }
+
+        return 0;
+    }
+    if ($action === 'mode') {
+        if (! in_array($value, CycleRunner::MODES, true)) {
+            $this->error('Say off, shadow or on. Now: '.CycleRunner::mode().'.');
+
+            return 1;
+        }
+        $r = $runner->switchMode($value);
+        $this->info(['off' => 'The nightly cycle is off: the old nightly schedule runs as before.',
+            'shadow' => 'The nightly cycle runs as a trial: it only looks and records what it would do; the old nightly schedule still does the work.',
+            'on' => 'The nightly cycle is on: it does the nightly work, and the old nightly entries are skipped.'][$value]);
+        if ($r['ended'] > 0) {
+            $this->line("Ended {$r['ended']} ".($r['ended'] === 1 ? 'run' : 'runs').' still going.');
+        }
+        if ($r['released'] > 0) {
+            $this->line("{$r['released']} ".($r['released'] === 1 ? 'document waiting' : 'documents waiting').' for AI budget marked failed again, so Read with AI offers '.($r['released'] === 1 ? 'it' : 'them').'.');
+        }
+        if ($r['before'] !== $r['after'] && $value === 'on' && CycleRun::query()->where('run_key', $runner->keyFor('nightly'))->value('mode') === 'shadow') {
+            $this->line('Tonight’s run was a trial, so the old nightly entries still to come tonight do the work; the cycle takes over from tomorrow night.');
+        }
+
+        return 0;
+    }
+    if ($action === 'run') {
+        $kind = $value ?? 'nightly';
+        if (! in_array($kind, ['nightly', 'morning', 'manual'], true)) {
+            $this->error('Say nightly, morning or manual.');
+
+            return 1;
+        }
+        // While the cycle is off, a run by hand is a trial: it changes nothing.
+        $mode = CycleRunner::mode() === 'on' ? 'on' : 'shadow';
+        $key = $kind === 'manual' ? null : $runner->keyFor($kind);
+        $run = $key ? CycleRun::query()->where('run_key', $key)->first() : null;
+        if ($run && $run->isFinished() && ! $this->option('force')) {
+            $this->line("{$run->run_key} already ran (".(CycleRun::STATUS_WORDS[$run->status] ?? $run->status).'). Use --force to run it again under a new key.');
+
+            return 0;
+        }
+        if (! $run || $run->isFinished()) {
+            $run = $runner->start($kind, $run ? mb_substr($key.':'.now()->format('His'), 0, 40) : $key, mode: $mode, deadline: now()->toImmutable()->addHour());
+        }
+        if (! $run) {
+            $this->error('Couldn’t start the run.');
+
+            return 1;
+        }
+        $this->info("Running {$run->run_key} ({$run->mode}).");
+        // One step job at a time, as in the worker: waits for one that's running there.
+        for ($i = 0; $i < 500 && ! $run->fresh()->isFinished(); $i++) {
+            try {
+                $did = Cache::lock(CycleRunner::LOCK, CycleRunner::LOCK_SECONDS)->block(120, fn () => $runner->work($run->id, wait: false));
+            } catch (LockTimeoutException) {
+                $this->error('A step job has held the cycle for two minutes: try again shortly.');
+
+                return 1;
+            }
+            if ($did === []) {
+                break;
+            }
+        }
+        $run = $run->fresh();
+        foreach ($run->steps as $step) {
+            $this->line(sprintf('  %-28s %-10s %s', $step->step, $step->status, $step->error ?? ''));
+        }
+        $this->info("{$run->run_key}: ".(CycleRun::STATUS_WORDS[$run->status] ?? $run->status).'.');
+
+        return $run->status === 'failed' ? 1 : 0;
+    }
+    if ($action === 'status') {
+        $this->line('Mode: '.CycleRunner::mode().'.');
+        foreach (CycleRun::query()->orderByDesc('id')->limit(5)->get() as $run) {
+            $this->line("{$run->run_key} ({$run->mode}): ".(CycleRun::STATUS_WORDS[$run->status] ?? $run->status)
+                .($run->finished_at ? ', ended '.$run->finished_at->tz(CycleRunner::TZ)->format('j M H:i') : ''));
+            foreach (CycleRunStep::query()->where('cycle_run_id', $run->id)->orderBy('seq')->get() as $step) {
+                $this->line(sprintf('  %-28s %-10s %s', $step->step, $step->status, $step->error ?? ''));
+            }
+        }
+
+        return 0;
+    }
+    $this->error('Say tick, run, status or mode.');
+
+    return 1;
+})->purpose('The nightly cycle: tick (every minute), run a run now, show the run log, or switch it off, to a trial (shadow) or on');
+
+// The nightly work runs on London time, so it stays in the same quiet hours (and in order) all year round. The nightly
+// entries the cycle does in its own steps once it's on are skipped then, so nothing runs twice and nothing is dropped:
+// off and shadow run them as before (a shadow run only looks), on runs them in the cycle. Each stays a command you can run.
+// Skipped only when tonight's nightly run is a real one: switched on after a trial run started tonight, the old entries
+// still do tonight's work, and a step that changes records runs only while the flag is on (CycleRunner::doesNightlyWork()).
+$cycleOn = fn () => CycleRunner::doesNightlyWork();
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();
-Schedule::command('ledger:verify-audit')->dailyAt('03:10')->timezone('Europe/London');
+Schedule::command('ledger:verify-audit')->dailyAt('03:10')->timezone('Europe/London')->skip($cycleOn);
 Schedule::command('ledger:fetch-email')->everyFiveMinutes()->withoutOverlapping();
 // Starling statements, every morning (if connected). Imported by the system, not by you, so its history says so.
+// Then the cycle looks at what came in (an import run), when it's on or in trial.
 Schedule::call(function () {
     if (StarlingSync::connected()) {
-        AuditContext::with('system', fn () => app(StarlingSync::class)->sync(), 'schedule');
+        $results = AuditContext::with('system', fn () => app(StarlingSync::class)->sync(), 'schedule');
+        if (collect($results)->contains(fn ($r) => ($r['ok'] ?? false) === true)) {
+            app(CycleRunner::class)->request('import', 'import:starling:'.now()->format('Y-m-d-Hi'));
+        }
     }
 })->dailyAt('06:41')->timezone('Europe/London')->name('starling-import')->withoutOverlapping();
 // What needs you, on Telegram every Monday morning; overdue invoices each weekday.
 Schedule::command('ledger:telegram-digest')->weeklyOn(1, '08:47')->timezone('Europe/London');
 Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('Europe/London');
 // The job finder and the double-check of AI findings, every night; scans get a few second reads a night.
-Schedule::command('ledger:transfers')->dailyAt('04:07')->timezone('Europe/London')->withoutOverlapping();
-Schedule::command('ledger:categorise')->dailyAt('04:12')->timezone('Europe/London')->withoutOverlapping();
-Schedule::command('ledger:find-jobs')->dailyAt('04:17')->timezone('Europe/London')->withoutOverlapping();
+Schedule::command('ledger:transfers')->dailyAt('04:07')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
+Schedule::command('ledger:categorise')->dailyAt('04:12')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
+Schedule::command('ledger:find-jobs')->dailyAt('04:17')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
 Schedule::command('ledger:opportunities')->dailyAt('04:27')->timezone('Europe/London')->withoutOverlapping();
-Schedule::command('ledger:recheck')->dailyAt('04:47')->timezone('Europe/London')->withoutOverlapping();
-Schedule::command('ledger:findings')->dailyAt('05:07')->timezone('Europe/London')->withoutOverlapping();
+Schedule::command('ledger:recheck')->dailyAt('04:47')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
+Schedule::command('ledger:findings')->dailyAt('05:07')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
 // Fill in the intelligence cycle's new columns for rows kept before them, a little each hour, until each backfill is
 // done (settings intel_backfills_done). Never inside a migration. At most 20 seconds a run: the scheduler runs its
 // work one after another, so a long run would hold up the queue worker below.
@@ -253,6 +391,11 @@ Schedule::call(function () {
 })->weeklyOn(0, '05:23')->timezone('Europe/London')->name('gmail-rescan');
 // Catch-up for the Gmail "✓ Invoiced" label (POs linked after invoicing, or a run that failed).
 Schedule::job(new SyncGmailLabels)->hourly()->name('gmail-labels')->withoutOverlapping();
+// Failed background work is kept 90 days (the to-do list's health check looks at the last 7).
+Schedule::command('queue:prune-failed --hours=2160')->weeklyOn(0, '05:43')->timezone('Europe/London');
+// The cycle's tick, before the worker: it starts a run when one is due and queues its next step for the worker below.
+// It returns in under a second and never runs a step itself. Nothing while intel_cycle is off.
+Schedule::command('ledger:cycle tick')->everyMinute()->skip(fn () => CycleRunner::mode() === 'off');
 // Shared hosting has no long-running worker: process queued work (document reading, Telegram) every minute.
 Schedule::command('queue:work --stop-when-empty --max-time=240 --tries=1')->everyMinute()->withoutOverlapping();
 

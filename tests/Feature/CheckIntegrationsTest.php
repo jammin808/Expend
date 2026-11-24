@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Domain\Ai\AiClient;
 use App\Domain\Ai\AiResult;
+use App\Models\CycleRun;
+use App\Models\CycleRunStep;
 use App\Models\Setting;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -64,6 +66,25 @@ class CheckIntegrationsTest extends TestCase
             ->expectsOutputToContain('Last delivery error: Wrong response from the webhook: 500')
             ->expectsOutputToContain('Paired with your chat: NO')
             ->doesntExpectOutputToContain('leaked-value')
+            ->assertExitCode(1);
+    }
+
+    public function test_it_shows_the_nightly_cycles_latest_run_and_its_failed_steps(): void
+    {
+        $this->artisan('ledger:check')->expectsOutputToContain('Nightly cycle: off, no runs yet');
+
+        Setting::put('intel_cycle', 'on');
+        $run = CycleRun::query()->create(['run_key' => 'nightly:2026-11-24', 'kind' => 'nightly', 'mode' => 'on', 'status' => 'partial',
+            'started_at' => '2026-11-24 03:05:00', 'finished_at' => '2026-11-24 04:12:00']);
+        foreach ([['verify.audit_chain', 'ok', null], ['relate.jobs', 'failed', "RuntimeException: 401 invalid x-api-key sk-ant-leaked-value\n#0 trace"]] as $i => [$step, $status, $error]) {
+            CycleRunStep::query()->create(['cycle_run_id' => $run->id, 'step' => $step, 'stage' => 'relate', 'seq' => $i + 1, 'status' => $status, 'error' => $error]);
+        }
+
+        $this->artisan('ledger:check')
+            ->expectsOutputToContain('Nightly cycle: on, latest run nightly:2026-11-24 (real): finished in part, ended 24 Nov 04:12')
+            ->expectsOutputToContain('Step failed: relate.jobs (the job finder), RuntimeException: 401 invalid x-api-key sk-ant-[key]')
+            ->doesntExpectOutputToContain('leaked-value')
+            ->doesntExpectOutputToContain('verify.audit_chain')
             ->assertExitCode(1);
     }
 }

@@ -9,6 +9,7 @@ use App\Domain\Import\Importer;
 use App\Domain\Import\ImportProfile;
 use App\Domain\Import\ProfileDetector;
 use App\Domain\Import\RevolutImport;
+use App\Domain\Intel\Cycle\CycleRunner;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\ExchangeRate;
@@ -184,6 +185,7 @@ class ImportController extends Controller
             }
             @unlink($pending['path']);
             $request->session()->forget('import');
+            self::check(collect($batches)->all());
             $held = collect($batches)->where('status', 'quarantined');
             $parts = collect($batches)->where('status', '!=', 'quarantined')->map(fn ($b) => $b->imported_count.' into '.$b->account->name)->implode(', ');
 
@@ -199,6 +201,7 @@ class ImportController extends Controller
 
         @unlink($pending['path']);
         $request->session()->forget('import');
+        self::check([$batch]);
 
         if ($batch->status === 'quarantined') {
             return to_route('imports.index')->with('error', "Held for review, not imported: {$batch->balance_check_notes} Check the statement below, then accept it with a reason or discard it.");
@@ -237,6 +240,7 @@ class ImportController extends Controller
         } catch (\RuntimeException $e) {
             return back()->with('error', $e->getMessage());
         }
+        self::check([$batch]);
 
         return back()->with('success', "Accepted: {$count} transactions imported.");
     }
@@ -261,7 +265,34 @@ class ImportController extends Controller
         } catch (\RuntimeException $e) {
             return back()->with('error', $e->getMessage());
         }
+        self::check([$batch]);
 
         return back()->with('success', "Restored {$count} transactions, with your decisions on them.");
+    }
+
+    /**
+     * After statements come in, the cycle looks at what they change (an import run: gaps, duplicates, held statements,
+     * findings dealt with by the import), in the worker, when it's on or in trial. Never in the way of the import itself.
+     *
+     * @param  list<ImportBatch>  $batches
+     */
+    private static function check(array $batches): void
+    {
+        $batches = array_values(array_filter($batches, fn ($b) => $b instanceof ImportBatch && $b->id));
+        if ($batches === []) {
+            return;
+        }
+        try {
+            $scope = [];
+            foreach ($batches as $b) {
+                $scope[] = 'batch:'.$b->id;
+                if ($b->account_id) {
+                    $scope[] = 'acct:'.$b->account_id;
+                }
+            }
+            app(CycleRunner::class)->request('import', 'import:batch:'.$batches[0]->id.':'.now()->format('His'), array_values(array_unique($scope)));
+        } catch (Throwable $e) {
+            report($e);
+        }
     }
 }

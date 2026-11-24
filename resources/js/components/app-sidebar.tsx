@@ -22,6 +22,7 @@ import {
     LayoutGrid,
     ListChecks,
     ListTodo,
+    Moon,
     Network,
     ReceiptText,
     Settings,
@@ -37,6 +38,7 @@ export function AppSidebar() {
     const main = [
         { title: 'Overview', url: '/dashboard', icon: LayoutGrid, also: [] as string[] },
         { title: 'To do', url: '/todo', icon: ListTodo, badge: nav?.todo, also: [] },
+        { title: 'Overnight', url: '/intel', icon: Moon, also: [] },
         { title: 'Inbox', url: '/inbox', icon: Inbox, badge: nav?.inbox, also: [] },
         { title: 'Assistant', url: '/assistant', icon: Sparkles, also: [] },
         { title: 'Tax years', url: '/years', icon: ListChecks, also: [] },

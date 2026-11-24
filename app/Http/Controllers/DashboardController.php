@@ -8,6 +8,7 @@ use App\Domain\Tax\ReturnSummary;
 use App\Domain\Todo\TodoList;
 use App\Models\Account;
 use App\Models\BankTransaction;
+use App\Models\CycleRun;
 use App\Models\Setting;
 use App\Models\TaxYear;
 use App\Models\WorkJob;
@@ -92,6 +93,28 @@ class DashboardController extends Controller
 
                 return ['total' => $list['total'], 'items' => array_slice($list['items'], 0, 6)];
             })(),
+            'overnight' => self::overnight(),
         ]);
+    }
+
+    /**
+     * The first lines of the latest morning report (docs/intelligence-cycle.md 7.1), for the card that links to /intel:
+     * its one line and the top findings. Null until there's a report from the last two days.
+     *
+     * @return array{line:string, at:?string, trial:bool, items:list<array{title:string, amount:?int, currency:string, direction:?string}>}|null
+     */
+    private static function overnight(): ?array
+    {
+        $run = CycleRun::query()->whereNotNull('report')->where('created_at', '>=', now()->subDays(2))->orderByDesc('id')->first();
+        $report = $run?->report;
+        if (! is_array($report) || ! isset($report['line'])) {
+            return null;
+        }
+
+        return [
+            'line' => (string) $report['line'], 'at' => $report['at'] ?? null, 'trial' => $run->isShadow(),
+            'items' => array_map(fn ($i) => ['title' => (string) $i['title'], 'amount' => $i['amount'] ?? null, 'currency' => $i['currency'] ?? 'GBP', 'direction' => $i['direction'] ?? null],
+                array_slice((array) ($report['found']['items'] ?? []), 0, 3)),
+        ];
     }
 }

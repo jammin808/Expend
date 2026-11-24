@@ -167,6 +167,12 @@ export default function DocumentShow({ document: d, jobs, kinds, aiReady }: Prop
                 {d.error && d.status === 'failed' && (
                     <p className="rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950/30 dark:text-rose-200">{d.error}</p>
                 )}
+                {d.status === 'waiting_budget' && (
+                    <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                        <strong>Waiting for AI budget.</strong> There wasn’t room in this month’s AI budget to read it. Expend reads it on its own
+                        overnight once there’s room, or press Read with AI.
+                    </p>
+                )}
 
                 <div className="grid gap-3 rounded-xl border p-4 sm:grid-cols-2">
                     <label className="space-y-1 text-sm">

@@ -11,7 +11,13 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Throwable;
 
-/** Runs the job finder after new documents, bookings or calendar entries arrive. Several arrivals make one run. */
+/**
+ * Runs the job finder after new documents, bookings or calendar entries arrive. Several arrivals make one run.
+ *
+ * One run at a time (JobFinder::exclusively(), shared with ledger:find-jobs and the nightly cycle's relate.jobs): if
+ * another is under way, this one leaves it to that run, which looks at the same records. It doesn't wait: the worker
+ * it runs in also answers Telegram presses.
+ */
 class FindJobs implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
@@ -36,8 +42,10 @@ class FindJobs implements ShouldBeUnique, ShouldQueue
             return;
         }
         try {
-            $finder->run($this->taxYear);
-            JobCandidate::query()->where('status', 'open')->get()->each(fn ($c) => $verifier->candidate($c));
+            JobFinder::exclusively(function () use ($finder, $verifier) {
+                $finder->run($this->taxYear);
+                JobCandidate::query()->where('status', 'open')->get()->each(fn ($c) => $verifier->candidate($c));
+            });
         } catch (Throwable $e) {
             report($e);
         }

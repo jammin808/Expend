@@ -78,15 +78,37 @@ final class Telegram
      * Send a message with buttons. Each button is [label, todo action code, id]; $more is a second row (a finding's
      * Snooze a week and Not relevant, under its own actions).
      */
-    public static function sendWithButtons(string|int $chatId, string $text, array $buttons, array $more = []): void
+    public static function sendWithButtons(string|int $chatId, string $text, array $buttons, array $more = []): bool
     {
         $rows = array_values(array_filter([self::buttons($buttons), self::buttons($more)]));
         if ($rows) {
             // A bot paired before buttons existed only gets messages: make sure presses on these will arrive.
             self::allowButtons();
         }
-        self::api('sendMessage', ['chat_id' => $chatId, 'text' => mb_substr($text, 0, 3900), 'disable_web_page_preview' => true]
-            + ($rows ? ['reply_markup' => ['inline_keyboard' => $rows]] : []));
+
+        return (bool) (self::api('sendMessage', ['chat_id' => $chatId, 'text' => mb_substr($text, 0, 3900), 'disable_web_page_preview' => true]
+            + ($rows ? ['reply_markup' => ['inline_keyboard' => $rows]] : []))['ok'] ?? false);
+    }
+
+    /**
+     * A message from the nightly cycle to your paired chat: the morning report, or an alert (with a finding's buttons
+     * when given, as sendWithButtons() takes them). Nothing is sent when Telegram isn't paired.
+     *
+     * @return bool whether Telegram took it
+     */
+    public static function notify(string $text, array $buttons = [], array $more = []): bool
+    {
+        $chat = Setting::get('telegram_chat_id');
+        if (! $chat || ! self::token()) {
+            return false;
+        }
+        try {
+            return self::sendWithButtons($chat, $text, $buttons, $more);
+        } catch (Throwable $e) {
+            report($e);
+
+            return false;
+        }
     }
 
     /** A row of buttons, each [label, todo action code, id], as Telegram takes them: data t|code|id, within 64 bytes. */
@@ -407,6 +429,10 @@ final class Telegram
     {
         if ($document->status === 'failed') {
             return "I saved {$document->original_name} but couldn’t read it: {$document->error}";
+        }
+        if ($document->status === ReadDocument::WAITING) {
+            return "I saved {$document->original_name}. It’s waiting to be read: this month’s AI budget for reading documents is used up for now. "
+                .'Expend reads it on its own once there’s room (after the 20th, or next month), or press Read with AI on it: '.url('/documents/'.$document->id);
         }
 
         $lines = [($document->summary ?: "Read {$document->original_name}.")];

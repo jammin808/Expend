@@ -6,6 +6,9 @@ and incremental delivery (9, 9). Ideas are grafted in from *controlled autonomy*
 *evidence graph* (traceability: 9, 9). The judges' main correction is followed: the read-only money discoveries
 come first, not last.
 
+M1 to M6 are built. Where the build differs from the first draft (names, dates, contracts, settings), the sections
+below say what was built, and each milestone's **As built** notes what was left or done differently.
+
 ---
 
 ## 1. The cycle in one picture
@@ -147,9 +150,17 @@ Wilson lower bound** (z = 1.645) of correct ÷ (correct + wrong) over the last 3
 
 **Calibration and ranking.**
 
-- **Detectors** are calibrated from the owner's dismissal reasons. "Not a problem" counts as a false positive. A
-  detector with at least 10 dismissals in 90 days and more than 50% false positives drops to `info` and says so in
-  the report.
+- **Detectors** are calibrated from the owner's dismissal reasons (`Intel\DetectorLevels`, built in M4). "Not a
+  problem", "Not mine" and "Both charges were real" count as false positives; the owner's own words ("Other") never
+  do. The findings run (`FindingsRegistry::sync`) demotes a kind shown in full to `info`, below the fold:
+  - a kind M4 added, once the owner has raised it: more than one false positive in ten, out of at least 10 findings
+    seen since it was raised (or in the last 90 days, if shorter);
+  - a kind shown in full before M4 (M1's three and `tx.duplicate`): at least 10 dismissals in 90 days, more than half
+    of them false positives.
+
+  Never on fewer than two false positives. Health, deadlines, fines and held statements are never demoted. A
+  demotion is kept in `intel_detector_levels`, audited as `detector.demoted` by `system`, named once in the next
+  morning report (`DetectorLevels::demotedSince`), and stays until the owner raises the kind again.
 - **Ranking** uses fixed, documented weights per grade: certain 1.0, strong 0.9, likely 0.7, possible 0.4,
   weak 0.1, unmeasured 0.5.
 - **No numeric probability** is shown or stored until it has been measured.
@@ -196,7 +207,9 @@ prefix) for rows written before the method column existed.
 - **Backfills never run inside migrations.** Deploys run `migrate --force` from a temporary cron. Backfills are
   idempotent, chunked (500 rows) `ledger:intel-backfill {name}` commands, scheduled hourly until
   `settings.intel_backfills_done` lists them. They leave a value null when unsure.
-- File names sort after `2026_12_03_000002_add_payment_plan_and_amendment_facts_to_tax_years.php`.
+- File names sort after `2026_12_03_000002_add_payment_plan_and_amendment_facts_to_tax_years.php`, and after every
+  migration already shipped, so a fresh install runs them in the order they shipped. M5's migration is dated after
+  M6's for that reason (section 3.2).
 
 ### 3.2 New tables
 
@@ -218,7 +231,8 @@ and delete.
 
 Index: (finding_id, id).
 
-**`cycle_runs`** (M5, `2026_12_12_000001_create_cycle_runs.php`):
+**`cycle_runs`** (M5, `2026_12_16_000001_create_cycle_runs.php`: M5 shipped after M6, so it is dated after M6's
+migrations). Index: (status, id).
 
 | Column | Type |
 |---|---|
@@ -257,8 +271,8 @@ Index: (finding_id, id).
 
 Unique: (cycle_run_id, step).
 
-**`vetoes`** (M7, `2026_12_16_000001_create_vetoes.php`). "Not this one" for links that have no rejection store
-today.
+**`vetoes`** (M7, `2026_12_16_000002_create_vetoes.php`, numbered after M5's migration of the same date). "Not this
+one" for links that have no rejection store today.
 
 | Column | Type |
 |---|---|
@@ -425,15 +439,18 @@ act records live in the audit `after` payload, so no further audit columns are n
 
 | Key | Default | Meaning |
 |---|---|---|
-| `intel_cycle` | `off` | `off`, `shadow` or `on` |
+| `intel_cycle` | `off` | `off`, `shadow` or `on`. Switched on the server with `php artisan ledger:cycle mode off\|shadow\|on` (audited); there is no web switch |
 | `intel_autonomy` | start levels | per kind: {level, suspended_until, reason} |
 | `intel_autonomy_paused` | false | master pause |
 | `intel_ai_night_usd` | 1.50 | nightly AI ceiling |
 | `intel_ai_reserve_pct` | 30 | share of the monthly cap the cycle never uses |
 | `intel_alerts_per_day` | 3 | Telegram alert limit |
+| `intel_alerts_sent` | `[]` | findings already alerted (or taken as known on the first run), so none is alerted twice. Not in `Setting::DEFAULTS` |
 | `intel_receipt_threshold_pence` | 10000 | cost.no_receipt threshold |
+| `intel_detector_levels` | `[]` | per kind: {level: `raised`, `lowered` or `demoted`, at, reason}. The owner's raise and lower, and demotions (section 2.3) |
 | `intel_report_time` | `07:30` | morning report time |
 | `intel_report_detail` | `full` | `full` or `counts` |
+| `mailbox_last_result` | null | {ok, at, error}: the forwarding mailbox's last change of state, written by `ledger:fetch-email` and read by `health.mailbox`. The error is never shown |
 | `intel_backfills_done` | `[]` | finished backfills |
 | `intel_audit_context` | false | audit events record channel, correlation and run id (hash v2). Off in M6, so M6 can still be rolled back; on from M7 |
 
@@ -462,12 +479,14 @@ act records live in the audit `after` payload, so no further audit columns are n
 
 ## 4. Stage contracts
 
-Two contracts and one value object, in `app/Domain/Intel/Contracts/` **(new)**:
+Two contracts and one value object. `Detector` is in `app/Domain/Intel/Contracts/`; `CycleStep` (with `Stage`,
+`StepOutcome` and `CycleContext`) is in `app/Domain/Intel/Cycle/`, beside the runner that uses it:
 
 ```php
 interface CycleStep {
     public function key(): string;                       // 'relate.transfers'
     public function stage(): Stage;
+    public function writes(): bool;                      // changes anything outside the run log: skipped in shadow
     public function run(CycleContext $ctx): StepOutcome;  // idempotent; may return 'more' with a cursor
 }
 
@@ -484,8 +503,12 @@ final class Provenance {
 ```
 
 - `CycleContext` carries the run, a deadline (`hasTime()`), an AI allowance (`ai->allow($estimate, $purpose)`),
-  the cursor, `$changed` (refs acquired or changed in this run), `$proposed` and `$acted`, and a shadow flag. Steps
-  hand off through these.
+  the cursor, the run's kind and scope, `$changed` (refs acquired or changed in this run), `$proposed` and `$acted`
+  (`handOff()`, at most 500 refs each, kept with the run), and a shadow flag. Steps hand off through these. Every
+  constructor argument has a default, so `new CycleContext` (a page view or a command run by hand) and
+  `new CycleContext(runId:, deadline:, shadow:)` keep working.
+- A detector that makes several codes implements `Contracts\CoversCodes` and reports coverage per code (the to-do
+  list's groups, `health.*`), so one failing check never resolves another's findings.
 - `FindingDraft` holds: key, code, subject_ref, scope_ref, title, detail, evidence[], amount_pence, currency,
   direction, grade, due_on and actions[].
 
@@ -495,7 +518,7 @@ final class Provenance {
 |---|---|
 | Input | Channel settings and cursors (Starling `synced_to`, Gmail scan state, `calendar_ics_url`); the failed-read backlog (documents with `status = failed` on the AI cap, `gmail_messages` failed) |
 | Output | Rows in the existing source tables, unchanged; new `tx:` and `doc:` refs added to `$changed`; `health.*` findings |
-| Steps | `acquire.health` (read-only freshness and failure checks); `acquire.retry_reads` (re-dispatches `ReadDocument` and `ReadTravelEmail` for reads marked `waiting_budget`, within the run's AI allowance) |
+| Steps | `acquire.health` (read-only freshness and failure checks: runs the `Health` detector alone); `acquire.retry_reads` (re-dispatches `ReadDocument` for documents marked `waiting_budget`, or failed on the cap before M5, and `RetryTravelRead` for booking emails failed on the cap, within the run's AI allowance: each read counts about $0.15 against it when queued, at most 25 a night) |
 | Runs | Calendar (hourly), mailbox (every 5 minutes), Starling (06:41 London) and the Gmail rescan (Sunday 05:23) keep their own schedules |
 | Hand-off | `Importer::afterImport` (already called by `StarlingSync` line 240 and `RevolutImport` line 190) still relates new lines at once; an `import` run then updates findings for that account |
 
@@ -505,15 +528,24 @@ Code that changes:
   `calendar_event_versions`, keeping `STATUS`, `SEQUENCE` and `DESCRIPTION`, and set `missing_since` on entries
   that disappear.
 - `app/Domain/Mail/MailboxFetcher.php` (M8): a per-message `try/catch` in the `fetch()` loop. Today one bad message
-  stops every later one, because `setFlag('Seen')` is never reached. Also writes `document_arrivals` and
-  `settings.mailbox_last_result`.
+  stops every later one, because `setFlag('Seen')` is never reached. Also writes `document_arrivals`.
+  `settings.mailbox_last_result` is already written (with M4/M5) by `ledger:fetch-email` in `routes/console.php`, only
+  when the result changes (read, or not), so the to-do list's cache isn't emptied every five minutes.
 - `app/Domain/Documents/DocumentIntake.php` (M8):
   - writes `document_arrivals` on every `store()`, including duplicates;
   - one `autoRead(channel)` gate in `app/Domain/Documents/AiConfig.php`. Today `Telegram.php` line 200 dispatches
     `ReadDocument` when `ai_extraction !== 'off'`, and `DocumentIntake` line 65 also dispatches it when the setting
     is `'on'`, so a Telegram file is read twice.
-- `app/Jobs/ReadDocument.php` (M5): a failure caused by the AI cap sets `status = waiting_budget` instead of
-  `failed`, so `acquire.retry_reads` picks it up after the cap resets.
+- `app/Jobs/ReadDocument.php` (M5): reads under the `reading` AI purpose. While `intel_cycle` is `on`, a refusal for
+  want of AI budget (the cap, or reading's share of it) sets `status = waiting_budget` instead of `failed`, so
+  `acquire.retry_reads` picks it up when there's room. While the cycle is off or in shadow nothing reads it again on
+  its own, so it stays `failed`, as before; switching away from `on` turns waiting documents back to `failed`. Read
+  with AI pressed on the document page (`DocumentController::read`, your own request) still marks a refusal
+  `failed`, so you see why at once; `acquire.retry_reads` picks up documents failed on the cap too. The documents
+  pages show `waiting_budget` as "Waiting for AI budget", with a filter.
+- `app/Jobs/ReadTravelEmail.php` (M5): reads under the `reading` purpose too. `gmail_messages` has no
+  `waiting_budget` status: an email refused at the cap stays `failed` with the cap in its error, which
+  `acquire.retry_reads` and the `health.ai_cap` item both count as waiting.
 - `app/Domain/Import/Importer.php` and `RevolutImport.php` (M8): store `source_line`.
 - `app/Domain/Banks/StarlingSync.php` (M8): a daily balance snapshot into `statement_balances` (`source = api`,
   with currency). It never overwrites a balance the owner typed in for the same day. If the token lacks the balance
@@ -644,7 +676,7 @@ same finding instead of a new finding.
 | `rule.drift` | M4 | Rules the owner overrode at least twice in 90 days (from honest audit events since M2) | none | certain |
 | `tax.saving` | M4 | `TaxSavings::review` items with status action or check and a `saving_pence` | claimable | as reported |
 | `acct.unchecked`, `check.unverifiable` | M4 | Reconciler method `none`; verification `unverifiable` on money | none | n/a (info) |
-| `health.*` | M2, M4 | Audit chain; `starling_last_result` failing; `calendar_synced_at` over 2 hours; mailbox blocked; reads `waiting_budget`; `failed_jobs`; a step failing on two nights | none | n/a |
+| `health.*` | M2, M4, M5 | Audit chain; `starling_last_result` failing; `calendar_synced_at` over 2 hours; mailbox blocked (`mailbox_last_result`); reads `waiting_budget` or failed on the cap; `failed_jobs` (`Detectors\Health`, M4, one detector covering six codes). A cycle step failing (`health.cycle_step`, `Detectors\CycleStepFailing`, M5) | none | n/a |
 | `year.locked_drift` | M4 | The lock snapshot's figures against `ReturnSummary::for` now | none | certain |
 | `calendar.job_changed` | M8 | A calendar version moved or set `STATUS:CANCELLED` while the job still has a booked stay, costs or no cancellation invoice | owed_to_you or at_risk | strong |
 | `decision.evidence_changed` | M8 | An owner decision whose cited evidence pin changed (a booking amended after a stay was decided; a document re-read) | none | strong |
@@ -664,19 +696,25 @@ Interfaces:
   within 7 days, 2 within 30, 1.5 within 60, and 1 otherwise. Today's fixed group priorities in `TodoList::compute`
   stay as floors.
 - **Severity:**
-  - `critical`: audit chain broken; a deadline or penalty step within 7 days; a health failure two nights running;
-    or a score of £500 or more.
+  - `critical`: audit chain broken, or the nightly audit chain check failing; a deadline or penalty step within 7
+    days; a health failure two nights running (the finding's meta `nights` is 2 or more); or a score of £500 or
+    more.
   - `important`: a score of £50 or more, due within 60 days, or failed checks on money.
-  - `info`: everything else. **New detectors start at `info`**: visible below the fold and kept off Telegram.
+  - `info`: everything else. **New detectors start at `info`**: visible below the fold and kept off Telegram
+    (`Intel\DetectorLevels`, M4). The owner raises a kind to show it in full (`det_raise`) or lowers it again
+    (`det_lower`), from the to-do page; both are audited. A kind demoted by its false positives (section 2.3) is
+    `info` too. Severity is stored on the finding when it is recorded, with what only its detector knew (meta).
 - **`TodoActions::run($code, $id, $offeredAt, $fp)`.** New codes:
   - `tx_tax` (M1): decide as `tax_payment`, as you;
   - `fnd_snooze`, `fnd_dismiss` (M3), with preset reasons;
   - `trips_add` (M4): `JobTrips::add` for one simplified-mileage vehicle, otherwise a link to `/mileage`;
+  - `det_raise`, `det_lower` (M4): show a kind of finding in full, or below the fold again (id: the code with `:`
+    for `.`, e.g. `job:closeout`);
   - `veto_lift` (M7);
   - `act_undo`, `run_undo` (M9).
 - **`ledger:invoice-nudges`** (`routes/console.php`): M2 makes it skip `invoice_overdue:{id}` keys in
-  `TodoDismissal::activeKeys()`. M5 makes it read the `invoice.overdue` findings, so the to-do list and the nudges
-  share one logic.
+  `TodoDismissal::activeKeys()`. M5 makes it read the `invoice.overdue` findings (brought up to date first with
+  `FindingsRegistry::refresh()`), so the to-do list and the nudges share one logic.
 
 ### 4.6 Preserve decisions
 
@@ -721,16 +759,23 @@ Interfaces and code that changes:
   - undoes a rule (`RuleLearner::undo` also adds the merchant to `rule_offers_declined`).
 
   Lifting a veto is audited.
-- **`TaxYearController::lock`** (M4): the `tax_year.locked` event's `after` payload carries
+- **`TaxYearController::lock`** (M4, `YearChecks::lockSnapshot`): the `tax_year.locked` event's `after` payload
+  carries
   - the `ReturnSummary::for` figures;
-  - the sha256 of a fresh `YearExporter::write` file;
-  - the open-findings digest;
+  - the sha256 of the `YearExporter::write` file made at the lock. The file is kept in
+    `storage/app/private/locks` (inside the backed-up `private/` folder), because an export made later can't match
+    it byte for byte (the xlsx carries zip and document timestamps). The years page checks the kept file against the
+    event ("Check it": `lock_check`) and downloads it as it was (`GET years/{label}/export?as_locked=1`);
+  - the open-findings digest (`FindingsRegistry::openDigest()`: sha256 of the canonical JSON of each open finding's
+    key, code, amount and currency, sorted by key; the same digest as the `cycle.completed` seal);
   - the `YearChecks::checks` statuses;
   - from M9, the number of unreviewed acts.
 
-  Locking with a failing check or unreviewed acts needs a reason. Today the event is bare.
+  Locking with a failing check or unreviewed acts needs a reason, kept as the event's reason. Today the event is
+  bare. `year.locked_drift` compares the snapshot's figures with `ReturnSummary::for` now.
 - **The seal:** one `cycle.completed` audit event per run, actor `system`, carrying the run id, its counts and the
-  findings digest, written inside the transaction that ends the run.
+  findings digest, written inside the transaction that ends the run. A shadow run keeps its digest on the run
+  (`cycle_runs.digest`) and writes no audit event.
 - **`deploy/restore-check.sh`** (M2): with `--load`, also checks the audit chain of the loaded copy, in SQL, the
   way `AuditLog::verify()` does. It never runs `ledger:verify-audit` there: that command writes a setting and sends
   the Telegram alarm, and a restored copy holds the owner's Telegram token.
@@ -881,7 +926,8 @@ full.
 - **Sign-off before lock:** `/autonomy/sign-off` lists rule and policy confirmations not yet reviewed, by kind with
   totals, with "These look right". `YearChecks::checks` gains "N automatic decisions not reviewed". This builds
   PLAN.md §6.4's sign-off list.
-- **Detector settings:** each detector's severity can be lowered, or the detector switched off.
+- **Detector settings:** each kind of finding can be raised (shown in full) or lowered (below the fold) from the
+  to-do page (M4, `Intel\DetectorLevels`); switching a detector off is still to come.
 
 ---
 
@@ -899,7 +945,8 @@ foreground of `schedule:run`: Laravel runs due events in sequence, and nothing i
   **(new**, `ShouldBeUnique` per run**)**. It returns in under a second and never runs a step itself. It is skipped
   when `intel_cycle` is `off`.
 - **The work runs in the existing queue worker.** `RunCycleStep` works until its step deadline, saves its cursor,
-  returns `more`, and the next tick dispatches it again. This is the pattern `ScanGmail` already uses.
+  returns `more`, and the next tick dispatches it again. This is the pattern `ScanGmail` already uses. Its job
+  timeout is 150 s, a backstop: a step that overruns is stopped by the worker and noticed by the next tick.
 - **Timezone:** every nightly entry is pinned to Europe/London. Today `verify-audit`, `transfers`, `categorise`,
   `find-jobs`, `recheck` and `findings` run in UTC (`APP_TIMEZONE=UTC`) and move by an hour in summer.
 
@@ -907,18 +954,33 @@ foreground of `schedule:run`: Laravel runs due events in sequence, and nothing i
 |---|---|---|
 | nightly | from 03:05 London; hard deadline 06:30 | verify.audit_chain, acquire.health, acquire.retry_reads, relate.transfers, relate.route (M8), relate.categorise, relate.jobs, relate.sweep (M7), verify.new (M8), verify.backlog, verify.reconcile, decide.policy (M9), detect.todo, detect.*, detect.sync, learn.outcomes (M10), preserve.seal |
 | morning | from 07:05, after Starling's 06:41 import | acquire.health, detect.*, detect.sync, recommend.report (at `intel_report_time`), recommend.alerts, preserve.seal |
-| import | queued after an owner upload or a Starling import | detectors scoped to that account (gaps, duplicates, transfers) |
-| manual | "Check now" on `/intel` | detect.*, detect.sync |
+| import | queued after an owner upload or a Starling import | detect.todo, detect.sync, preserve.seal. **As built (M5)** this is not yet limited to the account: the batch and account refs are kept as the steps' scope, and detect.sync runs with complete coverage, so nothing is resolved wrongly. Scoping needs `FindingsRegistry` support |
+| manual | "Check now" on `/intel` (`POST /intel/check`, at most 6 a minute) | detect.*, detect.sync, preserve.seal |
+
+`detect.*` is one `detect.<code>` step per registered detector (`Intel\Detectors\Registry`), `detect.todo` first, so
+a detector added to the registry joins the runs without other wiring. An import or "Check now" asked for while a run
+of the same mode is still to record its findings is covered by that run instead of starting another.
 
 **The rollout flag `intel_cycle`:**
 
-- `off`: today's schedule.
-- `shadow`: the read-only steps run and record what they *would* open, close or mark unseen in
-  `cycle_run_steps.counts`; nothing else is written, and the legacy schedule keeps running. One week of runs is
-  compared before switching.
+- `off`: today's schedule. The tick is skipped, and no run starts.
+- `shadow`: every step that would change a record (`CycleStep::writes()`) is skipped; the others run and record what
+  they *would* open, close or mark unseen in `cycle_run_steps.counts` (detect.sync works it all out inside a
+  transaction it rolls back). Nothing else in the ledger is written, the legacy schedule keeps running, and no
+  Telegram message is sent. One week of runs is compared before switching. A shadow run writes only its own
+  `cycle_*` rows: it keeps its findings digest on the run but writes no `cycle.completed` audit event. On the
+  database cache store, locks and cache entries are still taken and let go; these hold no ledger data.
 - `on`: the legacy nightly entries (`ledger:transfers`, `categorise`, `find-jobs`, `recheck`, `findings`,
-  `verify-audit`) stay defined with `->skip(fn () => Setting::get('intel_cycle') === 'on')`, so they remain manual
-  entry points.
+  `verify-audit`) stay defined with `->skip(fn () => CycleRunner::doesNightlyWork())`, so they remain manual entry
+  points. They are skipped only when tonight's nightly run is a real one (the flag is on **and** tonight's run
+  started in `on`), so switching during the night neither drops nor doubles the night's work: switched on after a
+  shadow run started tonight, the legacy entries still do tonight's work and the cycle takes over the next night. A
+  step that changes records runs only while the flag is on now, whatever its run started as.
+- The flag is switched on the server with `php artisan ledger:cycle mode off|shadow|on` (audited as
+  `settings.intel_cycle`); there is no web switch. Switched off, the runs still going are ended and sealed; switched
+  away from `on`, documents waiting for AI budget go back to `failed`, where Read with AI offers them.
+- `ledger:cycle status` shows the mode and the last five runs with their steps; `ledger:cycle run [nightly|morning|
+  manual] [--force]` runs one now in the foreground (a trial while the flag is off).
 
 ### 6.2 Budgets
 
@@ -927,14 +989,20 @@ foreground of `schedule:run`: Laravel runs due events in sequence, and nothing i
 - A step job has a budget of 90 s at night and 30 s by day, so Telegram presses queued behind it stay quick. Even
   if the worker starts a step at its 240 s mark, the process ends within about 330 s.
 - Steps call `$ctx->hasTime()` between chunks of 300 rows and save `{last_id}` cursors.
-- At 06:30, unfinished steps are marked `partial`, and a partial detector never resolves findings.
+- At 06:30 (12:00 for the morning run, 30 minutes after it starts for an import or "Check now"), unfinished steps
+  are marked `skipped` and the run ends `partial`; a detector that didn't finish never resolves findings.
 
 **AI.**
 
 - **Envelopes:** the monthly cap (`ai_monthly_cap_usd`, default $40) is split into purpose shares in
   `ai_usage_YYYY_MM.by_purpose`: assistant 30% (the reserve, never used by the cycle), reading 40%,
-  verify 10%, discovery 20%. After the 20th of the month, a purpose may borrow unused share, never the
-  assistant's.
+  verify 10%, discovery 20%. After the 20th of the month (from day 21), a purpose may borrow unused share, never
+  the assistant's. **The shares apply only while `intel_cycle` is `on`** (`AiUsage::sharesApply()`); off or in
+  shadow, every call is held only to the whole cap, as before M5. Spend is still recorded by purpose in every mode.
+  A call made outside any purpose (the assistant, or Read with AI pressed on a page) counts as the owner's own:
+  `assistant`. Spend from before purposes were recorded counts against the cycle's part.
+- **Purposes as built:** `reading` for `ReadDocument` and `ReadTravelEmail` (and `RetryTravelRead`), `verify` for
+  `ledger:recheck` and `verify.backlog`, `discovery` for the job finder's AI pass.
 - **Nightly allowance:** min(`intel_ai_night_usd`, (cap × 70% − cycle spend this month) ÷ days left).
 - **Calls** go through `AiUsage::guard`, which reserves the call's maximum cost, and `AiUsage::record`, which
   settles the actual cost, both under `DB::transaction` with `lockForUpdate` on the settings row (M2). Today
@@ -963,10 +1031,16 @@ foreground of `schedule:run`: Laravel runs due events in sequence, and nothing i
 - **Failures:**
   - A step that fails is retried up to 3 times. Its dependents are skipped, its independent successors still run,
     and the run ends `partial`.
-  - A failed step raises `health.step:<key>`. It is important, or critical when it fails two nights running or is
-    the audit chain.
-  - A run whose `heartbeat_at` is more than 15 minutes old is `abandoned`; its current step is resumed, at most
-    twice.
+  - A failed step raises a `health.cycle_step` finding (key `health:step:<key>`, from
+    `Intel\Detectors\CycleStepFailing`, M5), with the number of runs running it has failed in its meta
+    (`nights`). It is important, or critical when it fails two nights (or mornings) running or the step is
+    `verify.audit_chain` (critical from its first failure: `Intel\Ranker`). The error stays in the run log, never in
+    the finding.
+  - A run whose `heartbeat_at` is more than 15 minutes old (the worker was stopped mid-step) has its current step
+    resumed from its cursor, at most twice. The third stall counts the step as failed, like a step that threw three
+    times, and the rest of the run carries on. A run that stalls 6 times in all is `abandoned`.
+  - `ledger:check` shows the mode, the latest run and each step that failed in it, with its error cleaned of keys;
+    a failed step, or a run that failed or was abandoned, counts as a problem.
 - **The seal:** one `cycle.completed` audit event per run anchors the run in the hash chain.
 
 ---
@@ -982,12 +1056,19 @@ section is left out when it's empty; on a quiet night the report is one line.
 1. **Found:** new findings ranked by the Ranker, with money by direction and never one mixed total. Example: "Arena
    load-in: PO £1,200.00, invoiced £1,050.00, hotel recharge £180.00 not on the invoice."
 2. **Did on its own:** acts by kind, with counts, money, per-act Undo and "Undo everything from last night".
-   Before M9, this section lists what the existing automation did, from audit events with non-`you` actors.
-3. **Spot-check these 3:** sampled automatic confirmations, once there are any.
+   Before M9, this section lists what the existing automation did, from audit events with non-`you` actors, with no
+   Undo buttons.
+3. **Spot-check these 3:** sampled automatic confirmations, once there are any (always empty until M9 records
+   acts).
 4. **Dealt with:** findings resolved since yesterday, with their cause (an import batch, your action, data
    changes).
 5. **Needs you:** counts by group.
-6. **Health:** source freshness, failed steps, AI spent against tonight's allowance.
+6. **Health:** source freshness, failed steps, AI spent against tonight's allowance, and any kind of finding
+   demoted by its false positives since the last report (`DetectorLevels::demotedSince`, named once).
+
+Findings of a kind still below the fold are listed apart on `/intel`, and kept off Telegram and out of the money
+totals. Notes (the AI spent, routine double-checks, reads waiting for budget, a demotion) never make a night worth a
+message on their own.
 
 Telegram carries merchant names and amounts, as the Monday digest does today, but no account numbers, references
 or addresses. `intel_report_detail = counts` reduces it to counts and a link.
@@ -1058,8 +1139,15 @@ Machine suggestions appear in the Inbox (`resources/js/pages/inbox.tsx`), and li
 
 - The morning report; the Monday digest (`ledger:telegram-digest`), ranked and opening with "Since last week: N
   new, M dealt with, £X recovered".
-- **Alerts:** critical findings are sent at once, at most `intel_alerts_per_day` (3) a day and deduplicated by
-  key. Examples: audit chain broken, Starling failing two days running, a penalty step within 7 days.
+- **Alerts** (`recommend.alerts`, in the morning run): critical findings are sent at once, at most
+  `intel_alerts_per_day` (3) a day and deduplicated by key (kept in `intel_alerts_sent`; a finding dealt with and
+  back is alerted again). Examples: Starling failing two days running, a penalty step within 7 days, a cycle step
+  failing two nights running. The order is due within 7 days first (soonest first), then the newest. The first
+  time alerts are sent for real, critical findings open for over a day and not due within 7 days are taken as known
+  (they're on the to-do list and in the Monday digest), so switching the cycle on doesn't flood the chat. Not
+  alerted here: a broken audit chain (its own alarm, sent by `verify.audit_chain` and `ledger:verify-audit`),
+  `invoice.overdue` (left to the weekday nudge, which carries its Send a reminder button), and kinds below the fold.
+  A shadow run only counts what it would send.
 - **Buttons:** Snooze a week and Not relevant with preset reasons ("Both charges were real", "Refunded", "Not
   mine", "Other") from M3; Undo an act or the run from M9; Allow / Not yet on promotion offers (the first promotion
   of a kind needs the web); `/pause` and `/resume`.
@@ -1297,11 +1385,32 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
 
 **Files.**
 
-- `app/Domain/Intel/Detectors/*.php`, `app/Domain/Intel/ReceiptMatch.php` **(new)**
-- `app/Http/Controllers/TransactionController.php`, `app/Http/Controllers/TaxYearController.php`
-- `app/Domain/Todo/TodoActions.php`, `app/Domain/Ai/AssistantTools.php`, `app/Domain/Tax/YearChecks.php`
-- `resources/js/pages/todo.tsx`, `resources/js/pages/years/show.tsx`
-- `tests/Feature/Intel/Detectors/*Test.php` **(new)**
+- `app/Domain/Intel/Detectors/*.php` (`Health` and eleven money and check detectors), `app/Domain/Intel/ReceiptMatch.php`,
+  `app/Domain/Intel/DetectorLevels.php` **(new)**
+- `app/Domain/Intel/{Grades,Ranker,RefResolver}.php`, `app/Domain/Intel/Detectors/{Registry,TodoGroupsDetector,TravelUnclaimed}.php`
+- `app/Http/Controllers/TransactionController.php`, `app/Http/Controllers/TaxYearController.php`, `app/Http/Controllers/TodoController.php`
+- `app/Domain/Todo/{TodoList,FindingsRegistry,TodoActions,Dismissals}.php`, `app/Domain/Ai/AssistantTools.php`, `app/Domain/Tax/YearChecks.php`
+- `resources/js/pages/{todo,todo-history}.tsx`, `resources/js/pages/years/show.tsx`, `resources/js/components/year-lock-panel.tsx` **(new)**
+- `tests/Feature/Intel/Detectors/*Test.php`, `tests/Feature/Intel/{YearLockSnapshot,AssistantFindings}Test.php` **(new)**
+
+**As built.**
+
+- Demotion follows section 2.3 as rewritten there: M4's kinds by "more than one in ten", the long-standing kinds by
+  "10 dismissals and over half wrong". The findings run demotes; the morning report (M5) names it.
+- The lock keeps the exported file instead of exporting again (section 4.6).
+- A close-out finding on a finished job subsumes its `underbilled:` and `recharge:` items: their findings are
+  resolved as superseded, citing it (`fnd:`), and an item you hid stays hidden. A recharge on a line that only names
+  the provider counts as not yet billed.
+- `dupe.cross_source` flags a generic cash description ("Parking") beside a named card merchant, graded `possible`.
+- `rule.drift` counts `allocation.cleared` events only from `RuleDrift::HONEST_FROM` (2026-11-24, when M2 made
+  actors honest); owner decisions count from any date.
+- `health.mailbox` reads `settings.mailbox_last_result`, written by `ledger:fetch-email` since the M4/M5
+  integration.
+- Run `php artisan ledger:findings` once after deploying (or leave it to the nightly run), so the new kinds are
+  recorded before the history page is opened; the history page queues a findings run rather than waiting for it, so
+  the queue worker must be running.
+- Live-data acceptance (each detector's time bound on a restored live copy, and the hand review of a sample) is done
+  before release; in development a 4,000-line fixture keeps every detector under 10 s and the list under 200 queries.
 
 **Migrations.** None.
 
@@ -1343,19 +1452,39 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
 - Import-triggered and "Check now" runs.
 - The morning report (Telegram, `/intel`, dashboard card), critical alerts, and `/intel/runs`.
 - `ledger:invoice-nudges` reads `invoice.overdue` findings.
-- Rollout: deploy with `off`, run `shadow` for a week and compare counts with the legacy findings, then `on`.
+- Rollout: deploy with `off`, run `shadow` for a week and compare counts with the legacy findings, then `on`
+  (`php artisan ledger:cycle mode shadow`, then `on`).
+
+**As built.**
+
+- No web switch for `intel_cycle`: `ledger:cycle mode` on the server, audited.
+- Import runs are not limited to the imported account yet (section 6.1).
+- `followUp` after automatic job links is left to M8, as listed there.
+- Second reads made while `ReadDocument` reads a new document count as `reading`; only the nightly re-check
+  (`verify.backlog`, `ledger:recheck`) uses `verify`.
+- `relate.transfers` and `detect.sync` are single passes (pairing needs every line at once; the sync needs every
+  detector to know coverage). A step that overruns the 150 s job timeout is noticed, and after three stalls counts
+  as failed.
+- `acquire.retry_reads` counts each re-queued read at about $0.15 against the night's allowance; what the read
+  really costs is held to reading's share when it is made, but not added back to the run's `ai_spent_micro`.
 
 **Files.**
 
-- `database/migrations/2026_12_12_000001_create_cycle_runs.php` **(new)**
+- `database/migrations/2026_12_16_000001_create_cycle_runs.php` **(new**; dated after M6's migrations, section 3.2**)**
 - `app/Models/{CycleRun,CycleRunStep}.php` **(new)**
-- `app/Domain/Intel/Cycle/{CycleRunner,CycleContext,AiAllowance,StepOutcome,MorningReport}.php` **(new)**
-- `app/Domain/Intel/Cycle/Steps/*.php` **(new)**
-- `app/Jobs/RunCycleStep.php` **(new)**, `app/Jobs/FindJobs.php`, `app/Jobs/ReadDocument.php`
-- `app/Domain/Jobs/JobFinder.php`, `app/Domain/Ai/AiUsage.php`
-- `routes/console.php`, `routes/web.php`
-- `app/Http/Controllers/IntelController.php` **(new)**
-- `resources/js/pages/intel/{index,runs}.tsx` **(new)**, `resources/js/pages/dashboard.tsx`
+- `app/Domain/Intel/Cycle/{CycleRunner,CycleStep,Stage,AiAllowance,StepOutcome,MorningReport}.php` **(new)**,
+  `app/Domain/Intel/Cycle/CycleContext.php` (M3's, extended with defaulted arguments)
+- `app/Domain/Intel/Cycle/Steps/*.php` **(new)**: `VerifyAuditChain`, `AcquireHealth`, `AcquireRetryReads`,
+  `RelateTransfers`, `RelateCategorise`, `RelateJobs`, `VerifyBacklog`, `VerifyReconcile`, `RunDetector`
+  (`detect.<code>`), `DetectSync`, `RecommendReport`, `RecommendAlerts`, `PreserveSeal`
+- `app/Domain/Intel/Detectors/CycleStepFailing.php` **(new**, `health.cycle_step`, registered in `Registry`**)**
+- `app/Jobs/{RunCycleStep,RetryTravelRead}.php` **(new)**, `app/Jobs/{FindJobs,ReadDocument,ReadTravelEmail}.php`
+- `app/Domain/Jobs/JobFinder.php`, `app/Domain/Ai/AiUsage.php`, `app/Models/Setting.php`
+- `routes/console.php`, `routes/web.php`, `app/Console/Commands/CheckIntegrations.php`
+- `app/Http/Controllers/{IntelController,DashboardController,ImportController}.php` (`IntelController` new)
+- `resources/js/pages/intel/{index,runs}.tsx`, `resources/js/components/intel-run.tsx` **(new)**,
+  `resources/js/pages/dashboard.tsx`, `resources/js/components/app-sidebar.tsx`
+- `resources/js/pages/documents/{index,show}.tsx`, `resources/js/components/doc-line.tsx` ("Waiting for AI budget")
 - `app/Domain/Telegram/Telegram.php`
 
 **Migrations.** One.
@@ -1467,7 +1596,7 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
 
 **Files.**
 
-- `database/migrations/2026_12_16_000001_create_vetoes.php` **(new)**
+- `database/migrations/2026_12_16_000002_create_vetoes.php` **(new)**
 - `app/Models/Veto.php` **(new)**, `app/Domain/Intel/Vetoes.php` **(new)**
 - `app/Domain/Ledger/{AllocationWriter,DecisionService,RuleLearner}.php`
 - `app/Http/Controllers/{DecisionController,TodoController}.php`

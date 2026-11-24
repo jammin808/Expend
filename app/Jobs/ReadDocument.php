@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Domain\Ai\AiUsage;
 use App\Domain\Ai\DocumentReader;
 use App\Domain\Jobs\Opportunities;
 use App\Domain\Telegram\Telegram;
@@ -12,9 +13,21 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Throwable;
 
+/**
+ * Reads a document with AI. Its calls are made for reading (AiUsage purposes: reading's share of the month's cap, once
+ * the nightly cycle is on).
+ *
+ * Once the cycle is on, a read refused for want of AI budget (the month's cap, or reading's share of it) isn't a
+ * failure: the document is left waiting_budget, and the nightly cycle (acquire.retry_reads) reads it again once there's
+ * room. While the cycle is off or on trial nothing reads it again on its own, so it's failed, as before, where Read with
+ * AI and the to-do list offer it again.
+ */
 class ReadDocument implements ShouldQueue
 {
     use Queueable;
+
+    /** A document whose read waits for AI budget. */
+    public const WAITING = 'waiting_budget';
 
     public int $tries = 1;
 
@@ -29,25 +42,28 @@ class ReadDocument implements ShouldQueue
             return;
         }
 
-        try {
-            $document->update(['status' => 'queued']);
-            $document = $reader->read($document);
+        AiUsage::withPurpose('reading', function () use (&$document, $reader, $verifier) {
             try {
-                $verifier->document($document, $document->text_status !== 'extracted' && Setting::get('ai_extraction') === 'on');
+                $document->update(['status' => 'queued']);
+                $document = $reader->read($document);
+                try {
+                    $verifier->document($document, $document->text_status !== 'extracted' && Setting::get('ai_extraction') === 'on');
+                } catch (Throwable $e) {
+                    report($e);
+                }
+                // Work it may offer (an availability check, a hold, an offer): proposed, never made a job by itself.
+                try {
+                    app(Opportunities::class)->fromDocument($document);
+                } catch (Throwable $e) {
+                    report($e);
+                }
+                FindJobs::dispatch();
             } catch (Throwable $e) {
+                // Out of AI budget, with the cycle on: it waits and is read again when there's room. Anything else failed.
+                $document->update(['status' => AiUsage::refused($e) && AiUsage::sharesApply() ? self::WAITING : 'failed', 'error' => mb_substr($e->getMessage(), 0, 1000)]);
                 report($e);
             }
-            // Work it may offer (an availability check, a hold, an offer): proposed, never made a job by itself.
-            try {
-                app(Opportunities::class)->fromDocument($document);
-            } catch (Throwable $e) {
-                report($e);
-            }
-            FindJobs::dispatch();
-        } catch (Throwable $e) {
-            $document->update(['status' => 'failed', 'error' => mb_substr($e->getMessage(), 0, 1000)]);
-            report($e);
-        }
+        });
 
         if ($this->telegramChatId) {
             Telegram::reply($this->telegramChatId, Telegram::documentSummary($document->fresh(['facts', 'job'])));

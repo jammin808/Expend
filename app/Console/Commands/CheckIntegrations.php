@@ -7,6 +7,7 @@ use App\Domain\Ai\AiUsage;
 use App\Domain\Banks\StarlingSync;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Gmail\GmailClient;
+use App\Domain\Intel\Cycle\CycleRunner;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Mail\OutgoingMail;
 use App\Domain\Telegram\Telegram;
@@ -15,6 +16,8 @@ use App\Models\Account;
 use App\Models\AssistantLog;
 use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
+use App\Models\CycleRun;
+use App\Models\CycleRunStep;
 use App\Models\Document;
 use App\Models\GmailLabel;
 use App\Models\GmailMessage;
@@ -147,6 +150,8 @@ class CheckIntegrations extends Command
         $this->line('Queue: '.DB::table('jobs')->count().' waiting, '.$failed->count().' failed'
             .($lastFailure ? ', last failure '.$lastFailure->failed_at.': '.self::clean(strtok((string) $lastFailure->exception, "\n")) : ''));
 
+        $problems += $this->cycle();
+
         $this->newLine();
         $this->setup();
 
@@ -160,6 +165,30 @@ class CheckIntegrations extends Command
         $this->line($problems ? "{$problems} problem(s) found." : 'All checks passed.');
 
         return $problems ? 1 : 0;
+    }
+
+    /**
+     * The nightly cycle (docs/intelligence-cycle.md 6.4): its mode, its latest run, and each step that failed in that
+     * run, with the error (cleaned of keys). A failed step, or a run that failed or was given up, is a problem.
+     *
+     * @return int problems found
+     */
+    private function cycle(): int
+    {
+        $run = CycleRun::query()->orderByDesc('id')->first();
+        $this->line('Nightly cycle: '.CycleRunner::mode().($run
+            ? ', latest run '.$run->run_key.' ('.($run->isShadow() ? 'trial' : 'real').'): '.mb_strtolower(CycleRun::STATUS_WORDS[$run->status] ?? $run->status)
+                .($run->finished_at ? ', ended '.$run->finished_at->tz(CycleRunner::TZ)->format('j M H:i') : ', started '.$run->created_at?->tz(CycleRunner::TZ)->format('j M H:i'))
+            : ', no runs yet'));
+        if (! $run) {
+            return 0;
+        }
+        $failed = CycleRunStep::query()->where('cycle_run_id', $run->id)->where('status', 'failed')->orderBy('seq')->get();
+        foreach ($failed as $step) {
+            $this->line('  Step failed: '.$step->step.' ('.CycleRunner::stepWords($step->step).')'.($step->error ? ', '.self::clean(strtok($step->error, "\n")) : ''));
+        }
+
+        return $failed->count() + (in_array($run->status, ['failed', 'abandoned'], true) ? 1 : 0);
     }
 
     /** What's filled in and what isn't, so nothing is left half set up. Counts only, never contents. */

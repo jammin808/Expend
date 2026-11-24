@@ -9,6 +9,7 @@ use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\ImportController;
 use App\Http\Controllers\InboxController;
 use App\Http\Controllers\IntegrationSettingsController;
+use App\Http\Controllers\IntelController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\JobCalendarController;
 use App\Http\Controllers\JobController;
@@ -118,6 +119,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('connections', [ConnectionsController::class, 'index'])->name('connections');
     Route::get('todo', [TodoController::class, 'index'])->name('todo');
     Route::get('todo/history', [TodoController::class, 'history'])->name('todo.history');
+    // What Expend found and did overnight, "Check now", and the nightly cycle's run log.
+    Route::get('intel', [IntelController::class, 'index'])->name('intel.index');
+    Route::get('intel/runs', [IntelController::class, 'runs'])->name('intel.runs');
+    Route::post('intel/check', [IntelController::class, 'check'])->middleware('throttle:6,1')->name('intel.check');
     Route::get('search', SearchController::class)->name('search');
     Route::get('explain/category/{category}', [TaxHelpController::class, 'category'])->name('explain.category');
     Route::get('explain/{source}/{id}', [TaxHelpController::class, 'payment'])->whereIn('source', ['bank', 'manual'])->whereNumber('id')->name('explain.payment');

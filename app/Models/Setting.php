@@ -57,6 +57,25 @@ class Setting extends Model
         'telegram_chat_id' => null,
         'telegram_pairing_code' => null,
         'anthropic_api_key' => null,
+        // The nightly cycle (docs/intelligence-cycle.md 3.3 and 6): off (the old nightly schedule only), shadow (a
+        // trial: it only looks and records what it would do) or on. Switched with php artisan ledger:cycle mode.
+        'intel_cycle' => 'off',
+        // Its AI: at most this much a night (USD), and the share of the monthly cap it never uses (the assistant's).
+        'intel_ai_night_usd' => 1.5,
+        'intel_ai_reserve_pct' => 30,
+        // Critical findings sent to Telegram at once: at most this many a day.
+        'intel_alerts_per_day' => 3,
+        // The morning report: when it's sent (London time), and full (titles and amounts) or counts (counts and a link).
+        'intel_report_time' => '07:30',
+        'intel_report_detail' => 'full',
+        // A business cost over this (in pence) with no receipt or document is a finding (cost.no_receipt).
+        'intel_receipt_threshold_pence' => 10000,
+        // How prominent each kind of finding is: {code: {level: raised|lowered|demoted, at, reason?}}. Your raise and
+        // lower on the to-do page, and kinds demoted by their false alarms (Intel\DetectorLevels).
+        'intel_detector_levels' => [],
+        // How the forwarding mailbox last went, {ok, at, error?}: written by ledger:fetch-email when it changes, read by
+        // the health check (health.mailbox), which never repeats the error.
+        'mailbox_last_result' => null,
     ];
 
     protected $primaryKey = 'key';

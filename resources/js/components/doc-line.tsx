@@ -55,6 +55,7 @@ export function DocLine({ d, kinds }: { d: DocRow; kinds: Record<string, string>
                         </span>
                     )}
                     {d.status === 'failed' && <span className="text-xs text-rose-600">Couldn’t be read</span>}
+                    {d.status === 'waiting_budget' && <span className="text-xs text-amber-700">Waiting for AI budget</span>}
                     {!!d.unverified && (
                         <span className="flex items-center gap-1 text-xs text-amber-700">
                             <AlertTriangle className="size-3" /> {d.unverified} to check

@@ -3,12 +3,14 @@
 namespace Tests\Feature\Intel;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\Detectors\Health;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Todo\FindingsRegistry;
 use App\Domain\Todo\TodoList;
 use App\Models\AuditEvent;
 use App\Models\Document;
 use App\Models\Finding;
+use App\Models\GmailMessage;
 use App\Models\Invoice;
 use App\Models\Setting;
 use App\Models\TodoDismissal;
@@ -20,9 +22,11 @@ use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
+use Throwable;
 
 /**
  * Expend's own health on the to-do list (the audit log, Starling, the calendar, background work, the AI spending cap),
@@ -151,6 +155,60 @@ class HealthTest extends TestCase
         $this->post('/todo/dismiss', ['key' => $failed, 'days' => 7])->assertSessionHas('success');
         $this->post('/todo/dismiss', ['key' => 'health:ai_cap'])->assertSessionHasErrors('key');
         $this->assertSame(['health:ai_cap'], array_keys($this->health()));
+    }
+
+    public function test_with_the_cycle_on_reads_refused_at_the_cap_are_read_again_on_their_own(): void
+    {
+        $cap = 'This month’s AI spending cap ($40) is reached. Raise it in Settings › AI to continue.';
+        $doc = Document::query()->create(['original_name' => 'po.pdf', 'stored_path' => 'documents/po.pdf', 'sha256' => str_repeat('e', 64), 'source' => 'upload',
+            'status' => 'failed', 'error' => $cap]);
+        GmailMessage::query()->create(['message_id' => 'm1', 'search' => 'hotels', 'document_id' => $doc->id, 'status' => 'failed', 'error' => $cap]);
+
+        // Off (or on trial): nothing reads them again on its own, so it says what to press.
+        $item = $this->health()['health:ai_cap'];
+        $this->assertSame('1 document and 1 booking email not read: the AI spending cap was reached', $item['title']);
+        $this->assertStringContainsString('then press Read with AI on each document, and Read again on each booking email in Stays & travel.', $item['detail']);
+        $this->assertStringNotContainsString('on their own', $item['detail']);
+        $this->assertSame('/documents?status=failed', $item['href']);
+
+        // On: the nightly cycle reads both again once there's room (acquire.retry_reads), and it says so.
+        Setting::put('intel_cycle', 'on');
+        $item = $this->health()['health:ai_cap'];
+        $this->assertStringContainsString('2 are waiting and will be read on their own once the cap allows.', $item['detail']);
+        $this->assertStringNotContainsString('press', $item['detail']);
+    }
+
+    public function test_the_mailbox_fetch_keeps_how_it_went_only_when_that_changes(): void
+    {
+        Setting::put('imap_host', '127.0.0.1');
+        Setting::put('imap_port', 9); // nothing listens there: refused at once
+        Setting::put('imap_username', 'inbox@example.test');
+        Setting::put('imap_password', 'not-a-real-one');
+        $fetch = function (): bool {
+            try {
+                Artisan::call('ledger:fetch-email');
+            } catch (Throwable) {
+                return false;
+            }
+
+            return true;
+        };
+
+        $this->assertFalse($fetch(), 'It still fails as before');
+        $kept = Setting::get(Health::MAILBOX_RESULT);
+        $this->assertSame([false, now()->toIso8601String()], [$kept['ok'], $kept['at']]);
+        $this->assertNotEmpty($kept['error']);
+        $item = $this->health()['health:mailbox'];
+        $this->assertSame(['Forwarding mailbox not read since 24 Nov, 10:00', 'important'], [$item['title'], $item['severity']]);
+        $this->assertStringNotContainsString($kept['error'], $item['detail'], 'The error itself isn’t repeated');
+
+        // Failing again five minutes later: kept as it was (failing since 10:00), so the to-do list isn't rebuilt for it.
+        Carbon::setTestNow('2026-11-24 10:05:00');
+        CarbonImmutable::setTestNow('2026-11-24 10:05:00');
+        $updated = DB::table('settings')->where('key', Health::MAILBOX_RESULT)->value('updated_at');
+        $this->assertFalse($fetch());
+        $this->assertSame($kept, Setting::get(Health::MAILBOX_RESULT));
+        $this->assertSame($updated, DB::table('settings')->where('key', Health::MAILBOX_RESULT)->value('updated_at'));
     }
 
     public function test_documents_refused_because_a_read_could_pass_the_cap_say_nearly_reached(): void

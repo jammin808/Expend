@@ -3,6 +3,7 @@
 namespace App\Domain\Jobs;
 
 use App\Domain\Ai\AiClient;
+use App\Domain\Ai\AiUsage;
 use App\Domain\Ai\DocumentReader;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
@@ -24,6 +25,8 @@ use App\Models\Verification;
 use App\Models\WorkJob;
 use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Cache\Lock;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -42,9 +45,21 @@ use Throwable;
  *
  * Links you make are never changed by automation. Everything automatic can be confirmed, changed or undone, and
  * says why: each automatic link keeps its method, score, evidence and the runner-up job in link_provenance.
+ *
+ * One run at a time: ledger:find-jobs, the queued FindJobs and the nightly cycle's relate.jobs step share one lock
+ * (exclusively()). The AI calls are made for 'discovery' (AiUsage purposes), and at most $aiLimit calendar entries
+ * are asked about in one run (120 as before; the cycle asks 15 at a time and carries on: stats ai_left).
  */
 final class JobFinder
 {
+    /** The lock ledger:find-jobs, FindJobs and the cycle's relate.jobs share, and how long it's held at most. */
+    public const LOCK = 'intel:jobfinder';
+
+    public const LOCK_SECONDS = 330;
+
+    /** Calendar entries asked about with AI in one run (one request), unless a run asks for fewer. */
+    public const AI_LIMIT = 120;
+
     private const WORK_WORDS = [
         'show', 'shows', 'gig', 'event', 'events', 'conference', 'rehearsal', 'rehearsals', 'load in', 'load-in', 'loadin', 'load out',
         'load-out', 'get in', 'get-in', 'get out', 'get-out', 'derig', 'de-rig', 'rig', 'install', 'build', 'tech', 'production', 'crew',
@@ -79,20 +94,83 @@ final class JobFinder
      * Link and propose what fits your jobs. Whoever started the run (the queue, the schedule, or you pressing "Find
      * jobs now"), what it links, proposes and changes on its own is recorded as the matcher's, never as yours.
      *
-     * @return array{linked:int, proposed:int, ai_checked:int, ai_rejected:int, considered:int}
+     * @param  int|null  $aiLimit  the most calendar entries to ask the AI about this time (AI_LIMIT when null)
+     * @return array{linked:int, proposed:int, ai_checked:int, ai_rejected:int, considered:int, ai_left:int}
      */
-    public function run(?string $taxYear = null, bool $useAi = true): array
+    public function run(?string $taxYear = null, bool $useAi = true, ?int $aiLimit = null): array
     {
-        return AuditContext::with('matcher', fn () => $this->search($taxYear, $useAi));
+        return AuditContext::with('matcher', fn () => $this->search($taxYear, $useAi, max(0, $aiLimit ?? self::AI_LIMIT)));
     }
 
-    /** @return array{linked:int, proposed:int, ai_checked:int, ai_rejected:int, considered:int} */
-    private function search(?string $taxYear, bool $useAi): array
+    /**
+     * Only ask the AI about up to $aiLimit calendar entries the rules can't call, and remember its answers (as run()
+     * does first): nothing is linked, proposed or recorded as a run. The nightly cycle asks in turns of a few entries,
+     * so each fits a step job's time, then runs the job finder once with every answer (run() with no new questions).
+     *
+     * @return array{ai_checked:int, ai_rejected:int, ai_left:int}
+     */
+    public function ask(int $aiLimit): array
+    {
+        $stats = ['ai_checked' => 0, 'ai_rejected' => 0, 'ai_left' => 0];
+        if (! self::aiAllowed()) {
+            return $stats;
+        }
+
+        return AuditContext::with('matcher', function () use ($aiLimit, $stats) {
+            [$from, $to] = $this->window(null);
+            $this->clients = Client::query()->pluck('name', 'id')->filter()->all();
+            $this->clientsLoaded = true;
+            $taken = JobCandidate::query()->where(fn ($q) => $q->where('status', '!=', 'open')->orWhereNotNull('edited_at'))
+                ->get()->flatMap(fn (JobCandidate $c) => $c->sourceKeys())->flip();
+            $signals = collect($this->calendarSignals($from, $to))->reject(fn ($s) => isset($taken[$s['key']]));
+            if ($aiLimit > 0) {
+                $this->askAiAboutCalendar($signals, $stats, $aiLimit);
+            }
+            $stats['ai_left'] = $this->toAsk($signals)->count();
+
+            return $stats;
+        });
+    }
+
+    /**
+     * Run $work holding the job finder's lock (one run at a time: LOCK). Waits up to $waitSeconds for another run to
+     * finish; returns [false, null] if it doesn't, without running $work.
+     *
+     * @template T
+     *
+     * @param  callable():T  $work
+     * @return array{0:bool, 1:T|null}
+     */
+    public static function exclusively(callable $work, int $waitSeconds = 0): array
+    {
+        $lock = Cache::lock(self::LOCK, self::LOCK_SECONDS);
+        $got = $waitSeconds > 0 ? self::waitFor($lock, $waitSeconds) : $lock->get();
+        if (! $got) {
+            return [false, null];
+        }
+        try {
+            return [true, $work()];
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private static function waitFor(Lock $lock, int $seconds): bool
+    {
+        try {
+            return (bool) $lock->block($seconds);
+        } catch (LockTimeoutException) {
+            return false;
+        }
+    }
+
+    /** @return array{linked:int, proposed:int, ai_checked:int, ai_rejected:int, considered:int, ai_left:int} */
+    private function search(?string $taxYear, bool $useAi, int $aiLimit): array
     {
         [$from, $to] = $this->window($taxYear);
         $this->clients = Client::query()->pluck('name', 'id')->filter()->all();
         $this->clientsLoaded = true;
-        $stats = ['linked' => 0, 'proposed' => 0, 'ai_checked' => 0, 'ai_rejected' => 0, 'considered' => 0];
+        $stats = ['linked' => 0, 'proposed' => 0, 'ai_checked' => 0, 'ai_rejected' => 0, 'considered' => 0, 'ai_left' => 0];
 
         $jobs = WorkJob::query()->with(['client', 'days'])->where('status', '!=', 'cancelled')
             ->whereDate('ends_on', '>=', $from->subDays(3)->format('Y-m-d'))->whereDate('starts_on', '<=', $to->addDays(3)->format('Y-m-d'))->get();
@@ -107,9 +185,11 @@ final class JobFinder
         // AI answers already given count in every run, including the quick one without AI: only new questions wait
         // for a run with AI.
         if (self::aiAllowed()) {
-            if ($useAi) {
-                $this->askAiAboutCalendar($signals, $stats);
+            if ($useAi && $aiLimit > 0) {
+                $this->askAiAboutCalendar($signals, $stats, $aiLimit);
             }
+            // Still to ask: no answer remembered yet (asked again next time, in this run's turn or the next run's).
+            $stats['ai_left'] = $this->toAsk($signals)->count();
             $signals = $this->applyAiVerdicts($signals);
         }
         $stats['considered'] = $signals->count();
@@ -175,8 +255,9 @@ final class JobFinder
             }
         });
 
-        Setting::put('job_finder_last_run', $stats + ['at' => now()->toIso8601String(), 'year' => $taxYear]);
-        AuditLog::record('jobs.finder_run', 'JobFinder', null, $stats, null, 'matcher');
+        $kept = array_diff_key($stats, ['ai_left' => true]);
+        Setting::put('job_finder_last_run', $kept + ['at' => now()->toIso8601String(), 'year' => $taxYear]);
+        AuditLog::record('jobs.finder_run', 'JobFinder', null, $kept, null, 'matcher');
 
         return $stats;
     }
@@ -1040,15 +1121,22 @@ final class JobFinder
 
     // ---------------------------------------------------------------- AI, double-checked
 
+    /** Calendar entries the rules can't call and the AI hasn't answered about yet, newest first. */
+    private function toAsk(Collection $signals): Collection
+    {
+        return $signals->filter(fn ($s) => $s['type'] === 'calendar' && $s['work'] >= 1 && $s['work'] <= 2)
+            ->reject(fn ($s) => Cache::has(self::verdictKey($s)))->sortByDesc('from');
+    }
+
     /** Ask about calendar entries the rules can't call. Answers are double-checked and remembered (see applyAiVerdicts). */
-    private function askAiAboutCalendar(Collection $signals, array &$stats): void
+    private function askAiAboutCalendar(Collection $signals, array &$stats, int $limit = self::AI_LIMIT): void
     {
         // Newest first, and only what hasn't been asked about: older answers are remembered.
-        $ask = $signals->filter(fn ($s) => $s['type'] === 'calendar' && $s['work'] >= 1 && $s['work'] <= 2)
-            ->reject(fn ($s) => Cache::has(self::verdictKey($s)))->sortByDesc('from')->take(120);
+        $ask = $this->toAsk($signals)->take($limit);
         if ($ask->isNotEmpty()) {
             try {
-                $result = $this->ai->send([
+                // Finding jobs is discovery: held to its share of the month's AI budget (and a cycle run's allowance).
+                $result = AiUsage::withPurpose('discovery', fn () => $this->ai->send([
                     'maxTokens' => 8000,
                     'system' => 'You help a UK freelancer who works on events and productions sort their calendar. For each entry say whether it is paid work '
                         .'(a job day, rehearsal, build, travel day for a job, site visit) or not (personal, admin, a call). Answer only from the entry\'s own words. '
@@ -1062,7 +1150,7 @@ final class JobFinder
                             'properties' => ['i' => ['type' => 'integer'], 'work' => ['type' => ['boolean', 'null']], 'quote' => ['type' => ['string', 'null']], 'client' => ['type' => ['string', 'null']]],
                         ]]],
                     ]]],
-                ]);
+                ]));
                 $answers = collect(json_decode($result->text(), true)['entries'] ?? [])->keyBy('i');
                 foreach ($ask->values() as $i => $s) {
                     $a = $answers[$i] ?? null;

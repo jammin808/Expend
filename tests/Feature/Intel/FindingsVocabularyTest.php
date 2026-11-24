@@ -4,6 +4,7 @@ namespace Tests\Feature\Intel;
 
 use App\Domain\Intel\Coverage;
 use App\Domain\Intel\Cycle\CycleContext;
+use App\Domain\Intel\Detectors\CycleStepFailing;
 use App\Domain\Intel\Detectors\HmrcUnallocated;
 use App\Domain\Intel\Detectors\Registry;
 use App\Domain\Intel\Detectors\TodoGroupsDetector;
@@ -111,8 +112,10 @@ class FindingsVocabularyTest extends TestCase
     {
         $registry = app(Registry::class);
         $this->assertSame(['todo', 'tax.hmrc_unallocated', 'travel.unclaimed', 'year.filed_drift', 'health', 'job.closeout', 'travel.double_claim', 'income.unlinked',
-            'receipt.unmatched', 'cost.no_receipt', 'dupe.cross_source', 'rule.drift', 'tax.saving', 'acct.unchecked', 'check.unverifiable', 'year.locked_drift'],
+            'receipt.unmatched', 'cost.no_receipt', 'dupe.cross_source', 'rule.drift', 'tax.saving', 'acct.unchecked', 'check.unverifiable', 'year.locked_drift',
+            'health.cycle_step'],
             array_map(fn ($d) => $d->code(), $registry->all()));
+        $this->assertInstanceOf(CycleStepFailing::class, $registry->forCode('health.cycle_step'), 'M5’s, registered by the integrator (contract 3)');
         $this->assertInstanceOf(TodoGroupsDetector::class, $registry->forCode('acct.gap'));
         $this->assertInstanceOf(HmrcUnallocated::class, $registry->forCode('tax.hmrc_unallocated'));
         $this->assertInstanceOf(TravelUnclaimed::class, $registry->forCode('travel.unclaimed'));
