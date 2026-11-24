@@ -276,4 +276,39 @@ class TaxLawCasesTest extends TestCase
         $this->assertArrayNotHasKey('url', TaxLaw::present(['id' => 'x', 'name' => 'A page'], 'guidance'));
         $this->assertArrayHasKey('url', TaxLaw::present(TaxLaw::find('hall-v-lorimer'), 'case'));
     }
+
+    public function test_a_citation_next_to_a_checked_case_must_be_the_library_s(): void
+    {
+        $answer = 'See Hamish Taylor v HMRC [2020] UKFTT 0416 (TC). Taylor v HMRC [2021] UKFTT 999 says otherwise. Hall v Lorimer [1994] 1 WLR 209 is the test. '
+            .'Mallalieu v Drummond [1985] 2 AC 861 has the wrong year. Caillebotte v Quinn (1975) 50 TC 222. Samadian v HMRC [2013] UKFTT 115 (TC) went up to the UT. '
+            .'Interfish v HMRC [2014] EWCA Civ 876, and Horton v Young with no citation. HMRC v Rogers and Shaw [2019] UKUT 406 (TCC). '
+            .'Hall v Lorimer and Ready Mixed Concrete [1968] 2 QB 497 both set out the tests.';
+
+        $this->assertSame([
+            'case Taylor v HMRC [2021] UKFTT 999 (the checked library cites this case differently: check the citation)',
+            'case Mallalieu v Drummond [1985] 2 AC 861 (the checked library cites this case differently: check the citation)',
+        ], Assistant::unknownCases($answer, []));
+    }
+
+    public function test_every_checked_case_matches_its_own_citation(): void
+    {
+        $checked = 0;
+        foreach (TaxLaw::data()['cases'] as $case) {
+            // Citations as people write them: a year, then court or report and numbers ("[2014] UKUT 13", "(1975) 50 TC 222").
+            if (! ($case['citable'] ?? false) || ! preg_match('/^([\[(]\d{4}[\])](?: [A-Z][A-Za-z]*)* \d+(?: (?:\d+|[A-Z][A-Za-z]*))*?)(?=[ ;(]|$)/', (string) ($case['citation'] ?? ''), $m)) {
+                continue;
+            }
+            $name = preg_split('/;\s*/', $case['name'])[0];
+            if (str_contains($name, ',')) {
+                continue; // "Watkis v Ashford, Sparkes and Harward": a citation after a comma list isn't read as this case's.
+            }
+            $mentions = TaxLaw::casesNamedIn($name.' '.$m[1].'.');
+            $this->assertNotEmpty($mentions, $case['id']);
+            $mention = $mentions[0];
+            $this->assertArrayHasKey('citation', $mention, $case['id']);
+            $this->assertTrue(TaxLaw::citationMatches($mention['first'], $mention['second'], $mention['citation']), $case['id'].': '.$mention['citation']);
+            $checked++;
+        }
+        $this->assertGreaterThan(40, $checked);
+    }
 }

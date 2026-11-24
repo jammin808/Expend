@@ -225,6 +225,10 @@ final class Assistant
             }
             $known = TaxLaw::matchCase($mention['first'], $mention['second']);
             if ($known === true) {
+                if (isset($mention['citation']) && TaxLaw::citationMatches($mention['first'], $mention['second'], $mention['citation']) === false) {
+                    $out[] = 'case '.$mention['text'].' '.$mention['citation'].' (the checked library cites this case differently: check the citation)';
+                }
+
                 continue;
             }
             if ($known === false) {

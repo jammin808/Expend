@@ -359,13 +359,13 @@ final class TaxLaw
             }
             foreach ($names as $name) {
                 if (preg_match('/^(.*?)\s+v\.?\s+(.*)$/u', trim($name), $m)) {
-                    $index[] = [$citable, self::librarySide($m[1]), self::librarySide($m[2])];
+                    $index[] = [$citable, self::librarySide($m[1]), self::librarySide($m[2]), (string) ($c['citation'] ?? '')];
                 }
             }
             foreach ($c['aliases'] ?? [] as $alias) {
                 if (preg_match('/^(.*?)\s+v\.?\s+(.*)$/u', trim((string) $alias), $m)) {
                     $index[] = [$citable, ['words' => self::partyWords($m[1]), 'ids' => [], 'exact' => true],
-                        ['words' => self::partyWords($m[2]), 'ids' => [], 'exact' => true]];
+                        ['words' => self::partyWords($m[2]), 'ids' => [], 'exact' => true], (string) ($c['citation'] ?? '')];
                 }
             }
         }
@@ -430,11 +430,72 @@ final class TaxLaw
     }
 
     /**
+     * Whether a citation written next to a case name ("[2020] UKFTT 416", "[1994] 1 WLR 209", "(1975) 50 TC 222") fits
+     * the library's citations for that case: the year and every number must appear in one of them (leading zeros
+     * ignored, and an appeal or report citation in the library counts). Null when the case isn't in the library or the
+     * citation can't be read. It catches an invented case borrowing a real party's name, such as "Taylor v HMRC [2021]
+     * UKFTT 999" for Hamish Taylor v HMRC [2020] UKFTT 416.
+     *
+     * @param  list<string>  $first
+     * @param  list<string>  $second
+     */
+    public static function citationMatches(array $first, array $second, string $citation): ?bool
+    {
+        $year = preg_match('/^[\[(](\d{4})[\])]/', trim($citation), $y) ? $y[1] : null;
+        $numbers = self::citationNumbers((string) preg_replace('/^[\[(]\d{4}[\])]/', '', trim($citation)));
+        if (! $year || ! $numbers) {
+            return null;
+        }
+        $first = self::partyWords(implode(' ', $first));
+        $second = self::partyWords(implode(' ', $second));
+        $seen = false;
+        foreach (self::caseIndex() as [, $a, $b, $libraryCitation]) {
+            if (! ((self::sideMatches($first, $a) && self::sideMatches($second, $b)) || (self::sideMatches($first, $b) && self::sideMatches($second, $a)))) {
+                continue;
+            }
+            if ($libraryCitation === '') {
+                continue;
+            }
+            $seen = true;
+            foreach (preg_split('/;\s*|\(on appeal from |\(reversing |restoring |\(first instance |first instance /u', $libraryCitation) ?: [] as $one) {
+                preg_match_all('/[\[(](\d{4})[\])]/', $one, $years);
+                if (in_array($year, $years[1], true) && ! array_diff($numbers, self::citationNumbers((string) preg_replace('/[\[(]\d{4}[\])]/', '', $one)))) {
+                    return true;
+                }
+            }
+        }
+
+        if (! $seen) {
+            return null;
+        }
+        // A citation that is another checked case's ("Hall v Lorimer and Ready Mixed Concrete [1968] 2 QB 497") may
+        // belong to that one: only a citation no case in the library has is flagged.
+        foreach (self::data()['cases'] ?? [] as $c) {
+            foreach (preg_split('/;\s*|\(on appeal from |\(reversing |restoring |\(first instance |first instance /u', (string) ($c['citation'] ?? '')) ?: [] as $one) {
+                preg_match_all('/[\[(](\d{4})[\])]/', $one, $years);
+                if (in_array($year, $years[1], true) && ! array_diff($numbers, self::citationNumbers((string) preg_replace('/[\[(]\d{4}[\])]/', '', $one)))) {
+                    return null;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** @return list<string> the numbers in a citation, without leading zeros */
+    private static function citationNumbers(string $citation): array
+    {
+        preg_match_all('/(?<![\p{L}\d])\d+(?!\d)/u', $citation, $m);
+
+        return array_values(array_unique(array_map(fn ($n) => ltrim($n, '0') === '' ? '0' : ltrim($n, '0'), $m[0])));
+    }
+
+    /**
      * Case names written in a piece of text ("Mallalieu v Drummond", "HMRC v Healy", "R v Dimsey"), including the
      * formal styles: "Hall (HM Inspector of Taxes) v Lorimer", "R (on the application of Smith) v HMRC" (Smith v
      * HMRC), "Smith Ltd. v HMRC", "Jones vs HMRC" and **Smith** v **Jones**.
      *
-     * @return list<array{text:string, first:list<string>, second:list<string>}>
+     * @return list<array{text:string, first:list<string>, second:list<string>, citation?:string}>
      */
     public static function casesNamedIn(string $text): array
     {
@@ -445,9 +506,16 @@ final class TaxLaw
         $word = '(?:\p{Lu}[\p{L}\'\-&]*|&)';
         $firstSide = $word.'(?: (?:of (?:the )?|and )?(?:'.$word.'|\p{N}+)){0,5}';
         $secondSide = $word.'(?: (?:of (?:the )?|for )?'.$word.'){0,5}';
-        preg_match_all('/(?<![\p{L}\p{N}\'\-])('.$firstSide.') vs?\.? ('.$secondSide.')/u', $text, $m, PREG_SET_ORDER);
+        preg_match_all('/(?<![\p{L}\p{N}\'\-])('.$firstSide.') vs?\.? ('.$secondSide.')/u', $text, $m, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
         $out = [];
         foreach ($m as $hit) {
+            // A citation straight after the name: "[2020] UKFTT 416", "[1994] 1 WLR 209", "(1975) 50 TC 222".
+            $after = substr($text, $hit[0][1] + strlen($hit[0][0]), 80);
+            // The name may run on first: "Rogers and Shaw", "Tower MCashback LLP 1", "(with Eilbeck v Rawling)".
+            $runOn = '(?: (?:and|&) (?:\p{Lu}[\p{L}\'\-]*\.?|\p{N}+)(?: (?:\p{Lu}[\p{L}\'\-]*\.?|\p{N}+))*| \p{N}+)?(?: \([^()]{0,60}\))?';
+            $citation = preg_match('/^'.$runOn.',? ?([\[(]\d{4}[\])](?: (?:\d+|\p{Lu}[\p{L}]*\.?)){1,4})/u', $after, $cm) && preg_match('/\d+$|\d+ \p{Lu}/u', substr($cm[1], 6))
+                ? (string) preg_replace('/(?: \p{Lu}[\p{L}]*\.?)+$/u', '', $cm[1]) : null;
+            $hit = [$hit[0][0], $hit[1][0], $hit[2][0]];
             $a = self::trimParty($hit[1], true);
             $b = self::trimParty($hit[2], false);
             $first = self::partyWords($a);
@@ -463,7 +531,7 @@ final class TaxLaw
             if (! $first || ! $second || (! self::isCrown($a) && ! self::isCrown($b) && (self::isOption($a, $first) || self::isOption($b, $second)))) {
                 continue;
             }
-            $out[] = ['text' => $a.' v '.$b, 'first' => $first, 'second' => $second];
+            $out[] = ['text' => $a.' v '.$b, 'first' => $first, 'second' => $second] + ($citation ? ['citation' => $citation] : []);
         }
 
         return $out;
@@ -512,7 +580,8 @@ final class TaxLaw
         $text = (string) preg_replace('/,? (?:and|&) (?:others|another|ors|anor)\b\.?/iu', '', $text);
         // Short brackets that aren't a case name: (Inspector of Taxes), (HMIT), (South East), (No 2). Inner ones first.
         for ($i = 0; $i < 3; $i++) {
-            $text = (string) preg_replace('/ ?\((?![^()]* vs?\.? )[^()]{1,60}\)/u', '', $text);
+            // A year in round brackets starts a citation ("(1975) 50 TC 222"), so it stays.
+            $text = (string) preg_replace('/ ?\((?![^()]* vs?\.? )(?!\d{4}\))[^()]{1,60}\)/u', '', $text);
         }
 
         // "Smith Ltd. v HMRC", "Strong & Co. of Romsey Ltd".
