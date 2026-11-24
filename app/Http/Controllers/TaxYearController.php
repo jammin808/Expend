@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Export\YearExporter;
 use App\Domain\Tax\BillPreview;
+use App\Domain\Tax\PenaltyEstimator;
 use App\Domain\Tax\ReturnSummary;
 use App\Domain\Tax\TaxEstimator;
 use App\Domain\Tax\TaxParameters;
@@ -36,7 +37,25 @@ class TaxYearController extends Controller
                 'has_rates' => TaxParameters::has($y->label),
             ]),
             'statuses' => TaxYear::STATUSES,
+            'penalties' => self::penalties(),
         ]);
+    }
+
+    /** Fines and interest across all years, for the list page. */
+    private static function penalties(): ?array
+    {
+        try {
+            $all = PenaltyEstimator::all();
+        } catch (\Throwable $e) {
+            report($e);
+
+            return null;
+        }
+
+        return ['totals' => $all['totals'], 'as_of' => $all['as_of'], 'years' => collect($all['years'])->map(fn ($y) => [
+            'tax_year' => $y['tax_year'], 'penalties_pence' => $y['penalties_pence'], 'interest_pence' => $y['interest_pence'], 'upcoming_pence' => $y['upcoming_pence'],
+            'unpaid_pence' => $y['unpaid_pence'], 'next' => $y['upcoming'][0] ?? null,
+        ])->filter(fn ($y) => $y['penalties_pence'] || $y['interest_pence'] || $y['upcoming_pence'] || $y['unpaid_pence'])->values()];
     }
 
     public function store(Request $request): RedirectResponse
@@ -61,6 +80,7 @@ class TaxYearController extends Controller
             'filed_on' => 'nullable|date', 'hmrc_reference' => 'nullable|string|max:60',
             'filed_turnover' => 'nullable|string', 'filed_expenses' => 'nullable|string', 'filed_profit' => 'nullable|string',
             'payments_on_account_paid' => 'nullable|string', 'notes' => 'nullable|string|max:2000',
+            'payment_plan_from' => 'nullable|date',
         ]);
 
         if ($year->isLocked() && collect(['filed_turnover', 'filed_expenses', 'filed_profit', 'payments_on_account_paid'])->contains(fn ($f) => $request->has($f))) {
@@ -74,6 +94,9 @@ class TaxYearController extends Controller
             'hmrc_reference' => $data['hmrc_reference'] ?? null,
             'notes' => $data['notes'] ?? null,
         ], fn ($v) => $v !== null));
+        if ($request->has('payment_plan_from')) {
+            $year->payment_plan_from = $data['payment_plan_from'] ?? null;
+        }
         foreach (['filed_turnover', 'filed_expenses', 'filed_profit', 'payments_on_account_paid'] as $field) {
             if ($request->has($field)) {
                 $year->{$field.'_pence'} = Money::parse($data[$field] ?? null) ?? ($field === 'payments_on_account_paid' ? 0 : null);
@@ -140,6 +163,7 @@ class TaxYearController extends Controller
             'bill' => BillPreview::for($label, $estimate),
             'checks' => YearChecks::checks($label, $summary),
             'lookups' => Present::lookups(),
+            'penalties' => rescue(fn () => PenaltyEstimator::forYear($label), null),
         ]);
     }
 

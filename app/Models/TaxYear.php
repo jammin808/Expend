@@ -21,7 +21,7 @@ class TaxYear extends Model
     protected $casts = [
         'starts_on' => 'date', 'ends_on' => 'date', 'filed_on' => 'date', 'locked_at' => 'datetime',
         'filed_turnover_pence' => 'integer', 'filed_expenses_pence' => 'integer', 'filed_profit_pence' => 'integer',
-        'payments_on_account_paid_pence' => 'integer',
+        'payments_on_account_paid_pence' => 'integer', 'payment_plan_from' => 'date',
     ];
 
     public static function track(string $label, string $status = 'outstanding'): self

@@ -8,6 +8,7 @@ use App\Domain\Matching\OwnAccounts;
 use App\Domain\Tax\BillPreview;
 use App\Domain\Tax\Explainer;
 use App\Domain\Tax\MileageCalculator;
+use App\Domain\Tax\PenaltyEstimator;
 use App\Domain\Tax\ReturnSummary;
 use App\Domain\Tax\TaxEstimator;
 use App\Domain\Tax\TaxGuide;
@@ -72,6 +73,9 @@ final class AssistantTools
             ['name' => 'tax_guide', 'description' => 'The UK tax guide (GOV.UK and HMRC manuals, with source links): what an expense category is and whether it is allowable, rules on topics such as travel, mileage, use of home, capital allowances, payments on account, pensions and VAT, and legal ways to reduce tax. Use it for any tax rule; cite its sources.',
                 'inputSchema' => $obj(['category_code' => $str + ['description' => 'e.g. travel_accommodation, equipment, use_of_home'], 'topic' => ['type' => 'string', 'enum' => array_keys(TaxGuide::topicTitles())],
                     'query' => $str + ['description' => 'Words to search the guide for'], 'ways_to_reduce_tax' => ['type' => 'boolean']])],
+            ['name' => 'penalties', 'description' => 'Fines and interest HMRC charges or will charge: late filing penalties (£100, daily £10, 6- and 12-month), late payment penalties, and late payment interest, per tax year, from the filing dates and HMRC payments in the records. Each item has its date, amount, status (due, accruing, upcoming), the rule and a source link. Answers "what if" questions: pass file_on and/or pay_all_on (YYYY-MM-DD) to see the effect of filing or paying on a date, plan_from for a payment plan. It is an estimate: say so, and that HMRC\'s statement is the final word.',
+                'inputSchema' => $obj(['tax_year' => $str + ['description' => 'e.g. 2024-25; omit for every year'], 'file_on' => $str + ['description' => 'what if the return is filed on this date (YYYY-MM-DD)'],
+                    'pay_all_on' => $str + ['description' => 'what if everything owed is paid on this date'], 'plan_from' => $str + ['description' => 'what if a payment plan is agreed from this date']])],
             ['name' => 'explain_payment', 'description' => 'What one bank transaction is, how it has been treated, whether it is normally allowable and on what conditions, the evidence to keep, and notes from its context (jobs that day, bookings, vehicle mileage method).',
                 'inputSchema' => $obj(['transaction_id' => $int], ['transaction_id'])],
             ['name' => 'propose_decision', 'description' => 'Suggest what one transaction is. It is saved as an unconfirmed AI suggestion for the owner to accept or change in the Inbox. Cannot change anything the owner has decided.',
@@ -95,6 +99,7 @@ final class AssistantTools
             'merchant_breakdown' => $this->merchants($input),
             'tax_rules' => $this->rules($input['tax_year'] ?? ''),
             'tax_guide' => $this->taxGuide($input),
+            'penalties' => $this->penalties($input),
             'explain_payment' => ($t = BankTransaction::query()->with('account')->find((int) ($input['transaction_id'] ?? 0))) ? Explainer::payment($t) : ['error' => 'No such transaction'],
             'propose_decision' => $this->propose($input),
             default => ['error' => "Unknown tool {$name}"],
@@ -383,5 +388,34 @@ final class AssistantTools
         return $saved
             ? ['ok' => true, 'note' => 'Saved as an unconfirmed AI suggestion; the owner confirms or changes it in the Inbox.']
             : ['ok' => false, 'note' => 'Not changed: the owner has already decided or confirmed this transaction.'];
+    }
+
+    private function penalties(array $in): array
+    {
+        $date = fn ($v) => is_string($v) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) ? $v : null;
+        $label = ! empty($in['tax_year']) ? UkTaxYear::fromLabel((string) $in['tax_year'])->label() : null;
+        $whatIf = array_filter([
+            'filed_on' => $label && $date($in['file_on'] ?? null) ? [$label => $in['file_on']] : null,
+            'pay_all_on' => $date($in['pay_all_on'] ?? null),
+            'plan_from' => $date($in['plan_from'] ?? null),
+        ]);
+        $all = PenaltyEstimator::all(null, $whatIf);
+        $years = $label ? array_values(array_filter($all['years'], fn ($y) => $y['tax_year'] === $label)) : $all['years'];
+        $money = fn (int $p) => self::money($p);
+
+        return [
+            'as_of' => $all['as_of'], 'what_if' => $whatIf ?: null, 'estimate' => true,
+            'interest_rate_now_pct' => PenaltyEstimator::currentRate(),
+            'totals' => array_map($money, $all['totals']),
+            'years' => array_map(fn ($y) => [
+                'tax_year' => $y['tax_year'], 'rules' => $y['regime_text'], 'return_due' => $y['deadline'], 'filed' => $y['filed'], 'filed_on' => $y['filed_on'],
+                'tax_for_year' => $money($y['liability_pence']), 'tax_based_on' => $y['basis'], 'unpaid' => $money($y['unpaid_pence']),
+                'already_due' => array_map(fn ($p) => ['date' => $p['date'], 'what' => $p['label'], 'amount' => $money($p['amount_pence']), 'status' => $p['status'], 'why' => $p['why'], 'source' => $p['source']], $y['penalties']),
+                'coming_if_nothing_changes' => array_map(fn ($p) => ['date' => $p['date'], 'what' => $p['label'], 'amount' => $money($p['amount_pence']), 'why' => $p['why'], 'source' => $p['source']], $y['upcoming']),
+                'interest_so_far' => $money($y['interest_pence']), 'interest_per_day' => $money($y['per_day_pence']),
+                'what_to_do' => $y['actions'], 'assumptions' => $y['assumptions'],
+            ], $years),
+            'help' => PenaltyEstimator::rules()['mitigation'],
+        ];
     }
 }

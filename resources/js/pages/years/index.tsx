@@ -81,7 +81,28 @@ function YearEditor({ year, statuses }: { year: YearRow; statuses: Record<string
     );
 }
 
-export default function YearsIndex({ years, statuses }: { years: YearRow[]; statuses: Record<string, string> }) {
+interface PenaltySummary {
+    totals: { penalties_pence: number; interest_pence: number; upcoming_pence: number; per_day_pence: number; unpaid_pence: number };
+    as_of: string;
+    years: {
+        tax_year: string;
+        penalties_pence: number;
+        interest_pence: number;
+        upcoming_pence: number;
+        unpaid_pence: number;
+        next: { date: string; label: string; amount_pence: number } | null;
+    }[];
+}
+
+export default function YearsIndex({
+    years,
+    statuses,
+    penalties,
+}: {
+    years: YearRow[];
+    statuses: Record<string, string>;
+    penalties: PenaltySummary | null;
+}) {
     const [label, setLabel] = useState('');
     const [open, setOpen] = useState<string | null>(null);
 
@@ -114,6 +135,45 @@ export default function YearsIndex({ years, statuses }: { years: YearRow[]; stat
                         <Button variant="outline">Add year</Button>
                     </form>
                 </div>
+                {penalties && penalties.years.length > 0 && (
+                    <section
+                        className="rounded-xl border border-rose-300 bg-rose-50/50 p-4 text-sm dark:border-rose-900 dark:bg-rose-950/20"
+                        aria-label="Fines and interest"
+                    >
+                        <p className="font-semibold">
+                            Fines and interest: {money(penalties.totals.penalties_pence + penalties.totals.interest_pence, 'GBP', { signed: false })}{' '}
+                            so far
+                            {penalties.totals.upcoming_pence > 0
+                                ? `, ${money(penalties.totals.upcoming_pence, 'GBP', { signed: false })} more coming if nothing changes`
+                                : ''}
+                        </p>
+                        <p className="text-muted-foreground text-xs">
+                            An estimate from your records, as of {day(penalties.as_of)}
+                            {penalties.totals.per_day_pence > 0
+                                ? `. Interest is adding about ${money(penalties.totals.per_day_pence, 'GBP', { signed: false })} a day on ${money(penalties.totals.unpaid_pence, 'GBP', { signed: false })} unpaid tax.`
+                                : '.'}
+                        </p>
+                        <ul className="mt-2 divide-y">
+                            {penalties.years.map((p) => (
+                                <li key={p.tax_year} className="flex flex-wrap items-baseline gap-x-3 py-1.5">
+                                    <Link href={`/years/${p.tax_year}`} className="w-16 font-medium hover:underline">
+                                        {p.tax_year}
+                                    </Link>
+                                    <span className="min-w-0 flex-1">
+                                        {money(p.penalties_pence, 'GBP', { signed: false })} penalties,{' '}
+                                        {money(p.interest_pence, 'GBP', { signed: false })} interest
+                                        {p.next && (
+                                            <span className="text-muted-foreground block text-xs">
+                                                Next: {p.next.label} on {day(p.next.date)} ({money(p.next.amount_pence, 'GBP', { signed: false })})
+                                            </span>
+                                        )}
+                                    </span>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
+
                 <div className="space-y-3">
                     {years.map((y) => (
                         <div key={y.label} className="rounded-xl border">
