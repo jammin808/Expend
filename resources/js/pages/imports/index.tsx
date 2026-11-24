@@ -42,6 +42,19 @@ interface Preview {
     balance?: { status: string; notes: string | null };
     first?: string | null;
     last?: string | null;
+    pockets?: {
+        label: string;
+        currency: string;
+        name: string;
+        exists: boolean;
+        new: number;
+        duplicates: number;
+        balance: string;
+        first: string | null;
+        last: string | null;
+    }[];
+    skipped?: Record<string, number>;
+    exchanges?: number;
     sample?: {
         date: string;
         description: string;
@@ -78,6 +91,8 @@ const presetNames: Record<string, string> = {
     starling: 'Starling',
     amex: 'American Express',
     capital_one: 'Capital One',
+    revolut_personal: 'Revolut (personal)',
+    revolut_business: 'Revolut Business',
     custom: 'Your column choices',
 };
 
@@ -257,6 +272,52 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                             </p>
                         )}
 
+                        {preview.pockets && preview.pockets.length > 0 && (
+                            <div className="space-y-2 rounded-lg border p-3 text-sm">
+                                <p className="font-medium">Each currency goes into its own account, checked against its own balance</p>
+                                <ul className="divide-y">
+                                    {preview.pockets.map((p) => (
+                                        <li key={p.label} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5">
+                                            <span className="w-14 font-mono text-xs">{p.currency}</span>
+                                            <span className="min-w-0 flex-1">
+                                                {p.name}
+                                                {!p.exists && <span className="text-muted-foreground"> (new)</span>}
+                                            </span>
+                                            <span className="text-muted-foreground text-xs">
+                                                {p.new} new{p.duplicates ? `, ${p.duplicates} already in` : ''}
+                                                {p.first ? ` · ${day(p.first)} – ${day(p.last)}` : ''}
+                                            </span>
+                                            <span
+                                                className={cn(
+                                                    'text-xs',
+                                                    p.balance === 'passed' && 'text-emerald-700 dark:text-emerald-300',
+                                                    p.balance === 'failed' && 'text-rose-700 dark:text-rose-300',
+                                                )}
+                                            >
+                                                {p.balance === 'passed'
+                                                    ? 'balance adds up'
+                                                    : p.balance === 'failed'
+                                                      ? 'balance doesn’t add up'
+                                                      : 'no balance to check'}
+                                            </span>
+                                        </li>
+                                    ))}
+                                </ul>
+                                <p className="text-muted-foreground text-xs">
+                                    Lines in other currencies count in pounds at the pounds they were bought with, the bank’s sterling figure, or
+                                    HMRC’s monthly rate.
+                                    {preview.exchanges
+                                        ? ` ${preview.exchanges} currency ${preview.exchanges === 1 ? 'exchange is' : 'exchanges are'} paired as transfers.`
+                                        : ''}
+                                    {preview.skipped && Object.keys(preview.skipped).length > 0
+                                        ? ` Skipped (not completed): ${Object.entries(preview.skipped)
+                                              .map(([k, v]) => `${v} ${k.toLowerCase()}`)
+                                              .join(', ')}.`
+                                        : ''}
+                                </p>
+                            </div>
+                        )}
+
                         {preview.errors && preview.errors.length > 0 && (
                             <div className="rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950/30 dark:text-rose-200">
                                 <p className="font-medium">{preview.error_count} rows can't be read yet. Adjust the columns below.</p>
@@ -268,7 +329,7 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                             </div>
                         )}
 
-                        {profile && (
+                        {profile && !String(preview.profile.preset).startsWith('revolut') && (
                             <details
                                 open={!preview.ok || (preview.errors?.length ?? 0) > 0 || preview.profile.preset === 'custom'}
                                 className="rounded-lg border p-4"

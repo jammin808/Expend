@@ -17,6 +17,8 @@ interface AccountRow {
     is_active: boolean;
     transactions: number;
     preset: string | null;
+    currency: string | null;
+    parent: string | null;
     reconcile: {
         method: 'running_balance' | 'statement_balances' | 'none';
         checked_to: string | null;
@@ -48,7 +50,7 @@ function Reconcile({ a }: { a: AccountRow }) {
                 {r.text}
                 {ok && r.balance_pence !== null && (
                     <span className="text-muted-foreground">
-                        {a.kind === 'credit_card' ? 'Owed' : 'Balance'} {money(r.balance_pence, 'GBP', { signed: false })}
+                        {a.kind === 'credit_card' ? 'Owed' : 'Balance'} {money(r.balance_pence, a.currency ?? 'GBP', { signed: false })}
                     </span>
                 )}
                 {r.stale && r.last_line && <span className="text-amber-700 dark:text-amber-300">Nothing imported since {day(r.last_line)}.</span>}
@@ -147,7 +149,7 @@ export default function Accounts({ accounts }: { accounts: AccountRow[] }) {
                             <span>
                                 <span className="font-medium">{a.name}</span>
                                 <span className="text-muted-foreground block text-sm">
-                                    {a.kind === 'bank' ? 'Bank account' : 'Credit card'}
+                                    {a.parent ? `${a.currency} pocket of ${a.parent}` : a.kind === 'bank' ? 'Bank account' : 'Credit card'}
                                     {a.last4 ? ` ending ${a.last4}` : ''} · {a.transactions.toLocaleString()} transactions
                                     {a.preset ? ` · import format saved (${a.preset})` : ''}
                                 </span>

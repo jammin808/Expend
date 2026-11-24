@@ -6,6 +6,7 @@ use App\Domain\Import\CsvReader;
 use App\Domain\Import\Importer;
 use App\Domain\Import\ImportProfile;
 use App\Domain\Import\ProfileDetector;
+use App\Domain\Import\RevolutImport;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\ImportBatch;
@@ -25,7 +26,29 @@ class ImportController extends Controller
         $pending = $request->session()->get('import');
         $preview = null;
 
-        if ($pending && is_file($pending['path'])) {
+        if ($pending && is_file($pending['path']) && ($pending['revolut'] ?? null)) {
+            $account = Account::query()->find($pending['account_id']);
+            try {
+                $read = app(RevolutImport::class)->read($account, $pending['path']);
+                $all = collect($read['pockets'])->flatMap(fn ($p) => $p['rows']);
+                $dates = $all->map(fn ($r) => $r->effectiveDate()->format('Y-m-d'))->sort()->values();
+                $failed = collect($read['pockets'])->first(fn ($p) => $p['balance']['status'] === 'failed');
+                $preview = ['ok' => true, 'new' => collect($read['pockets'])->sum('new'), 'duplicates' => collect($read['pockets'])->sum('duplicates'),
+                    'errors' => array_slice($read['errors'], 0, 20), 'error_count' => count($read['errors']), 'rows' => $all->count(),
+                    'balance' => $failed ? ['status' => 'failed', 'notes' => $failed['label'].': '.$failed['balance']['notes']]
+                        : (collect($read['pockets'])->every(fn ($p) => $p['balance']['status'] === 'passed') ? ['status' => 'passed', 'notes' => 'Each currency’s running balance adds up'] : ['status' => 'not_available', 'notes' => null]),
+                    'first' => $dates->first(), 'last' => $dates->last(),
+                    'pockets' => collect($read['pockets'])->map(fn ($p) => ['label' => $p['label'], 'currency' => $p['currency'], 'name' => $p['name'], 'exists' => (bool) $p['account'],
+                        'new' => $p['new'], 'duplicates' => $p['duplicates'], 'balance' => $p['balance']['status'], 'first' => $p['first'], 'last' => $p['last']])->values(),
+                    'skipped' => $read['skipped'], 'exchanges' => $read['exchanges'],
+                    'sample' => $all->take(12)->map(fn ($r) => ['date' => $r->effectiveDate()->format('Y-m-d'), 'description' => $r->description, 'amount_pence' => $r->amountPence,
+                        'balance_pence' => $r->statementBalance(), 'currency' => $r->originalCurrency, 'original_minor' => $r->originalAmountMinor, 'duplicate' => false])->values()];
+            } catch (Throwable $e) {
+                $preview = ['ok' => false, 'message' => $e->getMessage()];
+            }
+            $preview += ['filename' => $pending['filename'], 'account' => $account->only(['id', 'name', 'kind']), 'headers' => CsvReader::read($pending['path'])['headers'],
+                'profile' => ['preset' => 'revolut_'.$pending['revolut']]];
+        } elseif ($pending && is_file($pending['path'])) {
             $account = Account::query()->find($pending['account_id']);
             $headers = CsvReader::read($pending['path'])['headers'];
             $profile = ImportProfile::fromArray($pending['profile']);
@@ -78,9 +101,14 @@ class ImportController extends Controller
             $path = $dir.'/'.Str::uuid().'.csv';
             $request->file('file')->move($dir, basename($path));
             $headers = CsvReader::read($path)['headers'];
-            $saved = $account->import_profile ? ImportProfile::fromArray($account->import_profile) : null;
-            $profile = $saved && ! $saved->problems($headers) ? $saved : ProfileDetector::detect($headers, $account->kind);
-            $pending = ['path' => $path, 'filename' => $request->file('file')->getClientOriginalName(), 'account_id' => $account->id, 'profile' => $profile->toArray()];
+            if ($revolut = RevolutImport::detect($headers)) {
+                // Revolut files can hold several currencies; each goes into its own pocket of this account.
+                $pending = ['path' => $path, 'filename' => $request->file('file')->getClientOriginalName(), 'account_id' => $account->id, 'revolut' => $revolut, 'profile' => null];
+            } else {
+                $saved = $account->import_profile && isset($account->import_profile['dateColumn']) ? ImportProfile::fromArray($account->import_profile) : null;
+                $profile = $saved && ! $saved->problems($headers) ? $saved : ProfileDetector::detect($headers, $account->kind);
+                $pending = ['path' => $path, 'filename' => $request->file('file')->getClientOriginalName(), 'account_id' => $account->id, 'profile' => $profile->toArray()];
+            }
         } elseif ($pending) {
             $pending['account_id'] = $account->id;
             if (! empty($data['profile'])) {
@@ -100,6 +128,21 @@ class ImportController extends Controller
         $pending = $request->session()->get('import');
         if (! $pending || ! is_file($pending['path'])) {
             return to_route('imports.index')->with('error', 'Upload the file again.');
+        }
+
+        if ($pending['revolut'] ?? null) {
+            try {
+                $batches = app(RevolutImport::class)->commit(Account::query()->findOrFail($pending['account_id']), $pending['path'], $pending['filename']);
+            } catch (Throwable $e) {
+                return to_route('imports.index')->with('error', $e->getMessage());
+            }
+            @unlink($pending['path']);
+            $request->session()->forget('import');
+            $held = collect($batches)->where('status', 'quarantined');
+            $parts = collect($batches)->where('status', '!=', 'quarantined')->map(fn ($b) => $b->imported_count.' into '.$b->account->name)->implode(', ');
+
+            return to_route('imports.index')->with($held->isNotEmpty() ? 'error' : 'success', ($parts ? "Imported {$parts}." : 'Nothing new.')
+                .($held->isNotEmpty() ? ' Held for review: '.$held->map(fn ($b) => $b->account->name)->implode(', ').' (the running balance doesn’t add up).' : ''));
         }
 
         try {

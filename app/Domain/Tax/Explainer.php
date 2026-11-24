@@ -44,6 +44,18 @@ final class Explainer
                     .($allocs->count() > 1 ? ' ('.Money::format(abs($a->amount_pence)).')' : ''))->implode('; ').'.',
         };
 
+        // Another currency: how its sterling amount was worked out.
+        if ($isBank && $item->original_currency && $item->original_currency !== 'GBP' && $item->original_amount_minor) {
+            $paid = Money::format(abs($item->original_amount_minor), $item->original_currency, false);
+            $rate = $item->fx_units_per_gbp ? rtrim(rtrim((string) $item->fx_units_per_gbp, '0'), '.') : null;
+            $notes[] = 'Paid '.$paid.'; it counts as '.Money::format(abs($amount)).' for tax, '.match ($item->fx_source) {
+                'exchange' => 'the pounds the currency was bought with in the exchange it came from',
+                'hmrc_monthly' => 'at HMRC’s monthly rate for '.($item->fx_rate_date?->format('F Y') ?? 'that month').($rate ? " ({$rate} per £1)" : ''),
+                'manual' => 'at the rate you set'.($rate ? " ({$rate} per £1)" : ''),
+                default => 'the sterling amount the bank charged'.($rate ? " ({$rate} per £1)" : ''),
+            }.'. HMRC accepts a bank’s rate or its own published rates, used consistently.';
+        }
+
         // Context from your own records.
         $jobs = WorkJob::query()->where('status', '!=', 'cancelled')->whereDate('starts_on', '<=', CarbonImmutable::parse($date)->addDay()->format('Y-m-d'))
             ->whereDate('ends_on', '>=', CarbonImmutable::parse($date)->subDay()->format('Y-m-d'))->get();

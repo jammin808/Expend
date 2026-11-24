@@ -3,11 +3,12 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Account extends Model
 {
-    protected $fillable = ['name', 'kind', 'provider', 'currency', 'last4', 'import_profile', 'is_active'];
+    protected $fillable = ['name', 'kind', 'provider', 'currency', 'last4', 'import_profile', 'is_active', 'parent_account_id'];
 
     protected $casts = ['import_profile' => 'array', 'is_active' => 'boolean'];
 
@@ -19,6 +20,17 @@ class Account extends Model
     public function batches(): HasMany
     {
         return $this->hasMany(ImportBatch::class);
+    }
+
+    /** A currency pocket's main account (Revolut EUR → Revolut). */
+    public function parent(): BelongsTo
+    {
+        return $this->belongsTo(Account::class, 'parent_account_id');
+    }
+
+    public function isForeign(): bool
+    {
+        return $this->currency && strtoupper($this->currency) !== 'GBP';
     }
 
     public function isCard(): bool

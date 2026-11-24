@@ -1,0 +1,7 @@
+Date started (UTC),Date completed (UTC),ID,Type,State,Description,Reference,Payer,Card number,Card label,Card state,Orig currency,Orig amount,Payment currency,Amount,Total amount,Exchange rate,Fee,Fee currency,Balance,Account,Beneficiary account number,Beneficiary sort code or routing number,Beneficiary IBAN,Beneficiary BIC,MCC,Related transaction id,Spend program
+2026-03-10,2026-03-11,e5,CARD_PAYMENT,COMPLETED,B&H Photo,,A Smith,516761******7331,Main card,ACTIVE,USD,90.00,EUR,-76.64,-76.64,1.174336,0.00,EUR,13923.36,EUR Main,,,,,5732,,
+2026-03-09,2026-03-09,e4,EXCHANGE,COMPLETED,Main · GBP → Main · EUR,,A Smith,,,,GBP,-12239.55,EUR,14000.00,14000.00,0.874254,0.00,EUR,14000.00,EUR Main,,,,,,,
+2026-03-09,2026-03-09,e4,EXCHANGE,COMPLETED,Main · GBP → Main · EUR,,A Smith,,,,EUR,14000.00,GBP,-12239.55,-12239.55,1.143834,0.00,GBP,24531.91,GBP Main,,,,,,,
+2026-03-08,2026-03-08,e3,TOPUP,COMPLETED,Money added from ACME EVENTS LTD,INV-0009,,,,,,,GBP,7455.00,7455.00,,0.00,GBP,36771.46,GBP Main,,,,,,,
+2026-03-07,2026-03-07,e2,FEE,COMPLETED,Revolut Business Fee,Grow plan fee,,,,,,,GBP,-35.00,-35.00,,0.00,GBP,29316.46,GBP Main,,,,,,,
+2026-03-06,2026-03-06,e1,CARD_PAYMENT,DECLINED,Something declined,,A Smith,516761******7331,Main card,ACTIVE,,,GBP,-20.00,-20.00,,0.00,GBP,29351.46,GBP Main,,,,,,,

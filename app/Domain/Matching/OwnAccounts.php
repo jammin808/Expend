@@ -20,7 +20,7 @@ final class OwnAccounts
     private const TITLES = ['MR', 'MRS', 'MS', 'MISS', 'MX', 'DR'];
 
     /** Lines that only ever move your own money: top-ups, savings pots and spaces, round-ups, exchanges. */
-    public const OWN_PATTERN = '/\bTOP[\s-]?UP\b|\bTOPUP\b|\bSAVINGS?\s+(POT|SPACE|GOAL|VAULT)\b|\b(TO|FROM)\s+(POT|SPACE|VAULT)\b|\bROUND[\s-]?UPS?\b|\bINTERNAL TRANSFER\b|\bOWN ACCOUNT\b|\bBETWEEN (MY )?ACCOUNTS\b|\bEXCHANGED? (TO|FROM) [A-Z]{3}\b/i';
+    public const OWN_PATTERN = '/\bTOP[\s-]?UP\b|\bTOPUP\b|\bSAVINGS?\s+(POT|SPACE|GOAL|VAULT)\b|\b(TO|FROM)\s+(POT|SPACE|VAULT)\b|\bROUND[\s-]?UPS?\b|\bINTERNAL TRANSFER\b|\bOWN ACCOUNT\b|\bBETWEEN (MY )?ACCOUNTS\b|\bEXCHANGED? (TO|FROM) [A-Z]{3}\b|\b(TO|FROM) [A-Z]{3} (SAVINGS|POCKET|VAULT)\b|\bMONEY ADDED FROM (YOUR )?(SAVINGS|VAULT|POCKET)\b/i';
 
     /** A card statement's "payment received": you paying the card bill from a bank account. */
     public const CARD_PAYMENT = '/PAYMENT RECEIVED|THANK YOU|\bDIRECT DEBIT PAYMENT\b|\bPAYMENT\s*-\s*THANK/i';

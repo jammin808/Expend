@@ -19,7 +19,27 @@ final class NormalizedRow
         public ?string $bankCategory,
         public array $raw,
         public int $line,
+        // A row in an account kept in another currency (a Revolut euro pocket): its own amount and running balance in
+        // that currency, and how its sterling amount was worked out.
+        public ?int $nativeAmountMinor = null,
+        public ?int $nativeBalanceMinor = null,
+        public ?string $fxUnitsPerGbp = null,
+        public ?string $fxRateDate = null,
+        public ?string $fxSource = null,
+        public ?int $feeMinor = null,
+        public ?string $exchangeKey = null,
     ) {}
+
+    /** The amount and balance the statement itself uses (its own currency). */
+    public function statementAmount(): int
+    {
+        return $this->nativeAmountMinor ?? $this->amountPence;
+    }
+
+    public function statementBalance(): ?int
+    {
+        return $this->nativeAmountMinor !== null ? $this->nativeBalanceMinor : $this->balanceAfterPence;
+    }
 
     public function effectiveDate(): CarbonImmutable
     {
@@ -31,9 +51,9 @@ final class NormalizedRow
         return hash('sha256', implode('|', [
             $accountId,
             $this->postedOn->format('Y-m-d'),
-            $this->amountPence,
+            $this->statementAmount(),
             strtoupper(preg_replace('/\s+/', ' ', trim($this->description))),
-            $this->balanceAfterPence ?? '',
+            $this->statementBalance() ?? '',
         ]));
     }
 }

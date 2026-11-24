@@ -1,0 +1,9 @@
+Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance
+Topup,Current,2026-03-01 09:12:01,2026-03-01 09:12:05,Top-up by *4821,500.00,0.00,GBP,COMPLETED,500.00
+Card Payment,Current,2026-03-02 13:40:10,2026-03-03 08:01:00,Pret A Manger,-6.50,0.00,GBP,COMPLETED,493.50
+Exchange,Current,2026-03-04 10:00:00,2026-03-04 10:00:00,Exchanged to EUR,-100.00,0.00,GBP,COMPLETED,393.50
+Card Payment,Current,2026-03-05 20:15:00,,Pending thing,-12.00,0.00,GBP,PENDING,
+Exchange,Current,2026-03-04 10:00:00,2026-03-04 10:00:00,Exchanged from GBP,115.20,0.00,EUR,COMPLETED,115.20
+Card Payment,Current,2026-03-06 19:30:22,2026-03-07 06:00:00,Brasserie du Port,-42.00,0.00,EUR,COMPLETED,73.20
+Card Payment,Current,2026-03-08 12:00:00,2026-03-08 12:05:00,Hotel Lumiere,-60.00,0.00,EUR,COMPLETED,13.20
+Transfer,Savings,2026-03-09 08:00:00,2026-03-09 08:00:00,To GBP Savings,50.00,0.00,GBP,COMPLETED,50.00

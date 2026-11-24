@@ -126,7 +126,7 @@ export function ItemDrawer({
                             <p className="text-muted-foreground -mt-4 text-sm">
                                 Paid in {item.original_currency}: {money(item.original_amount_minor, item.original_currency)}
                                 {item.fx
-                                    ? ` at ${item.fx.units_per_gbp} ${item.original_currency} per £1 (${item.fx.source === 'hmrc_monthly' ? 'HMRC monthly rate' : item.fx.source === 'bank' ? 'the bank’s rate' : item.fx.source}${item.fx.rate_date ? `, ${day(item.fx.rate_date)}` : ''})`
+                                    ? ` at ${item.fx.units_per_gbp} ${item.original_currency} per £1 (${item.fx.source === 'hmrc_monthly' ? 'HMRC monthly rate' : item.fx.source === 'bank' ? 'the bank’s rate' : item.fx.source === 'exchange' ? 'the exchange it came from' : item.fx.source}${item.fx.rate_date ? `, ${day(item.fx.rate_date)}` : ''})`
                                     : ''}
                             </p>
                         )}

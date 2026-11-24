@@ -67,30 +67,43 @@ final class Importer
         if ($preview['errors']) {
             throw new RuntimeException('Fix these rows first: '.implode(' ', array_slice($preview['errors'], 0, 5)));
         }
+        $batch = $this->store($account, $preview['rows'], $path, $originalName, $profile->toArray(), $preview['balance'], $preview['first'], $preview['last']);
+        if ($batch->status !== 'quarantined') {
+            $this->afterImport($batch);
+        }
 
+        return $batch;
+    }
+
+    /**
+     * Save normalised rows from a file into one account as one batch (new rows only). A statement whose running
+     * balance doesn't add up is held back: its rows are kept but count nowhere until you accept it (with a reason)
+     * or discard it.
+     *
+     * @param  list<NormalizedRow>  $rows
+     */
+    public function store(Account $account, array $rows, string $path, string $originalName, array $profile, array $balance, ?string $first, ?string $last): ImportBatch
+    {
         $sha = hash_file('sha256', $path);
         $stored = 'imports/'.$sha.'.csv';
         Storage::disk('local')->put($stored, file_get_contents($path));
+        $quarantine = $balance['status'] === 'failed';
 
-        // A statement whose running balance doesn't add up is held back: its rows are kept but count nowhere
-        // until you accept it (with a reason) or discard it.
-        $quarantine = $preview['balance']['status'] === 'failed';
-
-        $batch = DB::transaction(function () use ($account, $preview, $sha, $stored, $originalName, $profile, $quarantine) {
-            $plan = $this->plan($account, $preview['rows']);
+        return DB::transaction(function () use ($account, $rows, $sha, $stored, $originalName, $profile, $quarantine, $balance, $first, $last) {
+            $plan = $this->plan($account, $rows);
 
             $batch = ImportBatch::create([
                 'account_id' => $account->id,
                 'original_filename' => $originalName,
                 'file_sha256' => $sha,
                 'stored_path' => $stored,
-                'row_count' => count($preview['rows']),
+                'row_count' => count($rows),
                 'imported_count' => count($plan['new']),
                 'duplicate_count' => $plan['duplicates'],
-                'first_date' => $preview['first'],
-                'last_date' => $preview['last'],
-                'balance_check' => $preview['balance']['status'],
-                'balance_check_notes' => $preview['balance']['notes'],
+                'first_date' => $first,
+                'last_date' => $last,
+                'balance_check' => $balance['status'],
+                'balance_check_notes' => $balance['notes'],
                 'status' => $quarantine ? 'quarantined' : 'committed',
             ]);
 
@@ -109,6 +122,11 @@ final class Importer
                     'balance_after_pence' => $row->balanceAfterPence,
                     'original_amount_minor' => $row->originalAmountMinor,
                     'original_currency' => $row->originalCurrency,
+                    'balance_after_minor' => $row->nativeAmountMinor !== null ? $row->nativeBalanceMinor : null,
+                    'fx_units_per_gbp' => $row->fxUnitsPerGbp,
+                    'fx_rate_date' => $row->fxRateDate,
+                    'fx_source' => $row->fxSource,
+                    'fee_minor' => $row->feeMinor,
                     'bank_category' => $row->bankCategory,
                     'raw' => $row->raw,
                     ...self::details($row),
@@ -119,31 +137,25 @@ final class Importer
                 ]);
             }
 
-            $account->forceFill(['import_profile' => $profile->toArray()])->save();
+            $account->forceFill(['import_profile' => $profile])->save();
 
             AuditLog::record($quarantine ? 'import.quarantined' : 'import.committed', $batch, null, [
                 'account' => $account->name, 'file' => $originalName, 'imported' => count($plan['new']),
-                'duplicates' => $plan['duplicates'], 'balance_check' => $preview['balance']['status'],
+                'duplicates' => $plan['duplicates'], 'balance_check' => $balance['status'],
             ]);
 
             return $batch;
         });
-
-        if (! $quarantine) {
-            $this->afterImport($batch);
-        }
-
-        return $batch;
     }
 
     /**
      * Money moving between your accounts first (both sides imported), then your rules and the matchers, then lines
      * that are your own money moving even though the other side isn't imported.
      */
-    private function afterImport(ImportBatch $batch): void
+    public function afterImport(ImportBatch ...$batches): void
     {
         $this->pairer->pairAll();
-        $this->suggester->suggestFor(BankTransaction::query()->where('import_batch_id', $batch->id)->get());
+        $this->suggester->suggestFor(BankTransaction::query()->whereIn('import_batch_id', array_map(fn (ImportBatch $b) => $b->id, $batches))->get());
         $this->pairer->suggestOneSided();
     }
 
@@ -262,6 +274,14 @@ final class Importer
             $batch->update(['status' => 'reverted', 'review_note' => $reason]);
             AuditLog::record('import.reverted', $batch, ['transactions' => $ids->count(), 'confirmed_decisions_voided' => $confirmed], null, $reason);
         });
+    }
+
+    /** @param list<NormalizedRow> $rows @return array{new:int, duplicates:int} */
+    public function planCounts(Account $account, array $rows): array
+    {
+        $plan = $this->plan($account, $rows);
+
+        return ['new' => count($plan['new']), 'duplicates' => $plan['duplicates']];
     }
 
     /**

@@ -32,9 +32,12 @@ final class Present
             'original_amount_minor' => $tx->original_amount_minor,
             'original_currency' => $tx->original_currency,
             // The rate the bank used: how many of the foreign currency per £1.
-            'fx' => $tx->original_currency && $tx->original_amount_minor && $tx->amount_pence
-                ? ['units_per_gbp' => number_format(abs($tx->original_amount_minor) / abs($tx->amount_pence), 4, '.', ''), 'rate_date' => $tx->effectiveDate()->format('Y-m-d'), 'source' => 'bank']
-                : null,
+            'fx' => $tx->fx_source
+                ? ['units_per_gbp' => rtrim(rtrim((string) $tx->fx_units_per_gbp, '0'), '.'), 'rate_date' => $tx->fx_rate_date?->format('Y-m-d'), 'source' => $tx->fx_source]
+                : ($tx->original_currency && $tx->original_amount_minor && $tx->amount_pence
+                    ? ['units_per_gbp' => number_format(abs($tx->original_amount_minor) / abs($tx->amount_pence), 4, '.', ''), 'rate_date' => $tx->effectiveDate()->format('Y-m-d'), 'source' => 'bank']
+                    : null),
+            'fee_minor' => $tx->fee_minor,
             'bank_category' => $tx->bank_category,
             'review_status' => $tx->review_status,
             'transfer_pair_id' => $tx->transfer_pair_id,

@@ -23,14 +23,26 @@ final class Reconciler
     /** An active account with nothing imported for this long probably has a statement waiting. */
     public const STALE_DAYS = 45;
 
+    private static string $currency = 'GBP';
+
     /**
      * @return array{account_id:int, account:string, method:string, checked_to:?string, balance_pence:?int, gaps:list<array{from:string, to:string, missing_pence:int, text:string}>,
      *               last_line:?string, stale:bool, text:string}
      */
     public static function account(Account $account): array
     {
+        self::$currency = strtoupper($account->currency ?: 'GBP');
         $rows = BankTransaction::query()->where('account_id', $account->id)->orderBy('posted_on')->orderBy('id')
-            ->get(['id', 'posted_on', 'amount_pence', 'balance_after_pence']);
+            ->get(['id', 'posted_on', 'amount_pence', 'balance_after_pence', 'original_amount_minor', 'balance_after_minor']);
+        // A pocket in another currency is checked in that currency, as its statement shows it.
+        if ($account->isForeign()) {
+            $rows = $rows->map(function ($r) {
+                $r->amount_pence = (int) ($r->original_amount_minor ?? $r->amount_pence);
+                $r->balance_after_pence = $r->balance_after_minor;
+
+                return $r;
+            });
+        }
         $last = $rows->last()?->posted_on?->format('Y-m-d');
         $withBalance = $rows->whereNotNull('balance_after_pence');
         $entries = StatementBalance::query()->where('account_id', $account->id)->orderBy('as_of')->get();
@@ -47,7 +59,7 @@ final class Reconciler
         }
         $stale = $account->is_active && $last && CarbonImmutable::parse($last)->lt(CarbonImmutable::today()->subDays(self::STALE_DAYS));
 
-        return ['account_id' => $account->id, 'account' => $account->name, 'method' => $method, 'last_line' => $last, 'stale' => (bool) $stale] + $out
+        return ['account_id' => $account->id, 'account' => $account->name, 'method' => $method, 'last_line' => $last, 'stale' => (bool) $stale, 'currency' => strtoupper($account->currency ?: 'GBP')] + $out
             + ['text' => self::text($account, $method, $out, $entries->count())];
     }
 

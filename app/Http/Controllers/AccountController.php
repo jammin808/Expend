@@ -20,6 +20,7 @@ class AccountController extends Controller
             'accounts' => Account::query()->withCount('transactions')->orderBy('name')->get()->map(fn (Account $a) => [
                 'id' => $a->id, 'name' => $a->name, 'kind' => $a->kind, 'provider' => $a->provider, 'last4' => $a->last4,
                 'is_active' => $a->is_active, 'transactions' => $a->transactions_count, 'preset' => $a->import_profile['preset'] ?? null,
+                'currency' => strtoupper($a->currency ?: 'GBP'), 'parent' => $a->parent?->name,
                 'reconcile' => Reconciler::account($a),
                 'balances' => StatementBalance::query()->where('account_id', $a->id)->orderByDesc('as_of')->limit(24)->get()
                     ->map(fn (StatementBalance $b) => ['id' => $b->id, 'as_of' => $b->as_of->format('Y-m-d'), 'balance_pence' => $b->balance_pence, 'note' => $b->note]),
