@@ -151,7 +151,8 @@ class ExpertAssistantTest extends TestCase
         $this->assertStringContainsString('allowable. Section 57A covers the rules (see', $out['answer']);
         $this->assertStringContainsString("Sources:\n- Income Tax (Trading and Other Income) Act 2005, s 57A: https://www.legislation.gov.uk/ukpga/2005/5/section/57A", $out['answer']);
         $this->assertSame(['https://www.legislation.gov.uk/ukpga/2005/5/section/57A'], array_column($out['sources'], 'url'));
-        $this->assertContains('link https://someblog.example/meals', $out['unmatched']);
+        $this->assertSame(['link https://someblog.example/meals'], $out['unmatched']);
+        $this->assertSame([], $out['notes']);
         $this->assertSame(1, $out['web_searches']);
         $this->assertSame('web_search', $out['tools'][0]['tool']);
     }
@@ -258,6 +259,7 @@ class ExpertAssistantTest extends TestCase
 
         $result = $ai->send(['maxTokens' => 1000, 'tools' => [...AssistantTools::definitions(), ...Assistant::webTools()], 'messages' => [['role' => 'user', 'content' => 'Meals?']]]);
 
+        // Only "not enabled" falls back; a rejected domain or setting is reported instead (AssistantAnswerChecksTest).
         $this->assertTrue($result->webUnavailable);
         $this->assertSame('From the library: yes.', $result->text());
         $retry = json_decode((string) $history[1]['request']->getBody(), true);
@@ -316,6 +318,14 @@ class ExpertAssistantTest extends TestCase
         $pension = collect($out['items'])->firstWhere('id', 'pension-contributions');
         $this->assertSame(['pence', 'formatted'], array_keys($pension['saving_estimate']));
         $this->assertArrayNotHasKey('saving_pence', $pension);
+        // The headline and the fines are money too, and no bare pence figure is left for the model to misread.
+        $this->assertFalse($out['in_progress']);
+        $this->assertSame(['pence', 'formatted'], array_keys($out['total_saving_estimate']));
+        $this->assertGreaterThan(0, $out['total_saving_estimate']['pence']);
+        $this->assertSame(['pence' => 0, 'formatted' => '£0.00'], $out['fines_and_interest_so_far']);
+        array_walk_recursive($out, fn ($v, $k) => $this->assertFalse(is_string($k) && str_ends_with($k, '_pence'), "{$k} is a bare pence figure"));
+        $total = $out['total_saving_estimate']['formatted'];
+        $this->assertSame([], Assistant::unmatchedFigures("Together these could save you {$total}.", [json_encode($out, JSON_UNESCAPED_UNICODE)]));
 
         $law = app(AssistantTools::class)->run('tax_law', ['query' => 'travel temporary workplace', 'kind' => 'legislation']);
         $this->assertNotEmpty($law['results']);

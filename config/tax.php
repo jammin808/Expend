@@ -47,6 +47,9 @@ $base = [
     'trading_allowance' => 100_000,
     'vat_threshold' => 9_000_000,
     'payments_on_account_threshold' => 100_000,
+    // The most a pension can take in a year with tax relief (FA 2004 s228), before carry-forward (s228A) and the
+    // taper for very high incomes (s228ZA). £60,000 from 2023-24; £40,000 before.
+    'pension_annual_allowance' => 6_000_000,
     'cash_basis_default' => true,
     'sources' => $sources,
 ];
@@ -60,6 +63,7 @@ return [
             'class4' => ['lower' => 956_800, 'upper' => 5_027_000, 'main_rate' => '9', 'upper_rate' => '2'],
             'class2' => ['weekly' => 305, 'payable_from' => 651_500],
             'vat_threshold' => 8_500_000,
+            'pension_annual_allowance' => 4_000_000,
             'cash_basis_default' => false,
         ]),
 
@@ -70,6 +74,7 @@ return [
             // Payable from the lower profits limit; treated as paid between the small profits threshold and it.
             'class2' => ['weekly' => 315, 'payable_from' => 1_190_800],
             'vat_threshold' => 8_500_000,
+            'pension_annual_allowance' => 4_000_000,
             'cash_basis_default' => false,
         ]),
 

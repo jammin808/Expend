@@ -180,8 +180,8 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                 <span>
                                     Let the assistant check the law online
                                     <span className="text-muted-foreground block text-xs">
-                                        Only legislation.gov.uk, GOV.UK and HMRC manuals, and published court and tribunal judgments. Searches are
-                                        about the law only, never your details. About 1¢ per search.
+                                        Only legislation.gov.uk, GOV.UK and HMRC manuals, and published court and tribunal judgments. The app tells
+                                        the assistant to search only for the law, never your details. About 1¢ per search.
                                     </span>
                                 </span>
                             </label>

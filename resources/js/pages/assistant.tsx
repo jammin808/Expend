@@ -3,14 +3,17 @@ import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import { cn } from '@/lib/utils';
 import { Head, Link } from '@inertiajs/react';
-import { AlertTriangle, Loader2, Send, Sparkles } from 'lucide-react';
+import { AlertTriangle, Info, Loader2, Send, Sparkles } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 interface Turn {
     id?: number;
     question: string;
     answer: string | null;
+    /** Money figures and links not found in anything the assistant looked at. */
     unmatched: string[];
+    /** Things to check before relying on the answer: case names, and law from the built-in library only. */
+    notes: string[];
     tools: string[];
     error?: string;
 }
@@ -79,7 +82,7 @@ export default function AssistantPage({ history, aiReady, usage }: { history: Tu
         if (!q.trim() || busy) return;
         setBusy(true);
         setQuestion('');
-        setTurns((t) => [...t, { question: q, answer: null, unmatched: [], tools: [] }]);
+        setTurns((t) => [...t, { question: q, answer: null, unmatched: [], notes: [], tools: [] }]);
         try {
             const res = await fetch('/assistant/ask', {
                 method: 'POST',
@@ -92,7 +95,7 @@ export default function AssistantPage({ history, aiReady, usage }: { history: Tu
                 t.map((x, i) =>
                     i === t.length - 1
                         ? j.ok
-                            ? { ...x, answer: j.answer, unmatched: j.unmatched, tools: j.tools, id: j.id }
+                            ? { ...x, answer: j.answer, unmatched: j.unmatched ?? [], notes: j.notes ?? [], tools: j.tools, id: j.id }
                             : { ...x, error: j.message ?? 'Something went wrong.' }
                         : x,
                 ),
@@ -162,6 +165,11 @@ export default function AssistantPage({ history, aiReady, usage }: { history: Tu
                                             <p className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
                                                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> Not found in your records:{' '}
                                                 {t.unmatched.join(', ')}. Treat these as unverified.
+                                            </p>
+                                        )}
+                                        {(t.notes ?? []).length > 0 && (
+                                            <p className="mt-3 flex items-start gap-2 rounded-lg bg-sky-50 p-2 text-xs text-sky-900 dark:bg-sky-950/40 dark:text-sky-200">
+                                                <Info className="mt-0.5 size-3.5 shrink-0" /> Check before relying on: {(t.notes ?? []).join('; ')}.
                                             </p>
                                         )}
                                         {t.tools.length > 0 && (

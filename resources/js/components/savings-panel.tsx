@@ -13,12 +13,19 @@ export interface SavingItem {
     how?: string | null;
     risks?: string | null;
     needs_accountant?: boolean;
-    sources?: { title: string; url: string }[];
+    /** source_note says when a link opens something other than its title (HMRC's summary of a case, or a later case). */
+    sources?: { title: string; url: string; source_note?: string }[];
 }
 export interface SavingsReview {
     tax_year: string;
+    /** The year isn't over, so the figures are from the records so far. */
+    in_progress: boolean;
     marginal_pct: string | null;
     profit_pence: number;
+    /** The headline, worked out on the server: fines left out, the trading allowance counted once against expense claims. */
+    total_saving_pence: number;
+    /** Fines and interest already due (not counted as a saving). */
+    penalties_to_avoid_pence: number;
     items: SavingItem[];
     more: SavingItem[];
     researched_on: string | null;
@@ -43,13 +50,16 @@ function Law({ item }: { item: SavingItem }) {
                 {item.conditions && <p>Conditions: {item.conditions}</p>}
                 {item.risks && <p>Risks: {item.risks}</p>}
                 {item.sources && item.sources.length > 0 && (
-                    <p className="flex flex-wrap gap-x-3">
-                        {item.sources.map((s) => (
-                            <a key={s.url} href={s.url} target="_blank" rel="noreferrer" className="underline underline-offset-2">
-                                {s.title}
-                            </a>
+                    <ul className="space-y-0.5">
+                        {item.sources.map((s, i) => (
+                            <li key={i}>
+                                <a href={s.url} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+                                    {s.title}
+                                </a>
+                                {s.source_note && <span> ({s.source_note})</span>}
+                            </li>
                         ))}
-                    </p>
+                    </ul>
                 )}
             </div>
         </details>
@@ -62,7 +72,8 @@ function Law({ item }: { item: SavingItem }) {
  * be worked out, and the law behind it.
  */
 export function SavingsPanel({ s }: { s: SavingsReview }) {
-    const total = s.items.reduce((sum, i) => sum + (i.saving_pence ?? 0), 0);
+    const total = s.total_saving_pence;
+    const fines = s.penalties_to_avoid_pence;
 
     return (
         <section className="space-y-3 rounded-xl border p-4" aria-labelledby={`savings-${s.tax_year}`}>
@@ -77,13 +88,24 @@ export function SavingsPanel({ s }: { s: SavingsReview }) {
                         ways Parliament intends.
                     </p>
                 </div>
-                {total > 0 && (
+                {(total > 0 || fines > 0) && (
                     <div className="text-right">
-                        <p className="text-xl font-semibold tabular-nums">up to {pounds(total)}</p>
-                        <p className="text-muted-foreground text-xs">estimated, if all of these apply</p>
+                        {total > 0 && (
+                            <>
+                                <p className="text-xl font-semibold tabular-nums">up to {pounds(total)}</p>
+                                <p className="text-muted-foreground text-xs">estimated, if these apply to you</p>
+                            </>
+                        )}
+                        {fines > 0 && (
+                            <p className="text-xs text-red-700 tabular-nums dark:text-red-300">Fines and interest so far: {pounds(fines)}</p>
+                        )}
                     </div>
                 )}
             </div>
+
+            {s.in_progress && (
+                <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">{s.note}</p>
+            )}
 
             {s.items.length === 0 ? (
                 <p className="text-sm">Nothing obvious missing from this year's records.</p>
@@ -138,8 +160,8 @@ export function SavingsPanel({ s }: { s: SavingsReview }) {
             )}
 
             <p className="text-muted-foreground text-xs">
-                {s.note}
-                {s.researched_on ? ` Law checked ${s.researched_on}.` : ''} Ask the assistant about any of these.
+                {s.in_progress ? '' : `${s.note} `}
+                {s.researched_on ? `Law checked ${s.researched_on}. ` : ''}Ask the assistant about any of these.
             </p>
         </section>
     );

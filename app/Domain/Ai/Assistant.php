@@ -15,12 +15,25 @@ use RuntimeException;
  * (legislation, GOV.UK and HMRC manuals, published judgments) through Claude's web search and fetch.
  *
  * The app then checks the answer: every money figure against what the tools returned, every link against the
- * library and the pages actually read, and every case name against the checked library. Anything that can't be
- * matched is listed under the answer rather than silently trusted.
+ * library and the pages actually read, and every case name against the checked library. Figures and links that can't
+ * be matched are listed under the answer as not found; case names to check, and an answer given without web search,
+ * are listed apart as things to check before relying on it.
  */
 final class Assistant
 {
     private const MAX_ROUNDS = 12;
+
+    /** Tools that return the owner's own records. A "Team A v Team B" from these is a job or a booking, not a court case. */
+    public const RECORD_TOOLS = [
+        'list_jobs', 'job_sheet', 'calendar', 'search_documents', 'read_document', 'invoices', 'search_transactions',
+        'merchant_breakdown', 'explain_payment', 'tax_year_overview',
+    ];
+
+    /** A web link in an answer or a tool's output. */
+    private const URL_PATTERN = '#https?://[^\s)\]>"\'<\\\\]+#i';
+
+    /** Shown under an answer when the account can't use web search. Reads on after "Check before relying on:". */
+    public const WEB_OFF_NOTE = 'anything newer than the built-in law library (web search is off for this API key)';
 
     /** The only sites the assistant may search or read: the law itself, HMRC's guidance and the courts. */
     public const OFFICIAL_DOMAINS = [
@@ -28,7 +41,11 @@ final class Assistant
         'financeandtax.decisions.tribunals.gov.uk', 'assets.publishing.service.gov.uk', 'judiciary.uk',
     ];
 
-    /** Server-side web tools, limited to official sources (null when switched off in Settings › AI). */
+    /**
+     * Server-side web tools, limited to official sources (none when switched off in Settings › Integrations). Pages
+     * read are cited like search results (search citations are always on; fetch citations are off unless asked for),
+     * so text drawn from a page is marked as cited.
+     */
     public static function webTools(): array
     {
         if (Setting::get('ai_web_research') === false) {
@@ -37,15 +54,19 @@ final class Assistant
 
         return [
             ['type' => 'web_search_20260209', 'name' => 'web_search', 'allowedDomains' => self::OFFICIAL_DOMAINS, 'maxUses' => 5],
-            ['type' => 'web_fetch_20260209', 'name' => 'web_fetch', 'allowedDomains' => self::OFFICIAL_DOMAINS, 'maxUses' => 5, 'maxContentTokens' => 40_000],
+            ['type' => 'web_fetch_20260209', 'name' => 'web_fetch', 'allowedDomains' => self::OFFICIAL_DOMAINS, 'maxUses' => 5, 'maxContentTokens' => 40_000,
+                'citations' => ['enabled' => true]],
         ];
     }
 
     public function __construct(private AiClient $ai, private AssistantTools $tools) {}
 
     /**
+     * Answers a question. "unmatched" lists money figures and links that nothing the assistant looked at contains;
+     * "notes" lists case names to check and whether the law came from the built-in library only.
+     *
      * @param  list<array{question:string, answer:string}>  $history
-     * @return array{answer:string, unmatched:list<string>, tools:list<array>, log_id:int}
+     * @return array{answer:string, unmatched:list<string>, notes:list<string>, tools:list<array>, log_id:int, sources:list<array>, web_searches:int}
      */
     public function ask(string $question, string $channel = 'app', array $history = []): array
     {
@@ -62,7 +83,9 @@ final class Assistant
 
         $calls = [];
         $toolOutputs = [];
+        $recordOutputs = [];
         $sources = [];
+        $turnBlocks = [];
         $in = $out = $searches = 0;
         $model = AiConfig::model();
         $tools = [...AssistantTools::definitions(), ...self::webTools()];
@@ -80,6 +103,8 @@ final class Assistant
             $out += $result->outputTokens;
             $searches += $result->webSearches;
             $model = $result->model;
+            // The answer is the final turn, including any parts sent before a long search paused.
+            $turnBlocks = [...$turnBlocks, ...$result->blocks];
             foreach ($result->sources as $source) {
                 $sources[$source['url']] ??= $source;
             }
@@ -113,32 +138,36 @@ final class Assistant
                 }
                 $json = json_encode($output, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 $toolOutputs[] = $json;
+                if (in_array($use['name'], self::RECORD_TOOLS, true)) {
+                    $recordOutputs[] = $json;
+                }
                 $calls[] = ['tool' => $use['name'], 'input' => $use['input']];
                 $results[] = ['type' => 'tool_result', 'toolUseID' => $use['id'], 'content' => mb_substr($json, 0, 60_000)];
             }
             $messages[] = ['role' => 'assistant', 'content' => $result->assistantContent];
             $messages[] = ['role' => 'user', 'content' => $results];
+            $turnBlocks = [];
         }
 
         $sources = array_values(array_filter($sources, fn ($src) => self::isOfficial($src['url'])));
-        $answer = $result->text() ?: 'I couldn’t finish that. Try asking in a narrower way.';
-        $answer .= self::sourcesFooter($answer, $result->blocks, $sources);
+        $answer = (new AiResult($result->stopReason, $turnBlocks, null, $model))->text() ?: 'I couldn’t finish that. Try asking in a narrower way.';
+        $answer .= self::sourcesFooter($answer, $turnBlocks, $sources);
         $known = [...$toolOutputs, ...array_map(fn ($src) => $src['url'], $sources)];
         $unmatched = [
             ...self::unmatchedFigures($answer, $toolOutputs),
             ...self::unmatchedLinks($answer, $known),
-            ...self::unknownCases($answer, $sources),
         ];
+        $notes = self::unknownCases($answer, $sources, $recordOutputs);
         if ($webUnavailable) {
-            $unmatched[] = 'web search is switched off for this API key, so this answer uses the built-in law library only';
+            $notes[] = self::WEB_OFF_NOTE;
         }
 
         $log = AssistantLog::query()->create([
             'channel' => $channel, 'question' => $question, 'answer' => $answer, 'tool_calls' => $calls,
-            'unmatched_figures' => $unmatched, 'model' => $model, 'input_tokens' => $in, 'output_tokens' => $out,
+            'unmatched_figures' => $unmatched, 'notes' => $notes, 'model' => $model, 'input_tokens' => $in, 'output_tokens' => $out,
         ]);
 
-        return ['answer' => $answer, 'unmatched' => $unmatched, 'tools' => $calls, 'log_id' => $log->id, 'sources' => $sources, 'web_searches' => $searches];
+        return ['answer' => $answer, 'unmatched' => $unmatched, 'notes' => $notes, 'tools' => $calls, 'log_id' => $log->id, 'sources' => $sources, 'web_searches' => $searches];
     }
 
     public static function isOfficial(string $url): bool
@@ -179,16 +208,21 @@ final class Assistant
 
     /**
      * Court cases named in the answer that aren't in the checked library and weren't among the official pages read,
-     * or that the library marks as not checked against the judgment.
+     * or that the library marks as not checked against the judgment. A name that comes from the owner's own records
+     * (a job called "England v Wales") is not a case.
      *
      * @param  list<array{url:string,title:string}>  $sources
+     * @param  list<string>  $recordOutputs  what the record tools returned (never the law library or tax guide)
      * @return list<string>
      */
-    public static function unknownCases(string $answer, array $sources): array
+    public static function unknownCases(string $answer, array $sources, array $recordOutputs = []): array
     {
-        $titles = mb_strtolower(implode(' | ', array_map(fn ($s) => $s['title'].' '.$s['url'], $sources)));
+        $records = self::versus(mb_strtolower(implode("\n", $recordOutputs)));
         $out = [];
         foreach (TaxLaw::casesNamedIn($answer) as $mention) {
+            if ($records !== '' && self::inRecords($mention['text'], $records)) {
+                continue;
+            }
             $known = TaxLaw::matchCase($mention['first'], $mention['second']);
             if ($known === true) {
                 continue;
@@ -198,8 +232,7 @@ final class Assistant
 
                 continue;
             }
-            $seen = array_filter([...$mention['first'], ...$mention['second']], fn ($w) => $w !== 'hmrc' && mb_strlen($w) > 2 && str_contains($titles, $w));
-            if (! $seen) {
+            if (! self::seenInSources($mention, $sources)) {
                 $out[] = 'case '.$mention['text'].' (not in the checked library or the official pages read)';
             }
         }
@@ -208,24 +241,107 @@ final class Assistant
     }
 
     /**
-     * Web links in the answer that no tool returned: a cited source has to be a real one from the tax guide or records.
+     * Whether a case name comes from the records: the whole name, or the two words either side of the "v"
+     * ("Then Arsenal v Chelsea" when the job is "Arsenal v Chelsea OB").
+     */
+    private static function inRecords(string $mention, string $records): bool
+    {
+        $mention = self::versus(mb_strtolower($mention));
+        [$first, $second] = array_pad(explode(' v ', $mention, 2), 2, '');
+        $firstWords = preg_split('/\s+/', trim($first)) ?: [];
+        $core = end($firstWords).' v '.(preg_split('/\s+/', trim($second))[0] ?? '');
+        $has = fn (string $phrase) => (bool) preg_match('/(?<![\p{L}\p{N}])'.preg_quote($phrase, '/').'(?![\p{L}\p{N}])/u', $records);
+
+        return $has($mention) || (! str_starts_with($core, ' ') && ! str_ends_with($core, ' ') && $has($core));
+    }
+
+    /** "England vs. Wales" and "England versus Wales" read as "England v Wales". */
+    private static function versus(string $text): string
+    {
+        return (string) preg_replace('/\s+(?:vs?\.?|versus)\s+/u', ' v ', $text);
+    }
+
+    /**
+     * Whether an official page read in this answer is the judgment: one page title that names both parties, as whole
+     * words, with a "v" between names. Every word the answer uses for a party must be in the title, so "David Jones v
+     * HMRC" isn't "Timothy David Hanlin v HMRC". A side that is only HMRC (or R) matches HMRC's name (or R) in the title.
      *
-     * @param  list<string>  $toolOutputs
+     * @param  array{first:list<string>, second:list<string>}  $mention
+     * @param  list<array{url:string,title:string}>  $sources
+     */
+    private static function seenInSources(array $mention, array $sources): bool
+    {
+        foreach ($sources as $source) {
+            $title = (string) ($source['title'] ?? '');
+            if (! preg_match('/\sv\.?\s/iu', $title)) {
+                continue;
+            }
+            $words = TaxLaw::partyWords($title);
+            $named = function (array $side) use ($words): bool {
+                $distinct = array_diff($side, ['hmrc', 'r']);
+
+                return $distinct ? ! array_diff($distinct, $words) : (bool) array_intersect($side, $words);
+            };
+            if ($named($mention['first']) && $named($mention['second'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Web links in the answer that no tool returned and no page read: a cited source has to be a real one from the
+     * tax guide, the law library, the records or the official pages read. Links are compared whole (http or https,
+     * any letter case in the host, no #part or trailing slash), so a shortened link to a different section or
+     * judgment doesn't pass. A version or format of a known page (…/section/34/enacted, …/data.pdf) does.
+     *
+     * @param  list<string>  $known  tool outputs (JSON) and source URLs
      * @return list<string>
      */
-    public static function unmatchedLinks(string $answer, array $toolOutputs): array
+    public static function unmatchedLinks(string $answer, array $known): array
     {
-        preg_match_all('#https?://[^\s)\]>"\'<]+#', $answer, $m);
-        $known = implode(' ', $toolOutputs);
+        $set = [];
+        foreach ($known as $text) {
+            preg_match_all(self::URL_PATTERN, str_replace('\/', '/', $text), $m);
+            foreach ($m[0] as $url) {
+                $set[self::normaliseUrl($url)] = true;
+            }
+        }
+
+        preg_match_all(self::URL_PATTERN, $answer, $m);
         $out = [];
         foreach (array_unique($m[0]) as $url) {
-            $clean = rtrim($url, '.,;:');
-            if (! str_contains($known, $clean) && ! str_contains($known, str_replace('/', '\/', $clean))) {
+            $clean = rtrim($url, '.,;:!?*');
+            $norm = self::normaliseUrl($clean);
+            if (isset($set[$norm])) {
+                continue;
+            }
+            $version = preg_match('#^(.+?)((?:/(?:enacted|made|prospective|\d{4}-\d{2}-\d{2}))?(?:/data\.(?:pdf|xml|htm|html|akn|rdf))?)$#', $norm, $v)
+                && $v[2] !== '' && isset($set[$v[1]]);
+            if (! $version) {
                 $out[] = 'link '.$clean;
             }
         }
 
-        return $out;
+        return array_values(array_unique($out));
+    }
+
+    /** "HTTPS://WWW.Legislation.gov.uk/ukpga/2005/5/section/34/#p1" → "legislation.gov.uk/ukpga/2005/5/section/34". */
+    public static function normaliseUrl(string $url): string
+    {
+        $url = rtrim(preg_replace('/#.*$/s', '', trim($url)), '/.,;:!?*');
+        if (! preg_match('#^https?://([^/?]+)(.*)$#i', $url, $m)) {
+            return $url;
+        }
+        $host = preg_replace('/^www\./', '', mb_strtolower($m[1]));
+        $rest = $m[2];
+        if (str_contains($rest, '?')) {
+            [$path, $query] = explode('?', $rest, 2);
+            $rest = rtrim($path, '/').'?'.$query;
+        }
+
+        return $host.rtrim($rest, '/');
     }
 
     /**

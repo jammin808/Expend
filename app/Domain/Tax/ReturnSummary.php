@@ -71,7 +71,9 @@ final class ReturnSummary
             'trading_allowance' => [
                 'allowance_pence' => $tradingAllowance,
                 'profit_with_allowance_pence' => max(0, $income - $tradingAllowance),
-                'better' => $allowable < $tradingAllowance && $income > 0,
+                // The allowance can't be more than your income, so it only beats expenses below the smaller of the two
+                // (and never in a loss year, where expenses are already more than income).
+                'better' => $income > 0 && min($income, $tradingAllowance) > $allowable,
             ],
             'short_form_allowed' => $turnover < ($params['vat_threshold'] ?? 9_000_000),
             'pending' => [
