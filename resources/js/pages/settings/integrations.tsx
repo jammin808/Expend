@@ -17,9 +17,10 @@ interface Props {
         models: Record<string, string>;
         effort: string;
         cap_usd: number;
-        usage: { usd: number; calls: number };
+        usage: { usd: number; calls: number; web_searches?: number };
         suggestions: boolean;
         extraction: string;
+        web_research: boolean;
     };
     business: { name: string | null; address: string | null; email: string | null; bank: string | null; prefix: string; terms: number };
     email: { host: string | null; port: number; username: string | null; password_set: boolean; allowed: string };
@@ -66,6 +67,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
         cap_usd: String(ai.cap_usd ?? 40),
         suggestions: ai.suggestions,
         extraction: ai.extraction ?? 'on_demand',
+        web_research: ai.web_research,
     });
     const biz = useForm({
         name: business.name ?? '',
@@ -169,9 +171,24 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                 <Checkbox checked={aiForm.data.suggestions} onCheckedChange={(v) => aiForm.setData('suggestions', !!v)} /> Allow AI
                                 suggestions for transactions
                             </label>
+                            <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                                <Checkbox
+                                    className="mt-0.5"
+                                    checked={aiForm.data.web_research}
+                                    onCheckedChange={(v) => aiForm.setData('web_research', !!v)}
+                                />
+                                <span>
+                                    Let the assistant check the law online
+                                    <span className="text-muted-foreground block text-xs">
+                                        Only legislation.gov.uk, GOV.UK and HMRC manuals, and published court and tribunal judgments. Searches are
+                                        about the law only, never your details. About 1¢ per search.
+                                    </span>
+                                </span>
+                            </label>
                         </div>
                         <p className="text-muted-foreground text-xs">
-                            This month: {ai.usage.calls} requests, about ${Number(ai.usage.usd).toFixed(2)} (estimate from published prices).
+                            This month: {ai.usage.calls} requests{ai.usage.web_searches ? `, ${ai.usage.web_searches} law searches` : ''}, about $
+                            {Number(ai.usage.usd).toFixed(2)} (estimate from published prices).
                         </p>
                         <Button disabled={aiForm.processing}>Save AI settings</Button>
                     </form>

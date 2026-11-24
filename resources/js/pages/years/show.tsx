@@ -1,6 +1,7 @@
 import { DecisionForm, decisionProblem } from '@/components/decision-form';
 import { Money } from '@/components/money';
 import { PenaltyPanel, type PenaltyYear } from '@/components/penalty-panel';
+import { SavingsPanel, type SavingsReview } from '@/components/savings-panel';
 import { StatusPill } from '@/components/status-pill';
 import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
@@ -80,6 +81,7 @@ interface Props {
     checks: { key: string; label: string; status: 'ok' | 'warn' | 'fail'; detail: string }[];
     lookups: Lookups;
     penalties: PenaltyYear | null;
+    savings: SavingsReview | null;
 }
 
 function Step({ n, title, children, aside }: { n: number; title: string; children: React.ReactNode; aside?: React.ReactNode }) {
@@ -97,7 +99,7 @@ function Step({ n, title, children, aside }: { n: number; title: string; childre
     );
 }
 
-export default function YearShow({ year, progress, coverage, groups, summary, estimate, bill, checks, lookups, penalties }: Props) {
+export default function YearShow({ year, progress, coverage, groups, summary, estimate, bill, checks, lookups, penalties, savings }: Props) {
     const [group, setGroup] = useState<Props['groups'][number] | null>(null);
     const [decision, setDecision] = useState<Decision>({ kind: 'business_expense', business_pct: 100 });
     const [poa, setPoa] = useState((year.payments_on_account_paid_pence / 100).toFixed(2));
@@ -490,6 +492,8 @@ export default function YearShow({ year, progress, coverage, groups, summary, es
                         </div>
                     </div>
                 </Step>
+
+                {savings && <SavingsPanel s={savings} />}
             </div>
 
             <Dialog open={!!group} onOpenChange={(open) => !open && setGroup(null)}>

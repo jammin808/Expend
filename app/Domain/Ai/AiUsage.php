@@ -18,7 +18,10 @@ final class AiUsage
         'claude-sonnet-5-5' => [2.0, 10.0],
     ];
 
-    public static function record(string $model, int $in, int $out): void
+    /** USD per web search (reading a page found has no extra charge beyond its tokens). */
+    public const WEB_SEARCH_USD = 0.01;
+
+    public static function record(string $model, int $in, int $out, int $searches = 0): void
     {
         $key = 'ai_usage_'.now()->format('Y_m');
         $usage = Setting::get($key) ?? ['input' => 0, 'output' => 0, 'usd' => 0.0, 'calls' => 0];
@@ -26,7 +29,8 @@ final class AiUsage
         $usage['input'] += $in;
         $usage['output'] += $out;
         $usage['calls'] += 1;
-        $usage['usd'] = round($usage['usd'] + ($in * $pIn + $out * $pOut) / 1_000_000, 4);
+        $usage['web_searches'] = ($usage['web_searches'] ?? 0) + $searches;
+        $usage['usd'] = round($usage['usd'] + ($in * $pIn + $out * $pOut) / 1_000_000 + $searches * self::WEB_SEARCH_USD, 4);
         Setting::put($key, $usage);
     }
 

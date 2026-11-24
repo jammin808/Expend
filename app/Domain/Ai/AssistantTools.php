@@ -13,7 +13,9 @@ use App\Domain\Tax\PenaltyEstimator;
 use App\Domain\Tax\ReturnSummary;
 use App\Domain\Tax\TaxEstimator;
 use App\Domain\Tax\TaxGuide;
+use App\Domain\Tax\TaxLaw;
 use App\Domain\Tax\TaxParameters;
+use App\Domain\Tax\TaxSavings;
 use App\Domain\Tax\YearChecks;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -77,6 +79,11 @@ final class AssistantTools
             ['name' => 'penalties', 'description' => 'Fines and interest HMRC charges or will charge: late filing penalties (£100, daily £10, 6- and 12-month), late payment penalties, and late payment interest, per tax year, from the filing dates and HMRC payments in the records. Each item has its date, amount, status (due, accruing, upcoming), the rule and a source link. Answers "what if" questions: pass file_on and/or pay_all_on (YYYY-MM-DD) to see the effect of filing or paying on a date, plan_from for a payment plan. It is an estimate: say so, and that HMRC\'s statement is the final word.',
                 'inputSchema' => $obj(['tax_year' => $str + ['description' => 'e.g. 2024-25; omit for every year'], 'file_on' => $str + ['description' => 'what if the return is filed on this date (YYYY-MM-DD)'],
                     'pay_all_on' => $str + ['description' => 'what if everything owed is paid on this date'], 'plan_from' => $str + ['description' => 'what if a payment plan is agreed from this date']])],
+            ['name' => 'tax_law', 'description' => 'The checked library of UK tax law for a sole trader: leading cases (what each decided and why it matters to a freelance technician), the legislation, HMRC manual pages, and recent or coming changes (not_law_yet when only announced). Each item has its official link to cite; never cite a case marked do_not_cite. Search by words, optionally by kind; or pass id for one item. Use it before stating a legal rule or naming a case.',
+                'inputSchema' => $obj(['query' => $str + ['description' => 'e.g. "hotel meals away overnight", "travel to temporary workplace", "late filing reasonable excuse"'],
+                    'kind' => ['type' => 'string', 'enum' => ['case', 'legislation', 'guidance', 'development']], 'id' => $str + ['description' => 'An item id from an earlier result'], 'limit' => $int])],
+            ['name' => 'tax_savings', 'description' => 'Legal ways to pay less tax for a tax year, checked against the records: claims missing (use of home, phone, travel to venues, meals away), reliefs worth using at their rate of tax (pension contributions, losses), choices to review (vehicle method, trading allowance, VAT), payments on account to reduce, voluntary Class 2, deadlines and penalties. Each has what was found, an ESTIMATE of the saving where one can be worked out, conditions, risks, whether an accountant is needed, and the law with links. "more" lists other ideas to ask about.',
+                'inputSchema' => $obj(['tax_year' => $str], ['tax_year'])],
             ['name' => 'explain_payment', 'description' => 'What one bank transaction is, how it has been treated, whether it is normally allowable and on what conditions, the evidence to keep, and notes from its context (jobs that day, bookings, vehicle mileage method).',
                 'inputSchema' => $obj(['transaction_id' => $int], ['transaction_id'])],
             ['name' => 'propose_decision', 'description' => 'Suggest what one transaction is. It is saved as an unconfirmed AI suggestion for the owner to accept or change in the Inbox. Cannot change anything the owner has decided.',
@@ -102,6 +109,8 @@ final class AssistantTools
             'tax_guide' => $this->taxGuide($input),
             'penalties' => $this->penalties($input),
             'explain_payment' => ($t = BankTransaction::query()->with('account')->find((int) ($input['transaction_id'] ?? 0))) ? Explainer::payment($t) : ['error' => 'No such transaction'],
+            'tax_law' => $this->taxLaw($input),
+            'tax_savings' => $this->taxSavings($input['tax_year'] ?? ''),
             'propose_decision' => $this->propose($input),
             default => ['error' => "Unknown tool {$name}"],
         };
@@ -126,6 +135,38 @@ final class AssistantTools
         }
 
         return $out;
+    }
+
+    private function taxLaw(array $input): array
+    {
+        if (! empty($input['id'])) {
+            $item = TaxLaw::find((string) $input['id']);
+
+            return $item ? ['item' => TaxLaw::present($item, $item['type'] === 'saving' ? 'saving' : $item['type']), 'researched_on' => TaxLaw::researchedOn()]
+                : ['error' => 'No item with that id.'];
+        }
+        $limit = max(1, min(15, (int) ($input['limit'] ?? 8)));
+        $found = TaxLaw::search((string) ($input['query'] ?? ''), $input['kind'] ?? null, null, $limit);
+
+        return ['researched_on' => TaxLaw::researchedOn(), 'results' => $found,
+            'note' => 'Each item was checked against an official source on the date above. Cite the url. Items with do_not_cite must not be relied on; not_law_yet items are announcements, not law.'];
+    }
+
+    private function taxSavings(string $year): array
+    {
+        $review = TaxSavings::review($year ?: UkTaxYear::current()->label());
+        $money = fn (?int $p) => $p === null ? null : self::money($p);
+        $review['profit'] = self::money($review['profit_pence']);
+        unset($review['profit_pence']);
+        $review['items'] = array_map(function ($i) use ($money) {
+            $i['saving_estimate'] = $money($i['saving_pence']);
+            $i['deduction'] = $money($i['deduction_pence']);
+            unset($i['saving_pence'], $i['deduction_pence']);
+
+            return array_filter($i, fn ($v) => $v !== null);
+        }, $review['items']);
+
+        return $review;
     }
 
     private static function money(int $pence, string $currency = 'GBP'): array
