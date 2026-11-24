@@ -7,8 +7,12 @@ use App\Domain\Matching\OwnAccounts;
 use App\Http\Presenters\Present;
 use App\Models\AuditEvent;
 use App\Models\BankTransaction;
+use App\Models\Document;
+use App\Models\JobFind;
 use App\Models\ManualExpense;
+use App\Models\TravelItem;
 use App\Support\Money;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -89,6 +93,62 @@ class TransactionController extends Controller
             'history' => $history,
             'events' => CalendarSync::eventsOn($date),
             'jobs_near' => Present::jobsNear($date),
+            'links' => self::links($item),
         ]);
+    }
+
+    /**
+     * Everything this payment is connected to: its jobs, invoice, stay or journey, receipts, the other side of a
+     * transfer, the rule that decided it, and anything a job's search found it for.
+     *
+     * @return list<array{type:string, label:string, detail:?string, href:?string}>
+     */
+    public static function links(BankTransaction|ManualExpense $item): array
+    {
+        $out = [];
+        $item->loadMissing(['allocations.job', 'allocations.invoice', 'allocations.rule']);
+        foreach ($item->allocations->pluck('job')->filter()->unique('id') as $job) {
+            $out[] = ['type' => 'job', 'label' => $job->title, 'detail' => $job->starts_on->format('j M Y').($job->ends_on->ne($job->starts_on) ? ' – '.$job->ends_on->format('j M Y') : ''), 'href' => '/jobs/'.$job->id];
+        }
+        foreach ($item->allocations->pluck('invoice')->filter()->unique('id') as $inv) {
+            $out[] = ['type' => 'invoice', 'label' => 'Invoice '.($inv->number ?? 'draft'), 'detail' => Money::format($inv->total_minor, $inv->currency ?? 'GBP'), 'href' => '/invoices/'.$inv->id];
+        }
+        foreach ($item->allocations->pluck('rule')->filter()->unique('id') as $rule) {
+            $out[] = ['type' => 'rule', 'label' => 'Your rule for '.$rule->merchant_key, 'detail' => $rule->auto_confirm ? 'Confirms on its own' : 'Suggests', 'href' => '/settings/rules'];
+        }
+        if (! $item instanceof BankTransaction) {
+            return $out;
+        }
+        foreach (TravelItem::query()->where('bank_transaction_id', $item->id)->get() as $t) {
+            $out[] = ['type' => 'travel', 'label' => (TravelItem::KINDS[$t->kind] ?? $t->kind).': '.($t->kind === 'hotel' ? ($t->place ?: $t->provider) : $t->provider),
+                'detail' => $t->starts_on->format('j M Y').($t->decision ? ' · '.(TravelItem::DECISIONS[$t->decision] ?? $t->decision) : ''), 'href' => '/travel?year='.$item->tax_year];
+        }
+        if ($item->transfer_pair_id && ($pair = BankTransaction::query()->with('account')->find($item->transfer_pair_id))) {
+            $out[] = ['type' => 'transfer', 'label' => 'Other side: '.($pair->account?->name ?? 'another account'), 'detail' => $pair->effectiveDate()->format('j M Y').' · '.Money::format($pair->amount_pence),
+                'href' => '/transactions?account='.$pair->account_id.'&q='.urlencode($pair->counterparty ?: $pair->description)];
+        }
+        // Receipts read from email or uploads for this amount, within a few days.
+        $amounts = array_values(array_filter([abs($item->amount_pence), $item->original_amount_minor ? abs($item->original_amount_minor) : null]));
+        $date = $item->effectiveDate();
+        $receipts = Document::query()->where('kind', 'receipt')->whereNotNull('extraction')
+            ->where(fn ($q) => $q->whereNull('received_at')->orWhereBetween('received_at', [$date->copy()->subDays(10)->format('Y-m-d 00:00:00'), $date->copy()->addDays(10)->format('Y-m-d 23:59:59')]))
+            ->limit(200)->get(['id', 'parent_id', 'original_name', 'email_subject', 'extraction', 'received_at'])
+            ->filter(function (Document $d) use ($amounts, $date) {
+                $r = $d->extraction['receipt'] ?? null;
+                $on = $r['date'] ?? null;
+
+                return $r && in_array((int) ($r['amount_minor'] ?? 0), $amounts, true) && (! $on || abs(CarbonImmutable::parse($on)->diffInDays($date)) <= 4);
+            });
+        foreach ($receipts as $d) {
+            $out[] = ['type' => 'receipt', 'label' => 'Receipt: '.($d->extraction['receipt']['merchant'] ?? $d->email_subject ?? $d->original_name), 'detail' => 'Same amount'.(($d->extraction['receipt']['date'] ?? null) ? ', '.CarbonImmutable::parse($d->extraction['receipt']['date'])->format('j M Y') : ''),
+                'href' => '/documents/'.($d->parent_id ?? $d->id)];
+        }
+        foreach (JobFind::query()->with('job')->whereIn('type', ['payment', 'income'])->where('ref', (string) $item->id)->whereIn('status', ['possible', 'linked'])->get() as $f) {
+            if ($f->job && ! collect($out)->contains(fn ($o) => $o['type'] === 'job' && $o['href'] === '/jobs/'.$f->job->id)) {
+                $out[] = ['type' => 'job', 'label' => 'May be for '.$f->job->title, 'detail' => $f->detail, 'href' => '/jobs/'.$f->job->id];
+            }
+        }
+
+        return $out;
     }
 }

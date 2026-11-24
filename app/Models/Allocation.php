@@ -57,6 +57,16 @@ class Allocation extends Model
         return $this->belongsTo(WorkJob::class, 'work_job_id');
     }
 
+    public function invoice(): BelongsTo
+    {
+        return $this->belongsTo(Invoice::class);
+    }
+
+    public function rule(): BelongsTo
+    {
+        return $this->belongsTo(MerchantRule::class, 'merchant_rule_id');
+    }
+
     public function isConfirmed(): bool
     {
         return $this->confirmed_at !== null;

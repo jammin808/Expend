@@ -20,13 +20,21 @@ final class Present
             'date' => $tx->effectiveDate()->format('Y-m-d'),
             'posted_on' => $tx->posted_on->format('Y-m-d'),
             'tax_year' => $tx->tax_year,
-            'account' => $tx->relationLoaded('account') ? ['id' => $tx->account->id, 'name' => $tx->account->name, 'kind' => $tx->account->kind] : null,
+            'account' => $tx->relationLoaded('account') ? ['id' => $tx->account->id, 'name' => $tx->account->name, 'kind' => $tx->account->kind, 'last4' => $tx->account->last4] : null,
+            'time' => $tx->transacted_time,
+            'place' => $tx->place,
+            'card_last4' => $tx->card_last4,
+            'payment_type' => $tx->payment_type,
             'description' => $tx->description,
             'counterparty' => $tx->counterparty,
             'merchant_key' => $tx->merchant_key,
             'amount_pence' => $tx->amount_pence,
             'original_amount_minor' => $tx->original_amount_minor,
             'original_currency' => $tx->original_currency,
+            // The rate the bank used: how many of the foreign currency per £1.
+            'fx' => $tx->original_currency && $tx->original_amount_minor && $tx->amount_pence
+                ? ['units_per_gbp' => number_format(abs($tx->original_amount_minor) / abs($tx->amount_pence), 4, '.', ''), 'rate_date' => $tx->effectiveDate()->format('Y-m-d'), 'source' => 'bank']
+                : null,
             'bank_category' => $tx->bank_category,
             'review_status' => $tx->review_status,
             'transfer_pair_id' => $tx->transfer_pair_id,

@@ -10,7 +10,7 @@ import { StatusPill } from '@/components/status-pill';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/app-layout';
-import { day, kindLabels, money } from '@/lib/format';
+import { day, kindLabels, money, paidWith } from '@/lib/format';
 import { type InvoiceRow } from '@/pages/invoices/index';
 import { type Item, type Lookups } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
@@ -387,7 +387,12 @@ export default function JobShow({
                                     <button className="min-w-0 text-left" onClick={() => setDrawer({ source: 'bank', id: t.id })}>
                                         <span className="block truncate hover:underline">{t.description}</span>
                                         <span className="text-muted-foreground text-xs">
-                                            {day(t.date)} · {t.account?.name}
+                                            {day(t.date)}
+                                            {t.time ? ` ${t.time}` : ''} · {paidWith(t)}
+                                            {t.place ? ` · ${t.place}` : ''}
+                                            {t.original_currency && t.original_currency !== 'GBP'
+                                                ? ` · ${money(t.original_amount_minor, t.original_currency)}`
+                                                : ''}
                                         </span>
                                     </button>
                                     <span className="flex items-center gap-3">

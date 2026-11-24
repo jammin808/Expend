@@ -17,7 +17,7 @@ class BankTransaction extends Model
     public const IMMUTABLE = [
         'account_id', 'import_batch_id', 'posted_on', 'transaction_on', 'description', 'counterparty',
         'reference', 'amount_pence', 'balance_after_pence', 'original_amount_minor', 'original_currency',
-        'raw', 'fingerprint', 'occurrence',
+        'raw', 'fingerprint', 'occurrence', 'transacted_time', 'place', 'card_last4', 'payment_type',
     ];
 
     protected $guarded = ['id'];

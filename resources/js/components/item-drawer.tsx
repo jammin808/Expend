@@ -5,7 +5,7 @@ import { StatusPill } from '@/components/status-pill';
 import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { day, decidedByLabels, kindLabels, money } from '@/lib/format';
+import { day, decidedByLabels, kindLabels, money, paidWith } from '@/lib/format';
 import { type CalendarEntry, type Decision, type Item, type JobRef, type Lookups } from '@/types';
 import { router } from '@inertiajs/react';
 import { CalendarDays, History } from 'lucide-react';
@@ -16,7 +16,17 @@ interface Detail {
     history: { at: string; actor: string; action: string; reason: string | null }[];
     events: CalendarEntry[];
     jobs_near: JobRef[];
+    links?: { type: string; label: string; detail: string | null; href: string | null }[];
 }
+
+const linkTypes: Record<string, string> = {
+    job: 'Job',
+    invoice: 'Invoice',
+    rule: 'Rule',
+    travel: 'Stay or journey',
+    transfer: 'Transfer',
+    receipt: 'Receipt',
+};
 
 /** Everything about one item, with full manual control: decide, split, confirm, or send back. */
 export function ItemDrawer({
@@ -74,21 +84,72 @@ export function ItemDrawer({
                         <SheetHeader>
                             <SheetTitle className="pr-6 text-left text-base leading-snug">{item.description}</SheetTitle>
                             <SheetDescription className="text-left">
-                                {day(item.date)} · {item.account?.name} · tax year {item.tax_year}
+                                {day(item.date)}
+                                {item.time ? ` at ${item.time}` : ''} · tax year {item.tax_year}
                             </SheetDescription>
                         </SheetHeader>
+
+                        <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1 text-sm">
+                            <dt className="text-muted-foreground">Paid with</dt>
+                            <dd>{paidWith(item) || '—'}</dd>
+                            {item.place && (
+                                <>
+                                    <dt className="text-muted-foreground">Place</dt>
+                                    <dd>{item.place}</dd>
+                                </>
+                            )}
+                            {item.counterparty && item.counterparty !== item.description && (
+                                <>
+                                    <dt className="text-muted-foreground">Payee or payer</dt>
+                                    <dd>{item.counterparty}</dd>
+                                </>
+                            )}
+                            {item.bank_category && (
+                                <>
+                                    <dt className="text-muted-foreground">Bank’s category</dt>
+                                    <dd>{item.bank_category}</dd>
+                                </>
+                            )}
+                            {item.import && (
+                                <>
+                                    <dt className="text-muted-foreground">From statement</dt>
+                                    <dd className="truncate">{item.import}</dd>
+                                </>
+                            )}
+                        </dl>
 
                         <div className="flex items-baseline justify-between gap-4">
                             <Money pence={item.amount_pence} className="text-2xl font-semibold" />
                             <StatusPill status={item.review_status} />
                         </div>
-                        {item.original_currency && (
+                        {item.original_currency && item.original_currency !== 'GBP' && (
                             <p className="text-muted-foreground -mt-4 text-sm">
-                                Originally {money(item.original_amount_minor, item.original_currency)}
+                                Paid in {item.original_currency}: {money(item.original_amount_minor, item.original_currency)}
                                 {item.fx
-                                    ? ` at ${item.fx.units_per_gbp} per £1 (${item.fx.source === 'hmrc_monthly' ? 'HMRC monthly rate' : item.fx.source}, ${item.fx.rate_date})`
+                                    ? ` at ${item.fx.units_per_gbp} ${item.original_currency} per £1 (${item.fx.source === 'hmrc_monthly' ? 'HMRC monthly rate' : item.fx.source === 'bank' ? 'the bank’s rate' : item.fx.source}${item.fx.rate_date ? `, ${day(item.fx.rate_date)}` : ''})`
                                     : ''}
                             </p>
+                        )}
+
+                        {detail.links && detail.links.length > 0 && (
+                            <div className="rounded-lg border p-3 text-sm">
+                                <p className="mb-1 font-medium">Connected to</p>
+                                <ul className="space-y-1">
+                                    {detail.links.map((l, i) => (
+                                        <li key={i} className="flex flex-wrap items-baseline gap-x-2">
+                                            <span className="text-muted-foreground w-28 shrink-0 text-xs">{linkTypes[l.type] ?? l.type}</span>
+                                            {l.href ? (
+                                                <a href={l.href} className="font-medium underline-offset-2 hover:underline">
+                                                    {l.label}
+                                                </a>
+                                            ) : (
+                                                <span className="font-medium">{l.label}</span>
+                                            )}
+                                            {l.detail && <span className="text-muted-foreground text-xs">{l.detail}</span>}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
                         )}
 
                         {item.allocations.length > 0 && (

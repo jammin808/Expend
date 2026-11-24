@@ -6,7 +6,7 @@ import { Money } from '@/components/money';
 import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
-import { day, decidedByLabels, kindLabels, money } from '@/lib/format';
+import { day, decidedByLabels, kindLabels, money, paidWith } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, Link, router, usePage } from '@inertiajs/react';
@@ -244,7 +244,12 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                             <div className="space-y-3 p-5 md:p-6">
                                 <div className="text-muted-foreground flex items-center justify-between text-sm">
                                     <span>
-                                        {day(item.date)} · {item.account?.name} · {item.tax_year}
+                                        {day(item.date)}
+                                        {item.time ? ` ${item.time}` : ''} · {paidWith(item)}
+                                        {item.place ? ` · ${item.place}` : ''} · {item.tax_year}
+                                        {item.original_currency && item.original_currency !== 'GBP'
+                                            ? ` · paid ${money(item.original_amount_minor, item.original_currency)}`
+                                            : ''}
                                     </span>
                                     <span className="flex items-center gap-1">
                                         <button

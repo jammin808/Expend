@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
-import { day, decidedByLabels, kindLabels, money } from '@/lib/format';
+import { day, decidedByLabels, kindLabels, money, paidWith } from '@/lib/format';
 import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, router, useForm, usePage } from '@inertiajs/react';
 import { Plus } from 'lucide-react';
@@ -351,19 +351,36 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                                             aria-label="Select"
                                         />
                                     </td>
-                                    <td className="p-2 whitespace-nowrap tabular-nums">{day(t.date)}</td>
+                                    <td className="p-2 whitespace-nowrap tabular-nums">
+                                        {day(t.date)}
+                                        {t.time && <p className="text-muted-foreground text-xs">{t.time}</p>}
+                                    </td>
                                     <td className="max-w-80 p-2">
                                         <p className="flex items-center gap-1.5">
                                             <span className="truncate">{t.description}</span>
                                             <Explain url={`/explain/${t.source ?? 'bank'}/${t.id}`} />
                                         </p>
-                                        {t.original_currency && (
-                                            <p className="text-muted-foreground text-xs">{money(t.original_amount_minor, t.original_currency)}</p>
+                                        {t.place && <p className="text-muted-foreground truncate text-xs">{t.place}</p>}
+                                        <p className="text-muted-foreground text-xs md:hidden">{paidWith(t)}</p>
+                                    </td>
+                                    <td className="text-muted-foreground hidden p-2 whitespace-nowrap md:table-cell">
+                                        {t.account?.name}
+                                        {(t.card_last4 || t.payment_type) && (
+                                            <p className="text-xs">
+                                                {[t.card_last4 ? `card •••• ${t.card_last4}` : null, t.payment_type].filter(Boolean).join(' · ')}
+                                            </p>
                                         )}
                                     </td>
-                                    <td className="text-muted-foreground hidden p-2 whitespace-nowrap md:table-cell">{t.account?.name}</td>
-                                    <td className="p-2 text-right">
+                                    <td className="p-2 text-right whitespace-nowrap">
                                         <Money pence={t.amount_pence} />
+                                        {t.original_currency && t.original_currency !== 'GBP' && (
+                                            <p
+                                                className="text-muted-foreground text-xs tabular-nums"
+                                                title={t.fx ? `${t.fx.units_per_gbp} ${t.original_currency} per £1` : undefined}
+                                            >
+                                                {money(t.original_amount_minor, t.original_currency)}
+                                            </p>
+                                        )}
                                     </td>
                                     <td className="text-muted-foreground hidden max-w-72 p-2 lg:table-cell">
                                         <p className="truncate">{summary(t)}</p>

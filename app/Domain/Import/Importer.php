@@ -111,6 +111,7 @@ final class Importer
                     'original_currency' => $row->originalCurrency,
                     'bank_category' => $row->bankCategory,
                     'raw' => $row->raw,
+                    ...self::details($row),
                     'fingerprint' => $row->fingerprint($account->id),
                     'occurrence' => $plan['occurrences'][$index],
                     'state' => $quarantine ? 'quarantined' : 'active',
@@ -297,5 +298,13 @@ final class Importer
         }
 
         return ['new' => $new, 'occurrences' => $occurrences, 'duplicates' => $duplicates, 'locked' => $locked, 'locked_years' => array_keys($hitYears)];
+    }
+
+    /** @return array{transacted_time:?string, place:?string, card_last4:?string, payment_type:?string} */
+    private static function details(NormalizedRow $row): array
+    {
+        $d = LineDetails::from($row->raw, $row->description, $row->effectiveDate());
+
+        return ['transacted_time' => $d['time'], 'place' => $d['place'], 'card_last4' => $d['card_last4'], 'payment_type' => $d['payment_type']];
     }
 }

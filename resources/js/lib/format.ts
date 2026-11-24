@@ -44,3 +44,8 @@ export function daysUntil(iso: string): number {
     const target = new Date(iso + 'T23:59:59');
     return Math.ceil((target.getTime() - Date.now()) / 86_400_000);
 }
+
+/** The account and card a payment was made with, in a few words: "Amex · card •••• 1004 · Card payment". */
+export function paidWith(t: { account?: { name: string } | null; card_last4?: string | null; payment_type?: string | null }): string {
+    return [t.account?.name, t.card_last4 ? `card •••• ${t.card_last4}` : null, t.payment_type].filter(Boolean).join(' · ');
+}

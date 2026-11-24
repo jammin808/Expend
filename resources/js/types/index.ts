@@ -67,7 +67,11 @@ export interface Item {
     source: 'bank' | 'manual';
     date: string;
     tax_year: string;
-    account: { id: number; name: string; kind: string } | null;
+    account: { id: number; name: string; kind: string; last4?: string | null } | null;
+    time?: string | null;
+    place?: string | null;
+    card_last4?: string | null;
+    payment_type?: string | null;
     description: string;
     counterparty?: string | null;
     merchant_key: string;
