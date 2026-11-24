@@ -473,8 +473,9 @@ class ReviewFixesTodoListTest extends TestCase
         // Before: 994 queries a build (500 invoice sums, 100 document finds, ...); 2,031 for a cold dashboard and
         // 1,037 for every one after.
         [$n, $log] = $this->queries(fn () => TodoList::build(1));
-        $this->assertLessThan(450, $n, 'What remains is mostly the rule offers (RuleLearner, about 6 queries a merchant)');
-        $this->assertEmpty(preg_grep('/sum\([`"]amount_pence[`"]\)/i', $log), 'No sum per invoice');
+        // Fines and interest add a fixed cost of about 13 queries per tax year (its figures), not one per item.
+        $this->assertLessThan(450 + 13 * 6, $n, 'What remains is mostly the rule offers and the fixed per-year cost of the fines check');
+        $this->assertEmpty(preg_grep('/sum\([`"]amount_pence[`"]\).*invoice_id[`"]? = \?/i', $log), 'No sum per invoice');
         $this->assertEmpty(preg_grep('/from [`"]documents[`"] where [`"]documents[`"]\.[`"]id[`"] = \?/i', $log), 'No find per failed check');
 
         // The dashboard and the menu badge use one kept list: built once when it's needed, then only read.

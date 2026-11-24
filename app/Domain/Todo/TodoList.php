@@ -9,6 +9,7 @@ use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\Reconciler;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\OwnAccounts;
+use App\Domain\Tax\PenaltyEstimator;
 use App\Models\Account;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -30,6 +31,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 /**
  * Everything that needs you, in one list, most urgent first: a reconnect, a held statement, unpaid invoices, failed
@@ -46,7 +48,7 @@ use Illuminate\Support\Facades\DB;
 final class TodoList
 {
     public const GROUPS = [
-        'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'checks' => 'Failed checks', 'deadline' => 'Tax return',
+        'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'checks' => 'Failed checks', 'deadline' => 'Tax return', 'penalties' => 'Fines and interest',
         'invoice' => 'Invoices to send', 'jobs' => 'Possible jobs', 'transfers' => 'Transfers between your accounts', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
         'no_po' => 'Jobs with no PO', 'reconcile' => 'Accounts that don’t match the bank', 'missing' => 'Payments missing from statements', 'documents' => 'Documents held',
     ];
@@ -178,7 +180,7 @@ final class TodoList
      */
     public static function snoozeOnly(string $key): bool
     {
-        return in_array($key, ['gmail', 'transfers'], true) || str_starts_with($key, 'deadline:');
+        return in_array($key, ['gmail', 'transfers'], true) || str_starts_with($key, 'deadline:') || str_starts_with($key, 'penalty:');
     }
 
     public static function action(string $code, int|string $id, string $label, string $style = 'default'): array
@@ -301,6 +303,30 @@ final class TodoList
                 $add('deadline', 1, 'deadline:'.$year->label, "Tax return {$year->label}: ".(today()->gt($deadline) ? 'overdue since ' : 'due ').$deadline->format('j F Y'),
                     'Work through the year, then copy the figures into HMRC online.', '/years/'.$year->label);
             }
+        }
+
+        // Fines and interest: penalties already due or still growing, or the next one coming within 60 days.
+        try {
+            $fines = PenaltyEstimator::all()['years'];
+        } catch (Throwable $e) {
+            report($e);
+            $fines = [];
+        }
+        foreach ($fines as $y) {
+            $owed = $y['penalties_pence'] + $y['interest_pence'];
+            $soon = collect($y['upcoming'])->first(fn ($p) => $p['date'] <= now()->addDays(60)->format('Y-m-d'));
+            if ($owed <= 0 && ! $soon) {
+                continue;
+            }
+            $detail = implode(' ', array_filter([
+                $owed > 0 ? Money::format($y['penalties_pence'], 'GBP', false).' in penalties and '.Money::format($y['interest_pence'], 'GBP', false).' interest so far'
+                    .($y['per_day_pence'] > 0 ? ', growing by about '.Money::format($y['per_day_pence'], 'GBP', false).' a day' : '').'.' : null,
+                $soon ? 'Next: '.$soon['label'].' on '.CarbonImmutable::parse($soon['date'])->format('j F Y').' ('.Money::format($soon['amount_pence'], 'GBP', false).').' : null,
+                $y['actions'][0] ?? null,
+                'An estimate from your records.',
+            ]));
+            $add('penalties', 1, 'penalty:'.$y['tax_year'], $owed > 0 ? "Fines and interest for {$y['tax_year']}: ".Money::format($owed, 'GBP', false) : "Avoid a fine for {$y['tax_year']}",
+                $detail, '/years/'.$y['tax_year'], [], ['amount' => -($owed > 0 ? $owed : $soon['amount_pence'])]);
         }
 
         // Finished jobs with no invoice issued (as PoStatus counts it: an issued or paid invoice for the job).

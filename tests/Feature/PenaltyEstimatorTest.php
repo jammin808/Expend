@@ -6,6 +6,7 @@ use App\Domain\Ai\AssistantTools;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Tax\PenaltyEstimator;
 use App\Domain\Tax\TaxEstimator;
+use App\Domain\Todo\TodoList;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\Category;
@@ -193,5 +194,11 @@ class PenaltyEstimatorTest extends TestCase
         $this->assertTrue($answer['estimate']);
         $this->assertSame([], $answer['years'][0]['coming_if_nothing_changes']);
         $this->assertNotEmpty($answer['years'][0]['already_due']);
+
+        // The to-do list (and so the Telegram digest) carries it, most urgent first; it can only be snoozed.
+        $item = collect(TodoList::build()['items'])->firstWhere('group', 'penalties');
+        $this->assertStringStartsWith('Fines and interest for 2024-25: £', $item['title']);
+        $this->assertSame(1, $item['priority']);
+        $this->assertTrue(TodoList::snoozeOnly($item['key']));
     }
 }
