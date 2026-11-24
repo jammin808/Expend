@@ -22,7 +22,7 @@ class SearchController extends Controller
             return response()->json(['results' => []]);
         }
         $like = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $q).'%';
-        $amount = preg_match('/^£?\s*(\d{1,7})(?:[.,](\d{1,2}))?$/', $q, $m) ? (int) $m[1] * 100 + (int) str_pad($m[2] ?? '0', 2, '0') : null;
+        $amount = self::amount($q);
         $out = [];
 
         $jobs = WorkJob::query()->with('client')
@@ -69,5 +69,23 @@ class SearchController extends Controller
         }
 
         return response()->json(['results' => $out]);
+    }
+
+    /**
+     * The amount in pence when the search looks like one, with or without '£', a sign, or thousands commas, the way
+     * the app shows amounts ("−£1,200.00", "1,200", "1200", "56.98"). A comma before one or two final digits is read
+     * as a decimal point ("56,98").
+     */
+    private static function amount(string $q): ?int
+    {
+        $s = preg_replace('/^[-−+]|£|\s/u', '', $q) ?? '';
+        if (preg_match('/^\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/', $s)) {
+            $s = str_replace(',', '', $s);
+        }
+        if (! preg_match('/^(\d{1,7})(?:[.,](\d{1,2}))?$/', $s, $m)) {
+            return null;
+        }
+
+        return (int) $m[1] * 100 + (int) str_pad($m[2] ?? '0', 2, '0');
     }
 }

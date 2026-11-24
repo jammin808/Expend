@@ -152,7 +152,8 @@ class TaxYearController extends Controller
                 'label' => $year->label, 'status' => $year->status, 'locked' => $year->isLocked(),
                 'starts_on' => $period->startsOn()->format('Y-m-d'), 'ends_on' => $period->endsOn()->format('Y-m-d'),
                 'deadline' => $period->filingDeadline()->format('Y-m-d'),
-                'overdue' => $year->status !== 'filed' && $period->filingDeadline()->isPast(),
+                // On time until the end of the deadline day; a return filed (or filed and being amended) isn't overdue.
+                'overdue' => ! in_array($year->status, ['filed', 'amending'], true) && today()->gt($period->filingDeadline()),
                 'payments_on_account_paid_pence' => $year->payments_on_account_paid_pence,
             ],
             'progress' => YearProgress::for($label),

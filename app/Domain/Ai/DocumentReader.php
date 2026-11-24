@@ -173,12 +173,16 @@ final class DocumentReader
     }
 
     /**
-     * Link a document (and the attachments that go with it) to a job, keeping its details in step. When you unlink it,
-     * the job is remembered as "not this job". Automatic links leave alone any attachment you linked yourself.
+     * Link a document (and, unless told not to, the attachments that go with it) to a job, keeping its details in
+     * step. When you unlink it, the job is remembered as "not this job". An attachment goes with its email only while
+     * it's on the email's job (or on none): one on another job, or one you said isn't for this job, stays where it
+     * is, whoever links the email, and unlinking the email leaves alone an attachment that isn't on the email's job.
+     * Automatic links also leave alone any attachment you linked yourself.
      */
-    public static function relink(Document $document, ?int $jobId, ?string $by = null): void
+    public static function relink(Document $document, ?int $jobId, ?string $by = null, bool $attachments = true): void
     {
         $owner = $by === 'you';
+        $was = $document->work_job_id;
         $apply = function (Document $d) use ($jobId, $by, $owner) {
             $fields = ['work_job_id' => $jobId];
             if ($by !== null) {
@@ -191,8 +195,15 @@ final class DocumentReader
             DocumentFact::query()->where('document_id', $d->id)->update(['work_job_id' => $jobId]);
         };
         $apply($document);
+        if (! $attachments) {
+            return;
+        }
         foreach ($document->children()->get() as $child) {
-            if (! $owner && $child->job_linked_by === 'you') {
+            // When you move the email to another job, what was on its old job moves with it; automation never moves
+            // an attachment off a job.
+            $onOther = $child->work_job_id && $child->work_job_id !== $jobId && (! $owner || $child->work_job_id !== $was);
+            $stays = $jobId ? $onOther || in_array($jobId, $child->job_rejected ?? [], true) : $child->work_job_id !== $was;
+            if ($stays || (! $owner && $child->job_linked_by === 'you')) {
                 continue;
             }
             $apply($child);

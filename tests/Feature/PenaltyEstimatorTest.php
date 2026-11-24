@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Ai\AssistantTools;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Tax\PenaltyEstimator;
 use App\Domain\Tax\TaxEstimator;
@@ -188,7 +189,7 @@ class PenaltyEstimatorTest extends TestCase
         // You tell it HMRC agreed a payment plan; the assistant can answer "what if I file and pay next week?".
         $this->patch('/years/2024-25', ['payment_plan_from' => '2026-06-01'])->assertSessionHas('success');
         $this->assertSame('2026-06-01', TaxYear::query()->where('label', '2024-25')->value('payment_plan_from')?->format('Y-m-d'));
-        $answer = app(\App\Domain\Ai\AssistantTools::class)->run('penalties', ['tax_year' => '2024-25', 'file_on' => '2026-11-30', 'pay_all_on' => '2026-11-30']);
+        $answer = app(AssistantTools::class)->run('penalties', ['tax_year' => '2024-25', 'file_on' => '2026-11-30', 'pay_all_on' => '2026-11-30']);
         $this->assertTrue($answer['estimate']);
         $this->assertSame([], $answer['years'][0]['coming_if_nothing_changes']);
         $this->assertNotEmpty($answer['years'][0]['already_due']);

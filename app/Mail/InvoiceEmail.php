@@ -2,6 +2,7 @@
 
 namespace App\Mail;
 
+use App\Domain\Invoices\InvoiceMailer;
 use App\Models\Invoice;
 use App\Models\Setting;
 use App\Support\Money;
@@ -11,11 +12,23 @@ use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 /** An issued invoice (or a reminder about one), with its PDF attached. Replies go to your business email. */
 class InvoiceEmail extends Mailable
 {
-    public function __construct(public Invoice $invoice, public bool $reminder = false) {}
+    /** @var array<string, mixed> the invoice's sent or reminder fields before this email, put back if it fails */
+    public array $before = [];
+
+    /** When this email marked the invoice as sent or reminded (declared with defaults so emails queued before these existed still load). */
+    public ?string $claimedAt = null;
+
+    /** @param  array<string, mixed>  $before */
+    public function __construct(public Invoice $invoice, public bool $reminder = false, array $before = [], ?string $claimedAt = null)
+    {
+        $this->before = $before;
+        $this->claimedAt = $claimedAt;
+    }
 
     public function envelope(): Envelope
     {
@@ -43,6 +56,12 @@ class InvoiceEmail extends Mailable
         $bank = Setting::get('business_bank_details');
 
         return new Content(htmlString: $body.($bank ? '<p>Bank details:<br>'.nl2br(e($bank)).'</p>' : '')."<p>Many thanks,<br>{$name}</p>");
+    }
+
+    /** Called by the queue when sending fails for good: the invoice mustn't stay marked as sent. */
+    public function failed(Throwable $e): void
+    {
+        app(InvoiceMailer::class)->failed($this->invoice, $this->reminder, $this->before, (string) $this->claimedAt, (string) ($this->to[0]['address'] ?? $this->invoice->bill_to_email), $e);
     }
 
     public function attachments(): array

@@ -132,7 +132,7 @@ class JobController extends Controller
                 'linked' => $t->work_job_id === $job->id, 'by' => $t->job_linked_by, 'decision' => $t->decision ? (TravelItem::DECISIONS[$t->decision] ?? $t->decision) : null, 'source' => $t->source,
                 'check' => $travelChecks[$t->id] ?? null,
             ])->values(),
-            'invoices' => Invoice::query()->where('work_job_id', $job->id)->get()->map(fn ($i) => InvoiceController::row($i)),
+            'invoices' => InvoiceController::rows(Invoice::query()->where('work_job_id', $job->id)->get()),
             'kinds' => Document::KINDS,
             'lookups' => Present::lookups(),
             'clients' => Client::query()->orderBy('name')->get(['id', 'name']),

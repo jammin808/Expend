@@ -2,6 +2,7 @@
 
 namespace App\Domain\Ai;
 
+use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\OwnAccounts;
@@ -268,17 +269,30 @@ final class AssistantTools
 
     private function calendar(array $f): array
     {
-        $from = CarbonImmutable::parse($f['date_from'] ?? 'today');
-        $to = CarbonImmutable::parse($f['date_to'] ?? $from->addDays(7)->format('Y-m-d'))->endOfDay();
-        if ($to->diffInDays($from, true) > 120) {
-            $to = $from->addDays(120)->endOfDay();
+        // Whole UK days: entries are stored in UTC (all-day ones as dates), so a day starts at UK midnight.
+        $from = CarbonImmutable::parse(substr((string) ($f['date_from'] ?? CarbonImmutable::now(CalendarEvent::TZ)->format('Y-m-d')), 0, 10), CalendarEvent::TZ)->startOfDay();
+        $to = isset($f['date_to']) ? CarbonImmutable::parse(substr((string) $f['date_to'], 0, 10), CalendarEvent::TZ)->startOfDay() : $from->addDays(7);
+        if ($to->lt($from)) {
+            $to = $from;
         }
+        if ($to->diffInDays($from, true) > 120) {
+            $to = $from->addDays(120);
+        }
+        $after = $to->addDay();
 
         return [
             'from' => $from->format('Y-m-d'), 'to' => $to->format('Y-m-d'),
-            'calendar' => CalendarEvent::query()->whereBetween('starts_at', [$from, $to])->orderBy('starts_at')->limit(100)->get()
-                ->map(fn ($e) => ['when' => $e->starts_at->format($e->all_day ? 'Y-m-d' : 'Y-m-d H:i'), 'until' => $e->ends_at?->format('Y-m-d H:i'), 'what' => $e->summary, 'where' => $e->location])->all(),
-            'jobs' => WorkJob::query()->where('starts_on', '<=', $to)->where('ends_on', '>=', $from->format('Y-m-d'))->orderBy('starts_on')->get()
+            'calendar' => CalendarEvent::query()
+                ->where(fn ($q) => $q
+                    ->where(fn ($q) => $q->where('all_day', false)->where('starts_at', '>=', $from->utc()->format('Y-m-d H:i:s'))->where('starts_at', '<', $after->utc()->format('Y-m-d H:i:s')))
+                    ->orWhere(fn ($q) => $q->where('all_day', true)->where('starts_at', '>=', $from->format('Y-m-d 00:00:00'))->where('starts_at', '<', $after->format('Y-m-d 00:00:00'))))
+                ->orderBy('starts_at')->limit(100)->get()
+                ->map(fn (CalendarEvent $e) => [
+                    'when' => $e->all_day ? $e->day() : $e->localStart()->format('Y-m-d H:i'),
+                    'until' => $e->all_day ? $e->lastDay()->format('Y-m-d') : $e->localEnd()?->format('Y-m-d H:i'),
+                    'what' => $e->summary, 'where' => $e->location,
+                ])->all(),
+            'jobs' => WorkJob::query()->where('starts_on', '<=', $to->format('Y-m-d'))->where('ends_on', '>=', $from->format('Y-m-d'))->orderBy('starts_on')->get()
                 ->map(fn ($j) => ['job_id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'ends_on' => $j->ends_on->format('Y-m-d'), 'venue' => $j->location])->all(),
         ];
     }
@@ -316,27 +330,41 @@ final class AssistantTools
     private function invoices(?string $status): array
     {
         $invoices = Invoice::query()->with(['client', 'job'])->when($status, fn ($q, $v) => $q->where('status', $v))->orderByDesc('id')->limit(100)->get();
+        // What has come in for each, in its own currency: payments linked to it, and income recorded for its job.
+        $received = InvoicePayments::received($invoices);
 
-        return ['invoices' => $invoices->map(fn (Invoice $i) => [
-            'invoice_id' => $i->id, 'number' => $i->number, 'status' => $i->status, 'client' => $i->client?->name ?? $i->bill_to_name,
-            'job' => $i->job?->title, 'po_number' => $i->po_number, 'total' => self::money($i->total_minor), 'paid' => self::money($i->paidMinor()),
-            'issued' => $i->issue_date?->format('Y-m-d'), 'due' => $i->due_date?->format('Y-m-d'),
-            'overdue' => $i->status === 'issued' && $i->due_date && $i->due_date->isPast(),
-        ])->all()];
+        return ['invoices' => $invoices->map(function (Invoice $i) use ($received) {
+            $paid = $received[$i->id]['paid'] ?? 0;
+            $currency = $i->currency ?: 'GBP';
+
+            return [
+                'invoice_id' => $i->id, 'number' => $i->number, 'status' => $i->status, 'client' => $i->client?->name ?? $i->bill_to_name,
+                'job' => $i->job?->title, 'po_number' => $i->po_number, 'total' => self::money($i->total_minor, $currency), 'paid' => self::money($paid, $currency),
+                'issued' => $i->issue_date?->format('Y-m-d'), 'due' => $i->due_date?->format('Y-m-d'),
+                // Overdue from the day after it's due, as on the invoices page and the to-do list, and only while not paid in full.
+                'overdue' => $i->status === 'issued' && $paid < $i->total_minor && (bool) $i->due_date?->lt(today()),
+            ];
+        })->all()];
     }
 
     private function deadlines(): array
     {
         $today = CarbonImmutable::today();
-        $years = TaxYear::query()->where('status', '!=', 'filed')->get()->map(fn (TaxYear $y) => [
-            'tax_year' => $y->label, 'status' => $y->status, 'return_and_payment_due' => $y->period()->filingDeadline()->format('Y-m-d'),
-            'overdue' => $y->period()->filingDeadline()->lt($today),
-        ])->all();
+        // A return being amended has been filed: it isn't overdue, and the amendment is due a year after the filing
+        // deadline. One whose amendment window has closed is left out, like a filed one.
+        $years = TaxYear::query()->where('status', '!=', 'filed')->get()
+            ->reject(fn (TaxYear $y) => $y->status === 'amending' && $today->gt($y->period()->filingDeadline()->addYear()))
+            ->map(fn (TaxYear $y) => $y->status === 'amending' ? [
+                'tax_year' => $y->label, 'status' => $y->status, 'filed' => true, 'amend_by' => $y->period()->filingDeadline()->addYear()->format('Y-m-d'), 'overdue' => false,
+            ] : [
+                'tax_year' => $y->label, 'status' => $y->status, 'return_and_payment_due' => $y->period()->filingDeadline()->format('Y-m-d'),
+                'overdue' => $today->gt($y->period()->filingDeadline()),
+            ])->values()->all();
 
         return [
             'today' => $today->format('Y-m-d'),
             'tax_returns' => $years,
-            'overdue_invoices' => $this->invoices('issued')['invoices'] ? array_values(array_filter($this->invoices('issued')['invoices'], fn ($i) => $i['overdue'])) : [],
+            'overdue_invoices' => array_values(array_filter($this->invoices('issued')['invoices'], fn ($i) => $i['overdue'])),
             'jobs_next_14_days' => $this->calendar(['date_from' => $today->format('Y-m-d'), 'date_to' => $today->addDays(14)->format('Y-m-d')])['jobs'],
             'making_tax_digital' => collect(config('tax.mtd_thresholds'))->map(fn ($t) => [
                 'starts' => $t['starts'], 'based_on' => $t['based_on'], 'threshold' => self::money($t['turnover_over']),

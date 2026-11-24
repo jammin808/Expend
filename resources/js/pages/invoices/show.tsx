@@ -1,4 +1,5 @@
 import { NativeSelect } from '@/components/native-select';
+import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -22,6 +23,7 @@ interface Props {
         sent_to: string | null;
         reminded_at: string | null;
         reminder_count: number;
+        email_failed: { to: string | null; error: string | null; at: string; reminder: boolean } | null;
         bill_to_name: string | null;
         bill_to_address: string | null;
         bill_to_email: string | null;
@@ -81,7 +83,9 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                   ? 'Edit freely until you issue it. After that it can’t be changed.'
                                   : `Issued ${day(invoice.issue_date)} · due ${day(invoice.due_date)} · paid ${money(invoice.paid_minor, invoice.currency)}` +
                                     (invoice.sent_at
-                                        ? ` · emailed to ${invoice.sent_to} ${day(invoice.sent_at.slice(0, 10))}`
+                                        ? invoice.sent_to
+                                            ? ` · emailed to ${invoice.sent_to} ${day(invoice.sent_at.slice(0, 10))}`
+                                            : ' · sent outside Expend'
                                         : ' · not emailed yet') +
                                     (invoice.reminder_count
                                         ? ` · ${invoice.reminder_count} reminder${invoice.reminder_count === 1 ? '' : 's'} sent`
@@ -95,6 +99,14 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                 </>
                             )}
                         </p>
+                        {invoice.email_failed && (
+                            <p className="mt-1 text-sm text-rose-600">
+                                {invoice.email_failed.reminder ? 'The reminder' : 'The email'}
+                                {invoice.email_failed.to ? ` to ${invoice.email_failed.to}` : ''} on {day(invoice.email_failed.at.slice(0, 10))}{' '}
+                                didn’t send{invoice.email_failed.error ? `: ${invoice.email_failed.error}` : '.'} Check Settings › Integrations, then
+                                send it again.
+                            </p>
+                        )}
                     </div>
                     <div className="flex flex-wrap gap-2">
                         <Button variant="outline" asChild>
@@ -122,7 +134,20 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                         reminder ? 'Send a reminder with the invoice attached to:' : 'Email the invoice (PDF attached) to:',
                                         invoice.bill_to_email ?? '',
                                     );
-                                    if (to) router.post(`/invoices/${invoice.id}/send`, { to, reminder }, { preserveScroll: true });
+                                    if (to)
+                                        router.post(
+                                            `/invoices/${invoice.id}/send`,
+                                            { to, reminder },
+                                            {
+                                                preserveScroll: true,
+                                                // A rejected address comes back as a form error, which this page has no field to show.
+                                                onError: (errors) =>
+                                                    toast(
+                                                        errors.to ?? Object.values(errors)[0] ?? 'That didn’t send. Check the address and try again.',
+                                                        'error',
+                                                    ),
+                                            },
+                                        );
                                 }}
                             >
                                 <Mail /> {invoice.overdue && invoice.sent_at ? 'Send a reminder' : invoice.sent_at ? 'Send again' : 'Email to client'}
@@ -156,7 +181,11 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                     className="space-y-5"
                     onSubmit={(e) => {
                         e.preventDefault();
-                        form.patch(`/invoices/${invoice.id}`, { preserveScroll: true });
+                        form.patch(`/invoices/${invoice.id}`, {
+                            preserveScroll: true,
+                            // Not saved: say why, as the field may be out of view.
+                            onError: (errors) => toast(Object.values(errors)[0] ?? 'The draft wasn’t saved. Check it and try again.', 'error'),
+                        });
                     }}
                 >
                     <fieldset disabled={!draft} className="grid gap-3 sm:grid-cols-2">
@@ -166,7 +195,12 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                         </div>
                         <div className="space-y-1.5">
                             <Label>Their email for invoices</Label>
-                            <Input value={form.data.bill_to_email} onChange={(e) => form.setData('bill_to_email', e.target.value)} />
+                            <Input
+                                value={form.data.bill_to_email}
+                                onChange={(e) => form.setData('bill_to_email', e.target.value)}
+                                aria-invalid={!!form.errors.bill_to_email}
+                            />
+                            {form.errors.bill_to_email && <p className="text-sm text-rose-600">{form.errors.bill_to_email}</p>}
                         </div>
                         <div className="space-y-1.5 sm:col-span-2">
                             <Label>Address</Label>

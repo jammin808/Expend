@@ -70,6 +70,8 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
             setDecision(initialDecision(item.amount_pence, item.allocations));
             setApplyAll(false);
         }
+        // Only when a different payment is shown: a reloaded queue mustn't wipe a decision you're part-way through.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [item?.id]);
 
     const recentCats = useMemo(
@@ -162,7 +164,8 @@ export default function InboxPage({ items, remaining, filters, lookups }: Props)
                 e.preventDefault();
                 return submit(decision, 'decide');
             }
-            if (typing) return;
+            // Browser and system shortcuts (Ctrl+P to print, Ctrl+D to bookmark, Alt+B…) aren't the Inbox's keys.
+            if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
             const k = e.key.toLowerCase();
             if (k === 'enter') {
                 e.preventDefault();

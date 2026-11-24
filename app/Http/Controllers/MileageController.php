@@ -29,6 +29,7 @@ class MileageController extends Controller
         return Inertia::render('mileage/index', [
             'year' => $year,
             'years' => TaxYear::query()->orderByDesc('label')->pluck('label'),
+            'locked' => $this->isLocked($year),
             'rates' => TaxParameters::for($year)['mileage'] ?? null,
             'trips' => $result['trips'],
             'total_pence' => $result['total_pence'],
@@ -53,14 +54,16 @@ class MileageController extends Controller
         return back()->with('success', "Added {$vehicle->name}.");
     }
 
-    /** Add a return trip for each job you ticked (estimated from postcodes). */
+    /** Add a return trip for each job you ticked (estimated from postcodes), on the vehicle you chose. */
     public function fromJobs(Request $request): RedirectResponse
     {
         $data = $request->validate(['year' => 'required|string|regex:/^\d{4}-\d{2}$/', 'vehicle_id' => 'required|integer|exists:vehicles,id', 'job_ids' => 'required|array|min:1', 'job_ids.*' => 'integer']);
-        $added = JobTrips::add($data['year'], $data['vehicle_id'], array_map('intval', $data['job_ids']));
-        AuditLog::record('mileage.from_jobs', 'Mileage', null, ['year' => $data['year'], 'jobs' => $data['job_ids'], 'trips' => $added]);
+        $this->guardLocked($data['year']);
+        $vehicle = Vehicle::query()->findOrFail($data['vehicle_id']);
+        $added = JobTrips::add($data['year'], $vehicle->id, array_map('intval', $data['job_ids']));
+        AuditLog::record('mileage.from_jobs', 'Mileage', null, ['year' => $data['year'], 'vehicle_id' => $vehicle->id, 'jobs' => $data['job_ids'], 'trips' => $added]);
 
-        return back()->with('success', "Added {$added} ".($added === 1 ? 'trip' : 'trips').'. The distances are estimates from postcodes: correct any that differ from your route.');
+        return back()->with('success', "Added {$added} ".($added === 1 ? 'trip' : 'trips')." on {$vehicle->name}. The distances are estimates from postcodes: correct any that differ from your route.");
     }
 
     public function storeTrip(Request $request): RedirectResponse
@@ -74,6 +77,7 @@ class MileageController extends Controller
 
     public function updateTrip(Request $request, MileageTrip $trip): RedirectResponse
     {
+        $this->guardLocked($trip->tax_year); // moving a trip out of a locked year would change that year too
         $before = $trip->toArray();
         $trip->update($this->validated($request));
         AuditLog::record('mileage.updated', $trip, $before, $trip->fresh()->toArray());
@@ -117,6 +121,11 @@ class MileageController extends Controller
 
     private function guardLocked(string $label): void
     {
-        abort_if(TaxYear::query()->where('label', $label)->whereNotNull('locked_at')->exists(), 422, "Tax year {$label} is locked.");
+        abort_if($this->isLocked($label), 422, "Tax year {$label} is locked.");
+    }
+
+    private function isLocked(string $label): bool
+    {
+        return TaxYear::query()->where('label', $label)->whereNotNull('locked_at')->exists();
     }
 }

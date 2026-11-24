@@ -22,6 +22,9 @@ interface Item {
     href: string | null;
     actions: Action[];
     amount?: number | null;
+    currency?: string;
+    /** Comes back under the same key whenever it applies again, so it can be snoozed but not marked not relevant. */
+    snooze_only?: boolean;
 }
 
 const PRIORITY = {
@@ -36,28 +39,65 @@ export default function Todo({
     counts,
     total,
     groups,
+    all = [],
 }: {
     items: Item[];
     counts: Record<string, number>;
     total: number;
     groups: Record<string, string>;
+    /** The kinds sent in full because you asked for all of them; of the rest, only the first few are sent. */
+    all?: string[];
 }) {
     const [busy, setBusy] = useState<string | null>(null);
     const [filter, setFilter] = useState<string | null>(null);
     const [open, setOpen] = useState<Record<string, boolean>>({});
+    const [loading, setLoading] = useState<string | null>(null);
     // Five of each kind unless you ask for more, so one busy kind doesn't bury the rest.
     const seen: Record<string, number> = {};
     const shown = (filter ? items.filter((i) => i.group === filter) : items).filter((i) => {
         seen[i.group] = (seen[i.group] ?? 0) + 1;
         return filter || open[i.group] || seen[i.group] <= 5;
     });
-    const hidden = (g: string) => (filter || open[g] ? 0 : Math.max(0, items.filter((i) => i.group === g).length - 5));
+    const sent = (g: string) => items.filter((i) => i.group === g).length;
+    const showing = (g: string) => (filter === g || open[g] ? sent(g) : Math.min(sent(g), 5));
+    // Counted on the server, so it includes the ones not sent yet. Payments are gone through in the Inbox (see below).
+    const hidden = (g: string) => (g === 'payments' ? sent(g) : Math.max(sent(g), counts[g] ?? 0)) - showing(g);
+    const showMore = (g: string) => {
+        setOpen({ ...open, [g]: true });
+        if (g === 'payments' || all.includes(g) || sent(g) >= (counts[g] ?? 0)) return;
+        // Only the first few of each kind came with the page: ask for the rest of this one. Kept in the address, so
+        // it stays listed after you act on an item.
+        router.get(
+            '/todo',
+            { all: [...all, g].join(',') },
+            {
+                only: ['items', 'counts', 'total', 'all'],
+                preserveState: true,
+                preserveScroll: true,
+                replace: true,
+                onStart: () => setLoading(g),
+                onFinish: () => setLoading(null),
+            },
+        );
+    };
     const act = (a: Action, key: string) =>
         router.post(
             `/todo/${a.code}/${encodeURIComponent(a.id)}`,
             {},
             { preserveScroll: true, onStart: () => setBusy(key + a.code), onFinish: () => setBusy(null) },
         );
+    // Snooze (days) or not relevant (no days). The server confirms it; this gives that confirmation an Undo (the
+    // toaster shows the same message once, keeping the one with the Undo), so its words must match the server's.
+    const dismiss = (i: Item, days?: number) =>
+        router.post('/todo/dismiss', days ? { key: i.key, days } : { key: i.key }, {
+            preserveScroll: true,
+            onSuccess: () =>
+                toast(days ? `Snoozed for ${days} days.` : 'Marked not relevant.', 'success', {
+                    label: 'Undo',
+                    run: () => router.post('/todo/dismiss', { key: i.key, undo: true }, { preserveScroll: true }),
+                }),
+            onError: (errors) => toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error'),
+        });
 
     return (
         <AppLayout breadcrumbs={[{ title: 'To do', href: '/todo' }]}>
@@ -130,40 +170,26 @@ export default function Todo({
                                             {i.detail && <p className="text-muted-foreground text-sm">{i.detail}</p>}
                                         </div>
                                         <div className="flex shrink-0 items-center gap-2">
-                                            {i.amount !== undefined && i.amount !== null && <Money pence={i.amount} className="text-sm" />}
+                                            {i.amount !== undefined && i.amount !== null && (
+                                                <Money pence={i.amount} currency={i.currency ?? 'GBP'} className="text-sm" />
+                                            )}
                                             <span className="flex flex-col items-end text-[11px]">
                                                 <button
                                                     type="button"
                                                     className="text-muted-foreground hover:text-foreground"
-                                                    onClick={() => router.post('/todo/dismiss', { key: i.key, days: 7 }, { preserveScroll: true })}
+                                                    onClick={() => dismiss(i, 7)}
                                                 >
                                                     Snooze a week
                                                 </button>
-                                                <button
-                                                    type="button"
-                                                    className="text-muted-foreground hover:text-foreground"
-                                                    onClick={() =>
-                                                        router.post(
-                                                            '/todo/dismiss',
-                                                            { key: i.key },
-                                                            {
-                                                                preserveScroll: true,
-                                                                onSuccess: () =>
-                                                                    toast('Marked not relevant.', 'success', {
-                                                                        label: 'Undo',
-                                                                        run: () =>
-                                                                            router.post(
-                                                                                '/todo/dismiss',
-                                                                                { key: i.key, undo: true },
-                                                                                { preserveScroll: true },
-                                                                            ),
-                                                                    }),
-                                                            },
-                                                        )
-                                                    }
-                                                >
-                                                    Not relevant
-                                                </button>
+                                                {!i.snooze_only && (
+                                                    <button
+                                                        type="button"
+                                                        className="text-muted-foreground hover:text-foreground"
+                                                        onClick={() => dismiss(i)}
+                                                    >
+                                                        Not relevant
+                                                    </button>
+                                                )}
                                             </span>
                                             {i.actions.map((a) => (
                                                 <Button
@@ -182,16 +208,23 @@ export default function Todo({
                             </ul>
                             {[...new Set(list.map((i) => i.group))]
                                 .filter((g) => hidden(g) > 0)
-                                .map((g) => (
-                                    <button
-                                        key={g}
-                                        type="button"
-                                        className="text-muted-foreground mr-3 text-xs underline underline-offset-2"
-                                        onClick={() => setOpen({ ...open, [g]: true })}
-                                    >
-                                        Show {hidden(g)} more: {groups[g].toLowerCase()}
-                                    </button>
-                                ))}
+                                .map((g) =>
+                                    all.includes(g) && showing(g) === sent(g) ? (
+                                        <p key={g} className="text-muted-foreground text-xs">
+                                            Showing the first {sent(g)} of {counts[g]}: {groups[g].toLowerCase()}.
+                                        </p>
+                                    ) : (
+                                        <button
+                                            key={g}
+                                            type="button"
+                                            disabled={loading !== null}
+                                            className="text-muted-foreground mr-3 text-xs underline underline-offset-2"
+                                            onClick={() => showMore(g)}
+                                        >
+                                            {loading === g ? 'Loading…' : `Show ${hidden(g)} more: ${groups[g].toLowerCase()}`}
+                                        </button>
+                                    ),
+                                )}
                             {p === 2 &&
                                 (counts.payments ?? 0) > list.filter((i) => i.group === 'payments').length &&
                                 (!filter || filter === 'payments') && (

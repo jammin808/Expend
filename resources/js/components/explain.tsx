@@ -2,7 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { cn } from '@/lib/utils';
 import { Link } from '@inertiajs/react';
 import { AlertTriangle, CircleHelp, ExternalLink } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState, type SyntheticEvent } from 'react';
 
 interface Guide {
     code?: string;
@@ -30,6 +30,9 @@ interface Explanation {
     researched_on: string | null;
 }
 
+const SIGNED_OUT = 'You’ve been signed out. Reload the page to sign in again.';
+const FAILED = 'Couldn’t load the explanation. Try again in a moment.';
+
 const ALLOWABLE: Record<string, { label: string; tone: string }> = {
     yes: { label: 'Allowable', tone: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' },
     partly: { label: 'Allowable in some cases', tone: 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300' },
@@ -45,14 +48,36 @@ export function Explain({ url, label = 'What is this, and can I claim it?', clas
     const [open, setOpen] = useState(false);
     const [data, setData] = useState<Explanation | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const asked = useRef(0);
 
+    // Asked afresh each time it opens: deciding the payment since changes what it says and which HMRC rules apply.
     const load = () => {
         setOpen(true);
-        if (data) return;
+        const n = ++asked.current;
+        setData(null);
+        setError(null);
         fetch(url, { headers: { Accept: 'application/json' } })
-            .then((r) => (r.ok ? r.json() : Promise.reject(new Error('Couldn’t load the explanation.'))))
-            .then(setData)
-            .catch((e) => setError(e.message));
+            .then(async (r) => {
+                if (r.status === 401 || r.status === 419) throw new Error(SIGNED_OUT);
+                if (!r.ok) throw new Error(FAILED);
+                return (await r.json()) as Explanation;
+            })
+            .then((d) => {
+                if (n === asked.current) setData(d);
+            })
+            .catch((e: unknown) => {
+                if (n === asked.current) setError(e instanceof Error && e.message === SIGNED_OUT ? SIGNED_OUT : FAILED);
+            });
+    };
+
+    // The dialog is drawn outside the page, but React passes its clicks and key presses up through whatever holds the
+    // "?" (a table row that opens a payment, the Inbox's shortcuts). Keep them in here. Stopping the click also stops
+    // it reaching the dialog's own outside-tap check, which on a touch screen waits for the click, so a tap on the
+    // backdrop closes it here.
+    const keepInside = (e: SyntheticEvent) => e.stopPropagation();
+    const closeOnBackdrop = (e: SyntheticEvent) => {
+        e.stopPropagation();
+        if (!(e.target instanceof Element && e.target.closest('[role="dialog"]'))) setOpen(false);
     };
 
     return (
@@ -69,16 +94,18 @@ export function Explain({ url, label = 'What is this, and can I claim it?', clas
             >
                 <CircleHelp className="size-4" />
             </button>
-            <Dialog open={open} onOpenChange={setOpen}>
-                <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl" onClick={(e) => e.stopPropagation()}>
-                    <DialogHeader>
-                        <DialogTitle>{data?.title ?? 'Explanation'}</DialogTitle>
-                    </DialogHeader>
-                    {error && <p className="text-sm text-rose-600">{error}</p>}
-                    {!data && !error && <p className="text-muted-foreground text-sm">Loading…</p>}
-                    {data && <ExplanationBody e={data} />}
-                </DialogContent>
-            </Dialog>
+            <span className="contents" onClick={closeOnBackdrop} onDoubleClick={keepInside} onKeyDown={keepInside}>
+                <Dialog open={open} onOpenChange={setOpen}>
+                    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+                        <DialogHeader>
+                            <DialogTitle>{data?.title ?? 'Explanation'}</DialogTitle>
+                        </DialogHeader>
+                        {error && <p className="text-sm text-rose-600">{error}</p>}
+                        {!data && !error && <p className="text-muted-foreground text-sm">Loading…</p>}
+                        {data && <ExplanationBody e={data} />}
+                    </DialogContent>
+                </Dialog>
+            </span>
         </>
     );
 }

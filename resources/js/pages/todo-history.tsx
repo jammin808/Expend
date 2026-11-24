@@ -10,6 +10,7 @@ interface Row {
     detail: string | null;
     href: string | null;
     amount_pence: number | null;
+    currency: string;
     first_seen: string;
     resolved: string | null;
     resolution: 'resolved' | 'snoozed' | 'dismissed' | null;
@@ -19,12 +20,23 @@ interface Row {
 
 const resolutionLabel = { resolved: 'Dealt with', snoozed: 'Snoozed', dismissed: 'Marked not relevant' };
 
+/** Amounts in other currencies, kept apart from the pound total: "€1,000.00 and $250.00". */
+function others(byCurrency: Record<string, number>): string | null {
+    const parts = Object.entries(byCurrency)
+        .filter(([, minor]) => minor !== 0)
+        .map(([currency, minor]) => money(minor, currency, { signed: false }));
+
+    return parts.length ? parts.join(' and ') : null;
+}
+
 /** What the to-do list has found over the last year, what's been dealt with, and the money involved. */
 export default function TodoHistory({
     open,
     resolved,
     money_open,
     money_resolved,
+    money_open_other = {},
+    money_resolved_other = {},
     by_group,
     recent,
 }: {
@@ -32,6 +44,8 @@ export default function TodoHistory({
     resolved: number;
     money_open: number;
     money_resolved: number;
+    money_open_other?: Record<string, number>;
+    money_resolved_other?: Record<string, number>;
     by_group: { group: string; label: string; found: number; dealt_with: number }[];
     recent: Row[];
 }) {
@@ -53,15 +67,18 @@ export default function TodoHistory({
                     </p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-4">
-                    {[
-                        ['Open', String(open)],
-                        ['Dealt with', String(resolved)],
-                        ['Money open', money(money_open, 'GBP', { signed: false })],
-                        ['Money dealt with', money(money_resolved, 'GBP', { signed: false })],
-                    ].map(([label, value]) => (
+                    {(
+                        [
+                            ['Open', String(open), null],
+                            ['Dealt with', String(resolved), null],
+                            ['Money open', money(money_open, 'GBP', { signed: false }), others(money_open_other)],
+                            ['Money dealt with', money(money_resolved, 'GBP', { signed: false }), others(money_resolved_other)],
+                        ] as const
+                    ).map(([label, value, other]) => (
                         <div key={label} className="rounded-xl border p-4">
                             <p className="text-muted-foreground text-sm">{label}</p>
                             <p className="text-xl font-semibold tabular-nums">{value}</p>
+                            {other && <p className="text-muted-foreground text-xs tabular-nums">plus {other}</p>}
                         </div>
                     ))}
                 </div>
@@ -94,7 +111,7 @@ export default function TodoHistory({
                                 </span>
                             </span>
                             {r.amount_pence !== null && (
-                                <span className="tabular-nums">{money(Math.abs(r.amount_pence), 'GBP', { signed: false })}</span>
+                                <span className="tabular-nums">{money(Math.abs(r.amount_pence), r.currency ?? 'GBP', { signed: false })}</span>
                             )}
                             <span
                                 className={cn(

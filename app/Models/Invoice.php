@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\Invoices\InvoicePayments;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -57,8 +58,12 @@ class Invoice extends Model
         return $this->hasMany(Allocation::class);
     }
 
+    /**
+     * What has come in for it, in its own currency: payments linked to it, and income you recorded for its job
+     * (see InvoicePayments::received(), which works it out for many invoices at once).
+     */
     public function paidMinor(): int
     {
-        return (int) $this->payments()->whereNotNull('confirmed_at')->sum('amount_pence');
+        return InvoicePayments::paid($this);
     }
 }

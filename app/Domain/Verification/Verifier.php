@@ -43,6 +43,20 @@ use ZBateson\MailMimeParser\MailMimeParser;
  */
 final class Verifier
 {
+    /** "PO", "P.O.", "P/O" or "purchase order". */
+    private const PO_WORD = '(?:P(?:\.\s?|\s?\/\s?)?O\.?|purchase\s+order)';
+
+    /** "No", "number", "ref" or "reference", as said after "PO" or "order". */
+    private const NUMBER_WORD = '(?:number|num|nr|no|ref(?:erence)?)\b\.?';
+
+    /** A PO label: "PO" (and the rest) with an optional "no" or "ref", or "order" only with one (or "#"). */
+    private const PO_LABEL = '(?:'.self::PO_WORD.'(?:\s*'.self::NUMBER_WORD.')?|order\s*(?:'.self::NUMBER_WORD.'|\#))';
+
+    /** A heading for a PO number column: "PO Number", "P.O. No", "PO #", "Order ref"… (not "PO Date"). */
+    private const PO_HEADING = '(?:'.self::PO_WORD.'|order)\s*(?:'.self::NUMBER_WORD.'|\#)';
+
+    private const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b';
+
     public function __construct(private AiClient $ai) {}
 
     // ------------------------------------------------------------------ documents
@@ -207,10 +221,10 @@ final class Verifier
     {
         $text = (string) $text;
         $why = [];
-        // The PO number has to be in the document as a whole reference (not inside a phone number or an amount); a PO
-        // number the AI read only counts if it's really there too.
+        // The PO number has to be in the document as a whole reference (not inside a phone number or an amount),
+        // matched as the job has it written; a PO number the AI read only counts if it's really there too.
         $jobPo = JobFinder::normalisePo($job->po_number);
-        if ($jobPo && strlen($jobPo) >= 4 && self::poInText($text, $jobPo)) {
+        if ($jobPo && strlen($jobPo) >= 4 && self::poInText($text, (string) $job->po_number)) {
             return ['ok' => true, 'why' => ['the job’s PO number is in it']];
         }
         unset($po);
@@ -249,25 +263,59 @@ final class Verifier
 
     /**
      * Is this PO number in the text as a reference of its own? Separators are only allowed where the PO number has
-     * them (so "4500123" doesn't match the phone number "0161 450 0123"), and a leading "PO" is optional.
+     * them (so "4500123" doesn't match the phone number "0161 450 0123"), and it's never the end of a longer run of
+     * numbers. A leading "PO" (or "P.O.", "P/O") is optional, except for a number of fewer than six digits: on its
+     * own that could be a time, a room, a quantity or part of a phone number, so it only counts straight after a PO
+     * label ("PO", "P.O.", "P/O", "purchase order", or "order" with "no", "number", "ref" or "#") or under a PO
+     * number column heading, and never where it reads as a time, a date or a decimal ("12:00", "12/03", "12 March").
      */
     public static function poInText(string $text, string $po): bool
     {
         $groups = array_values(array_filter(preg_split('/[^A-Za-z0-9]+/', $po) ?: [], fn ($g) => $g !== ''));
+        if (count($groups) > 2 && strtoupper($groups[0].$groups[1]) === 'PO') {
+            $groups = ['PO', ...array_slice($groups, 2)]; // "P.O. 4500123" and "P/O 4500123" are "PO 4500123"
+        }
         if (! $groups || strlen(implode('', $groups)) < 3) {
             return false;
         }
-        $lead = '';
         if (preg_match('/^PO(\d\w*)$/i', $groups[0], $m)) {
             $groups = ['PO', $m[1], ...array_slice($groups, 1)]; // "PO7781" is written "PO-7781" or "PO 7781" too
         }
         if (strtoupper($groups[0]) === 'PO' && count($groups) > 1) {
             array_shift($groups);
-            $lead = '(?:PO[\s\-\/:#.]*)?';
         }
         $body = implode('[\s\-\/:#.]*', array_map(fn ($g) => preg_quote($g, '/'), $groups));
+        $digits = implode('', $groups);
+        $short = ctype_digit($digits) && strlen($digits) < 6;
+        $label = self::PO_LABEL.'[\s\-\/:#.]*';
+        $after = $short ? '(?![A-Z0-9]|[.,:\/\-]\d|\s+'.self::MONTH.')' : '(?![A-Z0-9]|[.,]\d)';
 
-        return (bool) preg_match('/(?<![A-Z0-9£$€.,])'.$lead.$body.'(?![A-Z0-9]|[.,]\d)/i', $text);
+        if (preg_match('/(?<![A-Z0-9£$€.,])'.$label.$body.$after.'/i', $text)) {
+            return true;
+        }
+        if ($short) {
+            return self::underPoHeading($text, $body.$after);
+        }
+
+        $before = ctype_digit($groups[0][0]) ? '(?<![A-Z0-9£$€.,])(?<!\d[\s\-\/])' : '(?<![A-Z0-9£$€.,])';
+
+        return (bool) preg_match('/'.$before.$body.$after.'/i', $text);
+    }
+
+    /**
+     * A table whose first column is the PO number: a line starting "PO Number" (or "PO No", "P.O. Ref", "Order #"…)
+     * with the other headings after it, and the number at the start of the next line ("10234 12/03/2025 …").
+     */
+    private static function underPoHeading(string $text, string $number): bool
+    {
+        $lines = array_values(array_filter(array_map('trim', preg_split('/\R/', $text) ?: []), fn ($l) => $l !== ''));
+        foreach ($lines as $i => $line) {
+            if (isset($lines[$i + 1]) && preg_match('/^'.self::PO_HEADING.'(?=[\s:#]|$)/i', $line) && preg_match('/^'.$number.'(?=\s|$)/i', $lines[$i + 1])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** Does the text state this date anywhere (any common UK way of writing it)? */
@@ -359,7 +407,7 @@ final class Verifier
         $sources = $candidate->sources ?? [];
         foreach ($sources as $i => $s) {
             [$ok, $note] = match ($s['type']) {
-                'calendar' => $this->calendarSource($s),
+                'calendar' => $this->calendarSource($s, $sources[$i]),
                 'document' => ($d = Document::query()->find($s['id']))
                     ? (! $s['quote'] || Grounding::quoteFound($d->text, $s['quote']) ? [$s['verified'] ? true : null, $s['verified'] ? 'The quoted words are in the document' : 'Not checked against the document yet'] : [false, 'The quoted words aren’t in the document'])
                     : [false, 'The document was deleted'],
@@ -375,15 +423,25 @@ final class Verifier
         return $this->fromChecks('job_candidate', $candidate->id, 'calendar', $checks, 'against your calendar, documents and bookings');
     }
 
-    /** @return array{0:?bool,1:string} */
-    private function calendarSource(array $s): array
+    /**
+     * The entry is looked up by its key wherever it is now; if it has moved, the source's dates follow it.
+     *
+     * @return array{0:?bool,1:string}
+     */
+    private function calendarSource(array $s, array &$source): array
     {
         $event = JobFinder::event($s['id'], $s['date']);
         if (! $event) {
-            return [false, 'No longer in your calendar (moved or deleted)'];
+            return [false, 'No longer in your calendar'];
         }
         if (! empty($s['ai']) && $s['quote'] && ! Grounding::quoteFound($event->text(), (string) $s['quote'])) {
             return [false, 'The entry has changed since'];
+        }
+        if ($event->day() !== ($s['date'] ?? null)) {
+            $source['date'] = $event->day();
+            $source['to'] = $event->lastDay()->format('Y-m-d');
+
+            return [true, 'Still in your calendar, moved to '.CarbonImmutable::parse($event->day())->format('D j M Y')];
         }
 
         return [true, 'Still in your calendar'];
@@ -393,7 +451,7 @@ final class Verifier
     {
         $event = CalendarEvent::query()->where('uid', $link->event_uid)->get()->first(fn (CalendarEvent $e) => $e->key() === $link->event_key);
         $job = $link->work_job_id ? WorkJob::query()->find($link->work_job_id) : null;
-        $checks = [['what' => 'Calendar entry', 'ok' => (bool) $event, 'note' => $event ? 'Still in your calendar' : 'No longer in your calendar (moved or deleted)']];
+        $checks = [['what' => 'Calendar entry', 'ok' => (bool) $event, 'note' => $event ? 'Still in your calendar' : 'No longer in your calendar']];
         if ($event && $link->summary && Grounding::normalise($link->summary) !== Grounding::normalise((string) $event->summary)) {
             $checks[] = ['what' => 'Title', 'ok' => false, 'note' => 'The entry was renamed to “'.mb_substr((string) $event->summary, 0, 80).'”'];
         }

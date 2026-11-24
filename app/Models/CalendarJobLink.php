@@ -12,6 +12,29 @@ class CalendarJobLink extends Model
 
     protected $casts = ['event_starts_at' => 'datetime', 'not_job' => 'boolean', 'rejected' => 'array'];
 
+    protected static function booted(): void
+    {
+        // A check of a link is about the entry being on that job: once the link is removed, or puts the entry on
+        // another job or none, the check no longer applies (a link to a job is checked again in the nightly checks).
+        static::deleted(fn (CalendarJobLink $link) => $link->forgetCheck());
+        static::saved(function (CalendarJobLink $link) {
+            if ($link->wasChanged(['work_job_id', 'not_job']) && ! $link->wasRecentlyCreated) {
+                $link->forgetCheck();
+            }
+        });
+    }
+
+    /** Whether it puts the entry on a job (rather than "not a job", or "not this job" with no other). */
+    public function onJob(): bool
+    {
+        return $this->work_job_id !== null && ! $this->not_job;
+    }
+
+    public function forgetCheck(): void
+    {
+        Verification::query()->where('subject_type', 'calendar_link')->where('subject_id', $this->id)->delete();
+    }
+
     public function job(): BelongsTo
     {
         return $this->belongsTo(WorkJob::class, 'work_job_id');

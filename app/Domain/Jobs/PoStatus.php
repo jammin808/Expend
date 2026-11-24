@@ -30,16 +30,19 @@ final class PoStatus
             return [];
         }
 
-        $invoices = Invoice::query()->whereIn('work_job_id', $ids)->where('status', '!=', 'void')->orderByDesc('issued_at')->orderByDesc('id')->get();
+        // Grouped by job once, so each job looks only at its own (not every document of every job).
+        $invoices = Invoice::query()->whereIn('work_job_id', $ids)->where('status', '!=', 'void')->orderByDesc('issued_at')->orderByDesc('id')->get()->groupBy('work_job_id');
         $documents = Document::query()->whereIn('work_job_id', $ids)->get(['id', 'parent_id', 'work_job_id', 'kind', 'extraction', 'received_at'])
-            ->filter(fn (Document $d) => self::isPo($d))->sortBy('received_at');
-        $facts = DocumentFact::query()->whereIn('work_job_id', $ids)->where('field', 'po_number')->orderBy('id')->get(['work_job_id', 'value', 'document_id']);
+            ->filter(fn (Document $d) => self::isPo($d))->sortBy('received_at')->groupBy('work_job_id');
+        $facts = DocumentFact::query()->whereIn('work_job_id', $ids)->where('field', 'po_number')->orderBy('id')->get(['work_job_id', 'value', 'document_id'])->groupBy('work_job_id');
+        $none = collect();
 
         $out = [];
         foreach ($jobs as $id => $job) {
-            $doc = $documents->firstWhere('work_job_id', $id);
-            $fact = $facts->firstWhere('work_job_id', $id);
-            $quoted = $invoices->where('work_job_id', $id)->first(fn ($i) => filled($i->po_number));
+            $doc = ($documents[$id] ?? $none)->first();
+            $fact = ($facts[$id] ?? $none)->first();
+            $jobInvoices = $invoices[$id] ?? $none;
+            $quoted = $jobInvoices->first(fn ($i) => filled($i->po_number));
             $po = match (true) {
                 filled($job->po_number) => ['number' => $job->po_number, 'document_id' => $doc?->parent_id ?? $doc?->id, 'source' => 'job'],
                 $doc !== null => ['number' => $doc->extraction['po']['po_number'] ?? $fact?->value, 'document_id' => $doc->parent_id ?? $doc->id, 'source' => 'document'],
@@ -47,7 +50,7 @@ final class PoStatus
                 $quoted !== null => ['number' => $quoted->po_number, 'document_id' => null, 'source' => 'invoice'],
                 default => null,
             };
-            $invoice = $invoices->where('work_job_id', $id)->first(fn ($i) => in_array($i->status, ['issued', 'paid'], true));
+            $invoice = $jobInvoices->first(fn ($i) => in_array($i->status, ['issued', 'paid'], true));
 
             $out[$id] = [
                 'po' => $po,

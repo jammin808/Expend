@@ -88,6 +88,8 @@ class LedgerSettingsController extends Controller
             'rules' => MerchantRule::query()->with('category')->orderBy('merchant_key')->get()->map(fn (MerchantRule $r) => [
                 'id' => $r->id, 'merchant_key' => $r->merchant_key, 'kind' => $r->kind, 'category' => $r->category?->name,
                 'business_pct' => $r->business_pct, 'auto_confirm' => $r->auto_confirm,
+                // A rule learned from your decisions keeps to the way the money went in them; empty means both ways.
+                'direction' => $r->direction,
                 'applied' => Allocation::query()->where('merchant_rule_id', $r->id)->where('decided_by', 'rule')->distinct()->count('bank_transaction_id'),
             ]),
         ]);

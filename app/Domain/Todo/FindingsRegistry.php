@@ -25,7 +25,7 @@ final class FindingsRegistry
         $new = 0;
         foreach ($current as $key => $i) {
             $fields = ['group' => $i['group'], 'title' => mb_substr($i['title'], 0, 255), 'detail' => $i['detail'], 'href' => $i['href'] ? mb_substr($i['href'], 0, 255) : null,
-                'amount_pence' => isset($i['amount']) ? (int) $i['amount'] : null, 'last_seen_at' => $now];
+                'amount_pence' => isset($i['amount']) ? (int) $i['amount'] : null, 'currency' => self::currency($i), 'last_seen_at' => $now];
             $row = $existing[$key] ?? null;
             if (! $row) {
                 Finding::query()->create(['key' => mb_substr($key, 0, 191), 'first_seen_at' => $now] + $fields);
@@ -47,24 +47,42 @@ final class FindingsRegistry
         return ['new' => $new, 'resolved' => $resolved, 'open' => $current->count()];
     }
 
-    /** @return array{open:int, resolved:int, money_open:int, money_resolved:int, by_group:array, recent:list<array>} */
+    /** The currency of a to-do's amount: its own (an invoice, booking or pocket in another currency), or null for pounds. */
+    private static function currency(array $item): ?string
+    {
+        $code = strtoupper((string) ($item['currency'] ?? ''));
+
+        return $code === '' || $code === 'GBP' || ! isset($item['amount']) ? null : $code;
+    }
+
+    /**
+     * The money totals are in pounds; amounts in other currencies are added up separately, by currency, never
+     * mixed in.
+     *
+     * @return array{open:int, resolved:int, money_open:int, money_resolved:int, money_open_other:array<string,int>, money_resolved_other:array<string,int>, by_group:array, recent:list<array>}
+     */
     public static function summary(?string $since = null): array
     {
         $since ??= Carbon::now()->subYear()->format('Y-m-d');
         $open = Finding::query()->whereNull('resolved_at');
         $done = Finding::query()->where('resolution', 'resolved')->where('resolved_at', '>=', $since);
-        $money = fn ($q) => (int) (clone $q)->get(['amount_pence'])->sum(fn ($f) => abs((int) $f->amount_pence));
+        $byCurrency = fn ($q) => (clone $q)->whereNotNull('amount_pence')->get(['amount_pence', 'currency'])
+            ->groupBy(fn (Finding $f) => $f->currency ?: 'GBP')->map(fn ($fs) => (int) $fs->sum(fn (Finding $f) => abs((int) $f->amount_pence)));
+        $openMoney = $byCurrency($open);
+        $doneMoney = $byCurrency($done);
 
         return [
             'open' => (clone $open)->count(),
             'resolved' => (clone $done)->count(),
-            'money_open' => $money($open),
-            'money_resolved' => $money($done),
+            'money_open' => (int) ($openMoney['GBP'] ?? 0),
+            'money_resolved' => (int) ($doneMoney['GBP'] ?? 0),
+            'money_open_other' => $openMoney->except('GBP')->sortKeys()->all(),
+            'money_resolved_other' => $doneMoney->except('GBP')->sortKeys()->all(),
             'by_group' => Finding::query()->where('first_seen_at', '>=', $since)->selectRaw('`group`, COUNT(*) n, SUM(CASE WHEN resolved_at IS NULL THEN 0 ELSE 1 END) done')
                 ->groupBy('group')->get()->map(fn ($r) => ['group' => $r->group, 'label' => TodoList::GROUPS[$r->group] ?? $r->group, 'found' => (int) $r->n, 'dealt_with' => (int) $r->done])->values()->all(),
             'recent' => Finding::query()->orderByDesc('updated_at')->limit(100)->get()->map(fn (Finding $f) => [
                 'key' => $f->key, 'group' => TodoList::GROUPS[$f->group] ?? $f->group, 'title' => $f->title, 'detail' => $f->detail, 'href' => $f->href,
-                'amount_pence' => $f->amount_pence, 'first_seen' => $f->first_seen_at->format('Y-m-d'), 'resolved' => $f->resolved_at?->format('Y-m-d'),
+                'amount_pence' => $f->amount_pence, 'currency' => $f->currency ?: 'GBP', 'first_seen' => $f->first_seen_at->format('Y-m-d'), 'resolved' => $f->resolved_at?->format('Y-m-d'),
                 'resolution' => $f->resolution, 'days_open' => (int) $f->first_seen_at->diffInDays($f->resolved_at ?? Carbon::now()), 'reopened' => $f->reopened,
             ])->all(),
         ];

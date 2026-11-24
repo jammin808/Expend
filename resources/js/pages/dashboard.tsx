@@ -11,8 +11,13 @@ import { AlertTriangle, ArrowRight, Inbox, ShieldCheck, Upload } from 'lucide-re
 interface YearCard {
     label: string;
     status: string;
+    /** The return's deadline, or for a filed return being amended, the last day to amend it. */
     deadline: string;
     overdue: boolean;
+    /** Filed, and unlocked to amend. */
+    amending?: boolean;
+    /** Being amended, and the last day to amend it hasn't passed. */
+    amend_open?: boolean;
     progress: { total_count: number; confirmed_count: number; suggested_count: number; unreviewed_count: number; value_pct: number };
     turnover_pence: number;
     net_profit_pence: number;
@@ -29,7 +34,9 @@ interface Props {
 }
 
 export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo }: Props) {
-    const outstanding = years.filter((y) => y.status !== 'filed');
+    // A return filed is done; one being amended is still to finish until the last day to amend it.
+    const done = (y: YearCard) => y.status === 'filed' || (!!y.amending && !y.amend_open);
+    const outstanding = years.filter((y) => !done(y));
     const vatPct = Math.round((vat.rolling_turnover_pence / vat.threshold_pence) * 100);
 
     return (
@@ -120,7 +127,13 @@ export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo }: 
                                         <div>
                                             <p className="text-lg font-semibold">{y.label}</p>
                                             <p className={y.overdue ? 'text-sm font-medium text-rose-600' : 'text-muted-foreground text-sm'}>
-                                                {y.overdue ? `Overdue since ${day(y.deadline)}` : `Due ${day(y.deadline)} · ${left} days`}
+                                                {done(y)
+                                                    ? 'Filed'
+                                                    : y.amending
+                                                      ? `Amend by ${day(y.deadline)} · ${left} days`
+                                                      : y.overdue
+                                                        ? `Overdue since ${day(y.deadline)}`
+                                                        : `Due ${day(y.deadline)} · ${left} days`}
                                             </p>
                                         </div>
                                         <StatusPill status={y.status} />

@@ -36,7 +36,11 @@ class JobFinderController extends Controller
         // What was linked automatically, newest first, for you to confirm or undo.
         $autoCalendar = CalendarJobLink::query()->with('job')->whereIn('linked_by', ['rules', 'ai'])->whereNotNull('work_job_id')->latest()->limit(60)->get();
         $calChecks = Verification::forMany('calendar_link', $autoCalendar->pluck('id'));
-        $autoDocs = Document::query()->with('job')->whereIn('job_linked_by', ['rules', 'ai'])->whereNotNull('work_job_id')->whereNull('parent_id')->latest('updated_at')->limit(60)->get();
+        // An attachment linked with its email is shown as the email; one linked on its own (its email is for more
+        // than one job) is shown by itself.
+        $autoDocs = Document::query()->with(['job', 'parent:id,work_job_id'])->whereIn('job_linked_by', ['rules', 'ai'])->whereNotNull('work_job_id')
+            ->latest('updated_at')->limit(120)->get()
+            ->filter(fn (Document $d) => ! $d->parent || $d->parent->work_job_id !== $d->work_job_id)->take(60)->values();
         $docChecks = Verification::forMany('document', $autoDocs->pluck('id'));
 
         return Inertia::render('jobs/finder', [
@@ -49,7 +53,7 @@ class JobFinderController extends Controller
             'jobs' => $jobs->map(fn (WorkJob $j) => ['id' => $j->id, 'title' => $j->title, 'client' => $j->client?->name, 'starts_on' => $j->starts_on->format('Y-m-d'), 'ends_on' => $j->ends_on->format('Y-m-d')]),
             'auto' => [
                 ...$autoCalendar->filter(fn ($l) => $l->job)->map(fn (CalendarJobLink $l) => [
-                    'type' => 'calendar', 'id' => $l->id, 'label' => $l->summary, 'date' => $l->event_starts_at->format('Y-m-d'), 'by' => $l->linked_by,
+                    'type' => 'calendar', 'id' => $l->id, 'label' => $l->summary, 'date' => $l->event_starts_at->copy()->setTimezone(CalendarEvent::TZ)->format('Y-m-d'), 'by' => $l->linked_by,
                     'reason' => $l->reason, 'job' => ['id' => $l->job->id, 'title' => $l->job->title], 'check' => $calChecks[$l->id] ?? null,
                 ]),
                 ...$autoDocs->filter(fn ($d) => $d->job)->map(fn (Document $d) => [
@@ -114,18 +118,29 @@ class JobFinderController extends Controller
         $data['status'] = $data['status'] ?? 'booked';
         unset($data['new_client'], $data['fee']);
 
-        $job = $finder->accept($candidate, $data);
+        $job = $finder->accept($candidate, $data, $links);
 
-        return to_route('jobs.show', $job)->with('success', "Added {$job->title} and linked ".count($candidate->sources).' '.(count($candidate->sources) === 1 ? 'source' : 'sources').'. Stays and payments around its dates were checked again.');
+        return to_route('jobs.show', $job)->with('success', "Added {$job->title} and linked ".self::linked($links).'. Stays and payments around its dates were checked again.');
+    }
+
+    /** "3 sources", and what couldn't be linked (gone since, or linked to another job by you). */
+    private static function linked(?array $links): string
+    {
+        $n = $links['linked'] ?? 0;
+        $missed = count($links['missed'] ?? []);
+        $labels = array_map(fn ($m) => '“'.mb_substr($m, 0, 60).'”', array_slice(array_values(array_filter($links['missed'] ?? [])), 0, 3));
+
+        return $n.' '.($n === 1 ? 'source' : 'sources').($missed ? " ({$missed} not linked, because ".($missed === 1 ? 'it’s' : 'they’re')
+            .' no longer there or you’ve linked '.($missed === 1 ? 'it' : 'them').' to another job'.($labels ? ': '.implode(', ', $labels) : '').')' : '');
     }
 
     public function merge(Request $request, JobCandidate $candidate, JobFinder $finder): RedirectResponse
     {
         abort_unless($candidate->status === 'open', 409);
         $job = WorkJob::query()->findOrFail($request->validate(['work_job_id' => 'required|integer|exists:work_jobs,id'])['work_job_id']);
-        $finder->merge($candidate, $job);
+        $finder->merge($candidate, $job, $links);
 
-        return back()->with('success', "Added to {$job->title}. Only its blank details were filled in.");
+        return back()->with('success', "Added to {$job->title} and linked ".self::linked($links).'. Only its blank details were filled in.');
     }
 
     public function dismiss(Request $request, JobCandidate $candidate, JobFinder $finder): RedirectResponse

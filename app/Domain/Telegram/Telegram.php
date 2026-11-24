@@ -13,6 +13,7 @@ use App\Models\Document;
 use App\Models\Setting;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -66,6 +67,10 @@ final class Telegram
     public static function sendWithButtons(string|int $chatId, string $text, array $buttons): void
     {
         $row = array_map(fn ($b) => ['text' => $b[0], 'callback_data' => mb_substr('t|'.$b[1].'|'.$b[2], 0, 64)], $buttons);
+        if ($row) {
+            // A bot paired before buttons existed only gets messages: make sure presses on these will arrive.
+            self::allowButtons();
+        }
         self::api('sendMessage', ['chat_id' => $chatId, 'text' => mb_substr($text, 0, 3900), 'disable_web_page_preview' => true]
             + ($row ? ['reply_markup' => ['inline_keyboard' => [$row]]] : []));
     }
@@ -87,7 +92,8 @@ final class Telegram
         self::reply($chatId, "This week: {$list['total']} ".($list['total'] === 1 ? 'thing needs' : 'things need')." you.\n{$summary}\n\nThe most urgent below. Everything: ".url('/todo'));
         $sent = 0;
         foreach (array_slice($list['items'], 0, $max) as $item) {
-            $amount = isset($item['amount']) && $item['amount'] !== null ? ' ('.Money::format($item['amount']).')' : '';
+            // In the item's own currency (an invoice in euros, a stay booked in dollars).
+            $amount = isset($item['amount']) && $item['amount'] !== null ? ' ('.Money::format($item['amount'], $item['currency'] ?? 'GBP').')' : '';
             self::sendWithButtons($chatId, $item['title'].$amount.($item['detail'] ? "\n".$item['detail'] : ''),
                 array_map(fn ($a) => [$a['label'], $a['code'], $a['id']], $item['actions']));
             $sent++;
@@ -112,14 +118,30 @@ final class Telegram
 
             return;
         }
+        // Presses wait for the queue (up to a minute), so a second tap on the same button is likely: do it once.
+        // The actions themselves also check the item still needs doing, for old buttons on other messages.
+        $press = 'telegram_press:'.$chatId.':'.($query['message']['message_id'] ?? 0).':'.$query['data'];
+        if (! Cache::add($press, '', now()->addMinutes(10))) {
+            // The same answer as the first press, without doing it again.
+            $earlier = (string) Cache::get($press);
+            self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => mb_substr($earlier !== '' ? $earlier : 'Already on it.', 0, 190)]);
+
+            return;
+        }
+        // When the message was sent, so a reminder sent since then makes this press a repeat (and one sent before
+        // it, such as last week's, doesn't).
+        $offeredAt = is_numeric($query['message']['date'] ?? null) ? Carbon::createFromTimestamp((int) $query['message']['date']) : null;
         try {
-            $result = '✓ '.$actions->run($code, $id);
+            $result = '✓ '.$actions->run($code, $id, $offeredAt);
+            Cache::put($press, $result, now()->addMinutes(10));
         } catch (ModelNotFoundException) {
             $result = 'Already dealt with.';
+            Cache::put($press, $result, now()->addMinutes(10));
         } catch (Throwable $e) {
             $result = '⚠ '.$e->getMessage();
+            Cache::forget($press); // didn't happen: pressing again (once it's sorted out) tries again
         }
-        Cache::forget('todo_total');
+        TodoList::forget();
         self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => mb_substr($result, 0, 190)]);
         self::api('editMessageText', [
             'chat_id' => $chatId, 'message_id' => $query['message']['message_id'] ?? 0,

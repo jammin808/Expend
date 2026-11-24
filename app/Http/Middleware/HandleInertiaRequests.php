@@ -5,8 +5,8 @@ namespace App\Http\Middleware;
 use App\Domain\Todo\TodoList;
 use App\Models\BankTransaction;
 use App\Models\TaxYear;
+use Closure;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Inertia\Middleware;
 
 class HandleInertiaRequests extends Middleware
@@ -16,6 +16,16 @@ class HandleInertiaRequests extends Middleware
     public function version(Request $request): ?string
     {
         return parent::version($request);
+    }
+
+    /** The dashboard shows the kept to-do list; a request that changes what it's made from makes it build the list afresh. */
+    public function handle(Request $request, Closure $next)
+    {
+        TodoList::watch();
+        $response = parent::handle($request, $next);
+        TodoList::settle();
+
+        return $response;
     }
 
     /** @return array<string, mixed> */
@@ -37,7 +47,9 @@ class HandleInertiaRequests extends Middleware
             ],
             'nav' => fn () => $user ? [
                 'inbox' => BankTransaction::query()->whereIn('review_status', ['unreviewed', 'suggested'])->count(),
-                'todo' => Cache::remember('todo_total', 120, fn () => TodoList::build(1)['total']),
+                // The last list's total (the one the dashboard or the to-do page just built, so they agree), for a
+                // couple of minutes after a change: the Inbox asks for this after every decision.
+                'todo' => TodoList::badge(),
                 'years' => TaxYear::query()->orderBy('label')->get(['label', 'status'])->toArray(),
             ] : null,
         ];

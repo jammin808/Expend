@@ -3,18 +3,22 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Invoices\InvoiceMailer;
+use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Invoices\InvoiceService;
+use App\Models\AuditEvent;
 use App\Models\Client;
 use App\Models\Invoice;
 use App\Models\WorkJob;
 use Brick\Math\BigDecimal;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 class InvoiceController extends Controller
 {
@@ -23,7 +27,7 @@ class InvoiceController extends Controller
     public function index(): Response
     {
         return Inertia::render('invoices/index', [
-            'invoices' => Invoice::query()->with(['job', 'client'])->orderByDesc('id')->limit(300)->get()->map(fn (Invoice $i) => self::row($i)),
+            'invoices' => self::rows(Invoice::query()->with(['job', 'client'])->orderByDesc('id')->limit(300)->get()),
         ]);
     }
 
@@ -38,6 +42,7 @@ class InvoiceController extends Controller
                 'void_reason' => $invoice->void_reason,
                 'sent_at' => $invoice->sent_at?->format('Y-m-d H:i'), 'sent_to' => $invoice->sent_to,
                 'reminded_at' => $invoice->reminded_at?->format('Y-m-d H:i'), 'reminder_count' => $invoice->reminder_count,
+                'email_failed' => self::lastEmailFailed($invoice),
                 'lines' => $invoice->lines->map(fn ($l) => [
                     'description' => $l->description, 'quantity' => (string) $l->quantity, 'unit_price' => (string) BigDecimal::ofUnscaledValue($l->unit_price_minor, 2),
                     'amount_minor' => $l->amount_minor, 'source_quote' => $l->source_quote,
@@ -56,11 +61,16 @@ class InvoiceController extends Controller
     public function update(Request $request, Invoice $invoice): RedirectResponse
     {
         $data = $request->validate([
-            'bill_to_name' => 'nullable|string|max:200', 'bill_to_address' => 'nullable|string|max:1000', 'bill_to_email' => 'nullable|email|max:200',
+            // An address the invoice can actually be emailed to ('filter' as well as 'rfc': the RFC alone lets
+            // accounts@client, with no ending, through), checked the same way as when it's sent.
+            'bill_to_name' => 'nullable|string|max:200', 'bill_to_address' => 'nullable|string|max:1000', 'bill_to_email' => 'nullable|email:rfc,filter|max:200',
             'po_number' => 'nullable|string|max:60', 'currency' => 'required|string|size:3', 'notes' => 'nullable|string|max:2000',
             'work_job_id' => 'nullable|integer|exists:work_jobs,id', 'client_id' => 'nullable|integer|exists:clients,id',
             'lines' => 'array', 'lines.*.description' => 'required|string|max:500', 'lines.*.quantity' => 'required|numeric|min:0.01',
             'lines.*.unit_price' => 'required|string', 'lines.*.source_quote' => 'nullable|string',
+        ], [
+            'bill_to_email.email' => 'That email address doesn’t look right. Use one address, like accounts@client.co.uk.',
+            'bill_to_email.max' => 'That email address is too long.',
         ]);
         $lines = $data['lines'] ?? [];
         unset($data['lines']);
@@ -83,7 +93,7 @@ class InvoiceController extends Controller
             return back()->with('error', $e->getMessage());
         }
 
-        return back()->with('success', "Issued {$issued->number}. Download the PDF to send it.");
+        return back()->with('success', "Issued {$issued->number}. Email it to the client, or download the PDF to send it yourself.");
     }
 
     public function void(Request $request, Invoice $invoice): RedirectResponse
@@ -120,19 +130,62 @@ class InvoiceController extends Controller
     /** Email the issued invoice to the client (or a reminder when it's overdue), from your mailbox if set up. */
     public function send(Request $request, Invoice $invoice, InvoiceMailer $mailer): RedirectResponse
     {
-        $data = $request->validate(['to' => 'nullable|email|max:200', 'reminder' => 'boolean']);
+        // Checked as the mailer checks it ('filter' as well as 'rfc'), so a typo such as accounts@client gets this message.
+        $data = $request->validate(['to' => 'nullable|email:rfc,filter|max:200', 'reminder' => 'boolean'], [
+            'to.email' => 'That email address doesn’t look right. Send to one address at a time, like accounts@client.co.uk.',
+            'to.max' => 'That email address is too long.',
+        ]);
         try {
             $message = $mailer->send($invoice, $data['to'] ?? null, (bool) ($data['reminder'] ?? false));
         } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
+        } catch (Throwable $e) {
+            report($e);
+
+            return back()->with('error', 'The email couldn’t be sent: '.$e->getMessage());
         }
 
         return back()->with('success', $message);
     }
 
-    public static function row(Invoice $i): array
+    /**
+     * The last email for this invoice didn't send (and so it was put back as it was): what and why, for the page.
+     * One that failed while a later email was already on its way isn't the last word: that later one is (it says
+     * so itself if it fails too).
+     *
+     * @return array{to:?string, error:?string, at:string, reminder:bool}|null
+     */
+    private static function lastEmailFailed(Invoice $invoice): ?array
     {
-        $paid = $i->paidMinor();
+        $last = AuditEvent::query()->where('subject_type', 'Invoice')->where('subject_id', $invoice->id)
+            ->whereIn('action', ['invoice.sent', 'invoice.reminder_sent', 'invoice.send_failed', 'invoice.reminder_failed'])->orderByDesc('id')->limit(50)->get()
+            ->first(fn (AuditEvent $e) => ! (str_ends_with($e->action, '_failed') && ($e->after['outcome'] ?? null) === 'later'));
+        if (! $last || ! str_ends_with($last->action, '_failed')) {
+            return null;
+        }
+
+        return ['to' => $last->after['to'] ?? null, 'error' => $last->after['error'] ?? null, 'at' => $last->occurred_at->format('Y-m-d H:i'), 'reminder' => $last->action === 'invoice.reminder_failed'];
+    }
+
+    /**
+     * Rows for many invoices, with what has come in for them worked out together.
+     *
+     * @param  Collection<int, Invoice>  $invoices
+     * @return Collection<int, array>
+     */
+    public static function rows(Collection $invoices): Collection
+    {
+        $received = InvoicePayments::received($invoices);
+
+        return $invoices->map(fn (Invoice $i) => self::row($i, $received[$i->id]['paid'] ?? 0))->values();
+    }
+
+    /**
+     * @param  int|null  $paid  what has come in for it (InvoicePayments::received()), if already worked out
+     */
+    public static function row(Invoice $i, ?int $paid = null): array
+    {
+        $paid ??= $i->paidMinor();
 
         return [
             'id' => $i->id, 'number' => $i->number, 'status' => $i->status === 'issued' && $paid >= $i->total_minor && $i->total_minor > 0 ? 'paid' : $i->status,
@@ -140,7 +193,8 @@ class InvoiceController extends Controller
             'job' => $i->job ? ['id' => $i->job->id, 'title' => $i->job->title] : null, 'work_job_id' => $i->work_job_id,
             'po_number' => $i->po_number, 'currency' => $i->currency, 'total_minor' => $i->total_minor, 'paid_minor' => $paid,
             'issue_date' => $i->issue_date?->format('Y-m-d'), 'due_date' => $i->due_date?->format('Y-m-d'),
-            'overdue' => $i->status === 'issued' && $paid < $i->total_minor && $i->due_date?->isPast(),
+            // Overdue from the day after it's due, as on the to-do list and in the Telegram nudges: on the due date it's still on time.
+            'overdue' => $i->status === 'issued' && $paid < $i->total_minor && (bool) $i->due_date?->lt(today()),
         ];
     }
 }

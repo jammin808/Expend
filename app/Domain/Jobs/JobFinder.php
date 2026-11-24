@@ -91,8 +91,13 @@ final class JobFinder
         $signals = collect([...$this->calendarSignals($from, $to), ...$this->documentSignals($from, $to), ...$this->travelSignals($from, $to)])
             ->reject(fn ($s) => isset($taken[$s['key']]));
 
-        if ($useAi && self::aiAllowed()) {
-            $signals = $this->askAiAboutCalendar($signals, $stats);
+        // AI answers already given count in every run, including the quick one without AI: only new questions wait
+        // for a run with AI.
+        if (self::aiAllowed()) {
+            if ($useAi) {
+                $this->askAiAboutCalendar($signals, $stats);
+            }
+            $signals = $this->applyAiVerdicts($signals);
         }
         $stats['considered'] = $signals->count();
 
@@ -104,8 +109,11 @@ final class JobFinder
 
                 continue;
             }
+            if ($signal['type'] === 'document' && Document::query()->whereKey($signal['id'])->value('work_job_id')) {
+                continue; // linked earlier in this run, with the rest of its email
+            }
             $match = $this->bestJob($signal, $jobs, $jobPos);
-            if ($match['job'] && ! $match['ambiguous'] && $this->linkSignal($signal, $match['job'], ($signal['ai'] ?? false) ? 'ai' : 'rules', implode('; ', $match['reasons']))) {
+            if ($match['job'] && ! $match['ambiguous'] && $this->linkSignal($signal, $match['job'], ($signal['ai'] ?? false) ? 'ai' : 'rules', implode('; ', $match['reasons']), $jobPos)) {
                 $stats['linked']++;
 
                 continue;
@@ -113,12 +121,26 @@ final class JobFinder
             $left->push($signal + ['options' => $match['options']]);
         }
 
-        // 2. Group the rest into possible jobs. Each keeps its id between runs (keyed by its sources); only unedited
-        // proposals within this run's dates are replaced, so runs for different periods don't undo each other.
+        // 2. Group the rest into possible jobs. Each keeps its id between runs (keyed by its sources), wherever its
+        // dates are: paperwork from just outside this run's dates is grouped too. Only unedited proposals within
+        // this run's dates are removed when they're no longer found, so runs for different periods don't undo each
+        // other; copies of the same proposal are removed whatever their dates. A proposal dated outside this run's
+        // dates is left as it is, and what it was found from isn't grouped again here: this run may see only part
+        // of it (paperwork from just inside the dates, without the calendar entry from outside them).
         DB::transaction(function () use ($left, $from, $to, &$stats) {
-            $old = JobCandidate::query()->where('status', 'open')->whereNull('edited_at')
-                ->whereDate('ends_on', '>=', $from->format('Y-m-d'))->whereDate('starts_on', '<=', $to->format('Y-m-d'))->get();
-            $byPrint = $old->keyBy('fingerprint');
+            $open = JobCandidate::query()->where('status', 'open')->whereNull('edited_at')->orderBy('id')->get();
+            $within = fn (JobCandidate $c) => $c->ends_on->format('Y-m-d') >= $from->format('Y-m-d') && $c->starts_on->format('Y-m-d') <= $to->format('Y-m-d');
+            $byPrint = [];
+            $copies = [];
+            foreach ($open as $c) {
+                if ($c->fingerprint && isset($byPrint[$c->fingerprint])) {
+                    $copies[] = $c->id;
+                } elseif ($c->fingerprint) {
+                    $byPrint[$c->fingerprint] = $c;
+                }
+            }
+            $elsewhere = $open->reject(fn (JobCandidate $c) => in_array($c->id, $copies, true) || $within($c))->flatMap(fn (JobCandidate $c) => $c->sourceKeys())->flip();
+            $left = $left->reject(fn ($s) => isset($elsewhere[$s['key']]));
             $kept = [];
             foreach ($this->cluster($left) as $cluster) {
                 if (! $candidate = $this->candidateFrom($cluster)) {
@@ -128,11 +150,12 @@ final class JobFinder
                     $existing->update($candidate);
                     $kept[] = $existing->id;
                 } else {
-                    JobCandidate::query()->create($candidate);
+                    $byPrint[$candidate['fingerprint']] = JobCandidate::query()->create($candidate);
+                    $kept[] = $byPrint[$candidate['fingerprint']]->id;
                 }
                 $stats['proposed']++;
             }
-            $gone = $old->reject(fn (JobCandidate $c) => in_array($c->id, $kept, true))->pluck('id');
+            $gone = $open->filter(fn (JobCandidate $c) => in_array($c->id, $copies, true) || (! in_array($c->id, $kept, true) && $within($c)))->pluck('id');
             if ($gone->isNotEmpty()) {
                 Verification::query()->where('subject_type', 'job_candidate')->whereIn('subject_id', $gone)->delete();
                 JobCandidate::query()->whereIn('id', $gone)->delete();
@@ -150,13 +173,17 @@ final class JobFinder
         return AiConfig::ready() && (bool) Setting::get('ai_suggestions');
     }
 
-    /** Add a possible job as a new job, with your edits, and link everything it was found from. */
-    public function accept(JobCandidate $candidate, array $fields): WorkJob
+    /**
+     * Add a possible job as a new job, with your edits, and link everything it was found from.
+     *
+     * @param  array{linked:int, missed:list<string>}|null  $links  set to what was linked, and what couldn't be
+     */
+    public function accept(JobCandidate $candidate, array $fields, ?array &$links = null): WorkJob
     {
-        return DB::transaction(function () use ($candidate, $fields) {
+        return DB::transaction(function () use ($candidate, $fields, &$links) {
             $job = WorkJob::query()->create($fields + ['status' => 'booked']);
             AuditLog::record('job.created', $job, null, $job->toArray(), 'From the job finder');
-            $this->linkSources($candidate, $job);
+            $links = $this->linkSources($candidate, $job);
             $candidate->update(['status' => 'accepted', 'work_job_id' => $job->id, 'decided_at' => now()]);
             $this->followUp($job);
 
@@ -164,10 +191,14 @@ final class JobFinder
         });
     }
 
-    /** Add a possible job's sources to a job you already have, filling only the job's blank details. */
-    public function merge(JobCandidate $candidate, WorkJob $job): WorkJob
+    /**
+     * Add a possible job's sources to a job you already have, filling only the job's blank details.
+     *
+     * @param  array{linked:int, missed:list<string>}|null  $links  set to what was linked, and what couldn't be
+     */
+    public function merge(JobCandidate $candidate, WorkJob $job, ?array &$links = null): WorkJob
     {
-        return DB::transaction(function () use ($candidate, $job) {
+        return DB::transaction(function () use ($candidate, $job, &$links) {
             $before = $job->toArray();
             $fill = array_filter([
                 'po_number' => $job->po_number ? null : $candidate->po_number,
@@ -180,7 +211,7 @@ final class JobFinder
                 $job->update($fill);
                 AuditLog::record('job.updated', $job, $before, $job->fresh()->toArray(), 'Blank details filled from the job finder');
             }
-            $this->linkSources($candidate, $job);
+            $links = $this->linkSources($candidate, $job);
             $candidate->update(['status' => 'merged', 'work_job_id' => $job->id, 'decided_at' => now()]);
             $this->followUp($job);
 
@@ -210,26 +241,46 @@ final class JobFinder
         });
     }
 
-    /** Link a possible job's sources to the job, skipping any you've since linked to a different job yourself. */
-    public function linkSources(JobCandidate $candidate, WorkJob $job): void
+    /**
+     * Link a possible job's sources to the job, skipping any you've since linked to a different job yourself. A
+     * document brings its email and the email's other attachments only when none of them is for another job.
+     *
+     * @return array{linked:int, missed:list<string>} how many were linked, and the labels of those that couldn't be
+     */
+    public function linkSources(JobCandidate $candidate, WorkJob $job): array
     {
+        $linked = 0;
+        $missed = [];
+        $pos = null;
         foreach ($candidate->sources ?? [] as $source) {
+            $done = false;
             if ($source['type'] === 'calendar' && ($event = self::event($source['id'], $source['date'] ?? null))) {
                 $link = CalendarJobLink::query()->where('event_key', $event->key())->first();
                 if (! ($link?->linked_by === 'you' && $link->work_job_id && $link->work_job_id !== $job->id)) {
                     $this->linkCalendar($event, $job, 'you', 'Added from the job finder');
+                    $done = true;
                 }
-            } elseif ($source['type'] === 'document' && ($doc = Document::query()->find($source['id']))) {
-                $doc = $doc->parent ?? $doc;
-                if (! ($doc->job_linked_by === 'you' && $doc->work_job_id && $doc->work_job_id !== $job->id)) {
-                    $this->linkDocument($doc, $job, 'you');
+            } elseif ($source['type'] === 'document' && ($doc = Document::query()->with('parent')->find($source['id']))) {
+                $pos ??= $this->poOwners($job, $candidate->po_number);
+                [$target, $attachments] = $this->linkTarget($doc, $job, $pos);
+                $yours = fn (Document $d) => $d->job_linked_by === 'you' && $d->work_job_id && $d->work_job_id !== $job->id;
+                if (! $yours($doc) && ! $yours($target)) {
+                    $done = $this->linkDocument($target, $job, 'you', $attachments);
                 }
             } elseif ($source['type'] === 'travel' && ($item = TravelItem::query()->find($source['id']))) {
                 if (! ($item->job_linked_by === 'you' && $item->work_job_id && $item->work_job_id !== $job->id)) {
                     $this->linkTravel($item, $job, 'you');
+                    $done = true;
                 }
             }
+            if ($done) {
+                $linked++;
+            } else {
+                $missed[] = (string) ($source['label'] ?? '');
+            }
         }
+
+        return ['linked' => $linked, 'missed' => $missed];
     }
 
     /**
@@ -298,17 +349,70 @@ final class JobFinder
     }
 
     /**
-     * Link (or, with no job, unlink) a document and the attachments that go with it. Automation never changes a link
-     * you made, or links to a job you unlinked it from; unlinking it yourself records "not this job".
+     * Link (or, with no job, unlink) a document and (unless told not to) the attachments that go with it. Automation
+     * never changes a link you made, or links to a job you unlinked it from; unlinking it yourself records "not this
+     * job". Returns whether it was linked.
      */
-    public function linkDocument(Document $document, ?WorkJob $job, string $by): void
+    public function linkDocument(Document $document, ?WorkJob $job, string $by, bool $attachments = true): bool
     {
         if ($by !== 'you' && ($document->job_linked_by === 'you' || ($job && in_array($job->id, $document->job_rejected ?? [], true)))) {
-            return;
+            return false;
         }
         $before = ['work_job_id' => $document->work_job_id, 'job_linked_by' => $document->job_linked_by];
-        DocumentReader::relink($document, $job?->id, $by);
-        AuditLog::record('document.job_linked', $document, $before, ['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : null], null, $by);
+        DocumentReader::relink($document, $job?->id, $by, $attachments);
+        AuditLog::record('document.job_linked', $document, $before, ['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : null], $attachments ? null : 'Only this document: other parts of its email are for another job', $by);
+
+        return true;
+    }
+
+    /**
+     * Which part of an email goes with a job: the whole email (its body and every attachment) when nothing else in it
+     * is for a different job, otherwise only the document itself. Another part is for a different job when it's
+     * linked to one, you said it isn't for this job, or it carries a PO number that isn't this job's (or, when this
+     * job has none, one of another job's).
+     *
+     * @param  array<int, list<string>>  $jobPos  each job's PO numbers
+     * @return array{0:Document, 1:bool} the document to link, and whether its attachments go with it
+     */
+    private function linkTarget(Document $doc, WorkJob $job, array $jobPos): array
+    {
+        $top = $doc->parent ?? $doc;
+        $mine = array_values(array_filter([...($jobPos[$job->id] ?? []), self::normalisePo($job->po_number), self::documentPo($doc)]));
+        $others = collect($jobPos)->except([$job->id])->flatten()->all();
+        $apart = collect([$top, ...$top->children()->get()])->contains(function (Document $d) use ($doc, $job, $mine, $others) {
+            if ($d->id === $doc->id) {
+                return false;
+            }
+            if (($d->work_job_id && $d->work_job_id !== $job->id) || in_array($job->id, $d->job_rejected ?? [], true)) {
+                return true;
+            }
+            $po = self::documentPo($d);
+
+            return $po !== null && ($mine ? ! in_array($po, $mine, true) : in_array($po, $others, true));
+        });
+
+        return $apart ? [$doc, false] : [$top, true];
+    }
+
+    private static function documentPo(Document $doc): ?string
+    {
+        return self::normalisePo($doc->extraction['po']['po_number'] ?? $doc->facts()->where('field', 'po_number')->value('value'));
+    }
+
+    /** @return array<int, list<string>> each job's PO number, with the possible job's for the job it's going to */
+    private function poOwners(WorkJob $job, ?string $candidatePo): array
+    {
+        $out = [];
+        foreach (WorkJob::query()->whereNotNull('po_number')->where('status', '!=', 'cancelled')->get(['id', 'po_number']) as $j) {
+            if ($p = self::normalisePo($j->po_number)) {
+                $out[$j->id][] = $p;
+            }
+        }
+        if ($p = self::normalisePo($candidatePo)) {
+            $out[$job->id][] = $p;
+        }
+
+        return $out;
     }
 
     public function linkTravel(TravelItem $item, ?WorkJob $job, string $by): void
@@ -594,9 +698,12 @@ final class JobFinder
     /**
      * Make an automatic link. A document is only linked when its own text backs the link (the job's PO number, or one
      * of its dates with its client, venue or title): what the AI read from it can suggest a job, never link one.
-     * A PO attachment links its email, and with it the email's other attachments.
+     * A PO attachment links its email, and with it the email's other attachments, unless another part of the email
+     * is for a different job: then only the attachment is linked, checked against its own text and the email's body.
+     *
+     * @param  array<int, list<string>>  $jobPos
      */
-    private function linkSignal(array $s, WorkJob $job, string $by, string $reason): bool
+    private function linkSignal(array $s, WorkJob $job, string $by, string $reason, array $jobPos = []): bool
     {
         if ($s['type'] === 'calendar') {
             $event = self::event($s['id'], $s['from']);
@@ -608,13 +715,13 @@ final class JobFinder
             return true;
         }
         if ($s['type'] === 'document' && ($doc = Document::query()->with('parent')->find($s['id']))) {
-            $top = $doc->parent ?? $doc;
-            if (! Verifier::jobEvidence(self::documentText($top), $job, $s['po'])['ok']) {
+            [$target, $attachments] = $this->linkTarget($doc, $job, $jobPos);
+            $text = $attachments ? self::documentText($target) : trim(($doc->parent?->text ?? '')."\n".$doc->text);
+            if (! Verifier::jobEvidence($text, $job, $s['po'])['ok']) {
                 return false;
             }
-            $this->linkDocument($top, $job, $by);
 
-            return true;
+            return $this->linkDocument($target, $job, $by, $attachments);
         }
 
         return false;
@@ -747,8 +854,8 @@ final class JobFinder
 
     // ---------------------------------------------------------------- AI, double-checked
 
-    /** Ask about calendar entries the rules can't call. Only answers whose quoted words are really in the entry count. */
-    private function askAiAboutCalendar(Collection $signals, array &$stats): Collection
+    /** Ask about calendar entries the rules can't call. Answers are double-checked and remembered (see applyAiVerdicts). */
+    private function askAiAboutCalendar(Collection $signals, array &$stats): void
     {
         // Newest first, and only what hasn't been asked about: older answers are remembered.
         $ask = $signals->filter(fn ($s) => $s['type'] === 'calendar' && $s['work'] >= 1 && $s['work'] <= 2)
@@ -785,7 +892,11 @@ final class JobFinder
                 report($e); // the rules still run
             }
         }
+    }
 
+    /** Use the remembered AI answers: only those whose quoted words are really in the entry count. */
+    private function applyAiVerdicts(Collection $signals): Collection
+    {
         return $signals->map(function ($s) {
             if ($s['type'] !== 'calendar' || $s['work'] < 1 || $s['work'] > 2) {
                 return $s;
@@ -826,15 +937,21 @@ final class JobFinder
 
     // ---------------------------------------------------------------- helpers
 
-    /** A calendar entry by its stable key, looked up on the day it starts. */
+    /**
+     * A calendar entry by its stable key, wherever it has moved to. The date (the day it started when it was seen)
+     * only narrows the search for entries loaded before each kept its key.
+     */
     public static function event(string $key, ?string $date): ?CalendarEvent
     {
+        if ($found = CalendarEvent::query()->where('event_key', $key)->first()) {
+            return $found;
+        }
         // Stored in UTC, so the UK date can be a day either side of the stored one.
         $d = $date ? CarbonImmutable::parse($date) : null;
+        $find = fn ($q) => $q->whereNull('event_key')->get()->first(fn (CalendarEvent $e) => $e->key() === $key);
 
-        return CalendarEvent::query()
-            ->when($d, fn ($q) => $q->whereBetween('starts_at', [$d->subDay()->format('Y-m-d 00:00:00'), $d->addDay()->format('Y-m-d 23:59:59')]))
-            ->get()->first(fn (CalendarEvent $e) => $e->key() === $key);
+        return ($d ? $find(CalendarEvent::query()->whereBetween('starts_at', [$d->subDay()->format('Y-m-d 00:00:00'), $d->addDay()->format('Y-m-d 23:59:59')])) : null)
+            ?? $find(CalendarEvent::query());
     }
 
     /** @return array<int, list<string>> each job's PO numbers, from the job and from PO documents linked to it */

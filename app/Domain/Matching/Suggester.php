@@ -2,7 +2,9 @@
 
 namespace App\Domain\Matching;
 
+use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Ledger\RuleLearner;
 use App\Domain\Travel\TravelDays;
 use App\Models\BankTransaction;
 use App\Models\Category;
@@ -47,6 +49,7 @@ final class Suggester
 
         $turnover = Category::query()->where('code', 'turnover')->value('id');
         $openInvoices = Invoice::query()->where('status', 'issued')->where('currency', 'GBP')->get();
+        $received = null; // worked out the first time money comes in, below
 
         foreach ($transactions as $tx) {
             if (in_array($tx->tax_year, $locked, true) || $tx->allocations()->exists()) {
@@ -56,7 +59,10 @@ final class Suggester
             $text = $tx->description.' '.$tx->counterparty;
 
             if ($tx->amount_pence > 0 && $turnover) {
-                $invoice = $openInvoices->first(fn ($i) => $i->total_minor === $tx->amount_pence && $i->paidMinor() === 0
+                // Only an invoice nothing has come in for yet (counted as everywhere else: payments linked to it,
+                // and income recorded for its job).
+                $received ??= InvoicePayments::received($openInvoices);
+                $invoice = $openInvoices->first(fn ($i) => $i->total_minor === $tx->amount_pence && ($received[$i->id]['paid'] ?? 0) === 0
                     && (! $i->issue_date || $tx->posted_on->gte($i->issue_date->copy()->subDays(3))));
                 if ($invoice) {
                     $lines = AllocationWriter::lines($tx->amount_pence, 'business_income', $turnover, $invoice->work_job_id);
@@ -67,7 +73,7 @@ final class Suggester
                 }
             }
 
-            if ($rule = $rules->get($tx->merchant_key)) {
+            if (($rule = $rules->get($tx->merchant_key)) && RuleLearner::appliesTo($rule, $tx->amount_pence)) {
                 $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, $rule->work_job_id, $rule->business_pct);
                 $made += (int) $this->writer->decide($tx, $lines, 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}", $rule->id);
             } elseif ($tx->amount_pence < 0 && preg_match(self::HMRC_PATTERN, $text)) {

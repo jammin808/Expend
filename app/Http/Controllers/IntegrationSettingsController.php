@@ -86,15 +86,12 @@ class IntegrationSettingsController extends Controller
         return back()->with('success', 'Starling connected: '.count($map).' '.(count($map) === 1 ? 'account' : 'accounts').'. Press Import now, or wait for tomorrow morning.');
     }
 
-    public function linkStarling(Request $request): RedirectResponse
+    public function linkStarling(Request $request, StarlingSync $starling): RedirectResponse
     {
         $data = $request->validate(['uid' => 'required|string|max:64', 'account_id' => 'required|integer|exists:accounts,id']);
-        $map = (array) Setting::get('starling_accounts');
-        abort_unless(isset($map[$data['uid']]), 404);
-        $map[$data['uid']]['account_id'] = $data['account_id'];
-        Setting::put('starling_accounts', $map);
+        abort_unless(isset(((array) Setting::get('starling_accounts'))[$data['uid']]), 404);
 
-        return back()->with('success', 'Saved.');
+        return back()->with('success', $starling->relink($data['uid'], Account::query()->findOrFail($data['account_id'])));
     }
 
     public function syncStarling(Request $request, StarlingSync $starling): RedirectResponse

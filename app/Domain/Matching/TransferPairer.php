@@ -78,10 +78,14 @@ final class TransferPairer
     {
         OwnAccounts::flush();
         $locked ??= TaxYear::query()->whereNotNull('locked_at')->pluck('label')->all();
-        $ruled = MerchantRule::query()->pluck('merchant_key')->all();
+        // A rule covers its merchant only the way round it applies (a learned rule keeps to the way it was learned).
+        $rules = MerchantRule::query()->get(['merchant_key', 'direction']);
+        $ruled = fn (?string $direction) => ($direction ? $rules->where('direction', $direction) : $rules->whereNull('direction'))->pluck('merchant_key')->all() ?: [''];
         $made = 0;
         // Undecided, or only guessed by AI: your rules and the other matchers (HMRC, travel, invoices) come first.
-        $rows = BankTransaction::query()->whereNull('transfer_pair_id')->whereNotIn('tax_year', $locked)->whereNotIn('merchant_key', $ruled ?: [''])
+        $rows = BankTransaction::query()->whereNull('transfer_pair_id')->whereNotIn('tax_year', $locked)->whereNotIn('merchant_key', $ruled(null))
+            ->where(fn ($q) => $q->where('amount_pence', '>', 0)->orWhereNotIn('merchant_key', $ruled('out')))
+            ->where(fn ($q) => $q->where('amount_pence', '<', 0)->orWhereNotIn('merchant_key', $ruled('in')))
             ->whereDoesntHave('allocations', fn ($a) => $a->where(fn ($a) => $a->whereNotNull('confirmed_at')->orWhere('is_manual', true)->orWhere('decided_by', '!=', 'ai')))
             ->with(['account', 'allocations'])->orderBy('posted_on')->limit(5000)->get();
         foreach ($rows as $tx) {

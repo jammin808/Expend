@@ -61,8 +61,19 @@ final class Explainer
             ->whereDate('ends_on', '>=', CarbonImmutable::parse($date)->subDay()->format('Y-m-d'))->get();
         $isTravel = $category && (str_starts_with($category->code, 'travel') || $category->code === 'travel');
         if ($jobs->isNotEmpty()) {
-            $notes[] = 'You had work then: '.$jobs->pluck('title')->implode(', ').'. '
-                .($isTravel || ! $category ? 'Travel to a temporary workplace like a venue, and meals and hotels when you’re away overnight for it, are normally allowable.' : 'If this was for that job, link it so it counts as the job’s cost.');
+            // Only what fits the money: spending can be a cost of the job, money in its income. A transfer, a tax
+            // payment or drawings has nothing to do with the job; for a personal item the job is just context.
+            $work = 'You had work then: '.$jobs->pluck('title')->implode(', ').'.';
+            $kind = $main?->kind;
+            $linked = $main?->job !== null;
+            if ($amount < 0 && in_array($kind, [null, 'business_expense'], true)) {
+                $notes[] = $work.($isTravel || ! $category ? ' Travel to a temporary workplace like a venue, and meals and hotels when you’re away overnight for it, are normally allowable.'
+                    : ($linked ? '' : ' If this was for that job, link it so it counts as the job’s cost.'));
+            } elseif ($amount > 0 && in_array($kind, [null, 'business_income'], true)) {
+                $notes[] = $work.($linked ? '' : ' If this was payment for that job, link it to the job so it counts as that job’s income.');
+            } elseif ($kind === 'personal') {
+                $notes[] = $work;
+            }
         } elseif ($isTravel) {
             $notes[] = 'There’s no job on or around this date. Travel is only allowable for business journeys (to a venue, client or temporary workplace, not ordinary commuting to a regular base). If it was for work, add the job; otherwise it’s personal.';
         }

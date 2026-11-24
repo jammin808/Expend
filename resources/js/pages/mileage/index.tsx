@@ -5,8 +5,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
 import { day, money } from '@/lib/format';
-import { Head, router, useForm } from '@inertiajs/react';
-import { Trash2 } from 'lucide-react';
+import { Head, Link, router, useForm } from '@inertiajs/react';
+import { Lock, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 
 interface Trip {
@@ -22,14 +22,22 @@ interface Trip {
     note: string;
 }
 
+interface Vehicle {
+    id: number;
+    name: string;
+    type: string;
+    method: string;
+}
+
 interface Props {
     year: string;
     years: string[];
+    locked: boolean;
     rates: { car_van_first: number; car_van_after: number; threshold_miles: number; motorcycle: number } | null;
     trips: Trip[];
     total_pence: number;
     total_miles: string;
-    vehicles: { id: number; name: string; type: string; method: string }[];
+    vehicles: Vehicle[];
     jobs: { id: number; title: string; starts_on: string; location: string | null }[];
     fromJobs: {
         job_id: number;
@@ -41,13 +49,24 @@ interface Props {
         one_way: number;
         trips: number;
         miles: number;
+        trip_dates: string[];
         why: string;
     }[];
     homePostcode: string | null;
 }
 
-export default function Mileage({ year, years, rates, trips, total_pence, total_miles, vehicles, jobs, fromJobs, homePostcode }: Props) {
-    const [picked, setPicked] = useState<number[]>(fromJobs.map((p) => p.job_id));
+/** The vehicle trips from jobs go on unless you pick another: a car or van at the flat rate, as most job trips are. */
+function defaultVehicle(vehicles: Vehicle[]): Vehicle | undefined {
+    return vehicles.find((v) => v.type === 'car_van' && v.method === 'simplified') ?? vehicles.find((v) => v.method === 'simplified') ?? vehicles[0];
+}
+
+export default function Mileage({ year, years, locked, rates, trips, total_pence, total_miles, vehicles, jobs, fromJobs, homePostcode }: Props) {
+    // Jobs you unticked. Everything else on the list is ticked, so switching tax year or adding trips never leaves
+    // ticks or counts from another list behind.
+    const [skipped, setSkipped] = useState<number[]>([]);
+    const chosen = fromJobs.filter((p) => !skipped.includes(p.job_id));
+    const [jobVehicleId, setJobVehicleId] = useState<string>(() => String(defaultVehicle(vehicles)?.id ?? ''));
+    const jobVehicle = vehicles.find((v) => String(v.id) === jobVehicleId) ?? defaultVehicle(vehicles);
     const trip = useForm({
         vehicle_id: vehicles[0]?.id ? String(vehicles[0].id) : '',
         work_job_id: '',
@@ -85,6 +104,19 @@ export default function Mileage({ year, years, rates, trips, total_pence, total_
                     </NativeSelect>
                 </div>
 
+                {locked && (
+                    <p className="flex items-center gap-2 rounded-xl border p-3 text-sm">
+                        <Lock className="size-4 shrink-0" />
+                        <span>
+                            {year} is locked, so its trips can’t be added, changed or removed.{' '}
+                            <Link href={`/years/${year}`} className="underline">
+                                Unlock it on the {year} page
+                            </Link>{' '}
+                            if you need to change them.
+                        </span>
+                    </p>
+                )}
+
                 <div className="grid gap-3 sm:grid-cols-2">
                     <div className="rounded-xl border p-4">
                         <p className="text-muted-foreground text-sm">Business miles in {year}</p>
@@ -96,12 +128,13 @@ export default function Mileage({ year, years, rates, trips, total_pence, total_
                     </div>
                 </div>
 
-                {fromJobs.length > 0 && vehicles.length > 0 && (
+                {fromJobs.length > 0 && jobVehicle && (
                     <section className="space-y-2 rounded-xl border border-sky-300 bg-sky-50/50 p-4 dark:border-sky-800 dark:bg-sky-950/20">
                         <h2 className="font-semibold">Add trips for the jobs you drove to</h2>
                         <p className="text-muted-foreground text-sm">
                             From home ({homePostcode}) to each venue and back. Distances are estimated from the postcodes (straight line × 1.25 for
-                            roads): correct any that differ. Jobs you reached by train, plane or coach, or that already have mileage, aren’t listed.
+                            roads): correct any that differ. Jobs you reached by train, plane or coach, jobs that already have mileage, and jobs whose
+                            last day is still to come aren’t listed.
                         </p>
                         <ul className="bg-background divide-y rounded-lg border text-sm">
                             {fromJobs.map((p) => (
@@ -110,9 +143,9 @@ export default function Mileage({ year, years, rates, trips, total_pence, total_
                                         <input
                                             type="checkbox"
                                             className="size-4"
-                                            checked={picked.includes(p.job_id)}
+                                            checked={!skipped.includes(p.job_id)}
                                             onChange={(e) =>
-                                                setPicked(e.target.checked ? [...picked, p.job_id] : picked.filter((id) => id !== p.job_id))
+                                                setSkipped(e.target.checked ? skipped.filter((id) => id !== p.job_id) : [...skipped, p.job_id])
                                             }
                                         />
                                         <span className="min-w-0 flex-1">
@@ -126,19 +159,42 @@ export default function Mileage({ year, years, rates, trips, total_pence, total_
                                 </li>
                             ))}
                         </ul>
-                        <Button
-                            disabled={picked.length === 0}
-                            onClick={() =>
-                                router.post('/mileage/from-jobs', { year, vehicle_id: vehicles[0].id, job_ids: picked }, { preserveScroll: true })
-                            }
-                        >
-                            Add {picked.length} {picked.length === 1 ? 'job’s' : 'jobs’'} trips (
-                            {fromJobs
-                                .filter((p) => picked.includes(p.job_id))
-                                .reduce((t, p) => t + p.miles, 0)
-                                .toFixed(1)}{' '}
-                            miles)
-                        </Button>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Label htmlFor="job-trips-vehicle" className="text-sm">
+                                Vehicle
+                            </Label>
+                            <NativeSelect
+                                id="job-trips-vehicle"
+                                className="w-auto"
+                                value={String(jobVehicle.id)}
+                                onChange={(e) => setJobVehicleId(e.target.value)}
+                            >
+                                {vehicles.map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                        {v.name}
+                                        {v.method === 'actual' ? ' (actual costs)' : ''}
+                                    </option>
+                                ))}
+                            </NativeSelect>
+                            <Button
+                                disabled={chosen.length === 0}
+                                onClick={() =>
+                                    router.post(
+                                        '/mileage/from-jobs',
+                                        { year, vehicle_id: jobVehicle.id, job_ids: chosen.map((p) => p.job_id) },
+                                        { preserveScroll: true },
+                                    )
+                                }
+                            >
+                                Add {chosen.length} {chosen.length === 1 ? 'job’s' : 'jobs’'} trips (
+                                {chosen.reduce((t, p) => t + p.miles, 0).toFixed(1)} miles)
+                            </Button>
+                        </div>
+                        {jobVehicle.method === 'actual' && (
+                            <p className="text-muted-foreground text-sm">
+                                {jobVehicle.name} uses actual costs, so these trips record your business miles but don’t add a mileage claim.
+                            </p>
+                        )}
                     </section>
                 )}
                 {!homePostcode && (
@@ -256,14 +312,18 @@ export default function Mileage({ year, years, rates, trips, total_pence, total_
                             </span>
                             <span className="flex items-center gap-2">
                                 <span className="font-medium tabular-nums">{money(t.claim_pence)}</span>
-                                <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    aria-label="Remove trip"
-                                    onClick={() => window.confirm('Remove this trip?') && router.delete(`/mileage/${t.id}`, { preserveScroll: true })}
-                                >
-                                    <Trash2 />
-                                </Button>
+                                {!locked && (
+                                    <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        aria-label="Remove trip"
+                                        onClick={() =>
+                                            window.confirm('Remove this trip?') && router.delete(`/mileage/${t.id}`, { preserveScroll: true })
+                                        }
+                                    >
+                                        <Trash2 />
+                                    </Button>
+                                )}
                             </span>
                         </li>
                     ))}

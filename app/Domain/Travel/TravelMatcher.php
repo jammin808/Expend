@@ -108,7 +108,9 @@ final class TravelMatcher
 
     /**
      * Your decision on a stay or journey. It's applied to its payment too, as your own confirmed decision,
-     * unless you've already decided that payment yourself (then it's left as you set it).
+     * unless you've already decided that payment yourself (then it's left as you set it). What automation put on the
+     * payment is replaced by this later decision of yours, even when it's confirmed: a rule that confirms on its own
+     * (a learned "always do this"), or a suggestion you accepted. The change is in the payment's history.
      *
      * @return string what happened to the payment, for the message you see
      */
@@ -130,7 +132,8 @@ final class TravelMatcher
                 }
                 $item->bank_transaction_id = null;
                 $outcome = 'unlinked';
-            } elseif ($payment && $payment->allocations()->get()->contains(fn ($a) => $a->is_manual || $a->confirmed_at !== null)) {
+            } elseif ($payment && $payment->allocations()->get()->contains(fn ($a) => $a->is_manual)) {
+                // Only a decision you made on the payment itself is kept (see above).
                 $outcome = 'kept';
             } elseif ($payment) {
                 $kind = match ($decision) {

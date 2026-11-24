@@ -13,8 +13,12 @@ interface Rule {
     category: string | null;
     business_pct: number;
     auto_confirm: boolean;
+    /** A rule learned from your decisions applies only the way the money went in them. */
+    direction?: 'out' | 'in' | null;
     applied: number;
 }
+
+const directionLabels = { out: 'payments out only', in: 'money in only' };
 
 export default function Rules({ rules }: { rules: Rule[] }) {
     return (
@@ -35,6 +39,7 @@ export default function Rules({ rules }: { rules: Rule[] }) {
                                         {kindLabels[r.kind]}
                                         {r.category ? ` · ${r.category}` : ''}
                                         {r.business_pct < 100 ? ` · ${r.business_pct}% business` : ''}
+                                        {r.direction ? ` · ${directionLabels[r.direction]}` : ''}
                                     </span>
                                 </span>
                                 <span className="flex items-center gap-3">

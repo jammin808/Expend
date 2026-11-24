@@ -5,6 +5,7 @@ use App\Domain\Banks\StarlingSync;
 use App\Domain\Calendar\CalendarSync;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
+use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Matching\Categoriser;
@@ -91,15 +92,27 @@ Artisan::command('ledger:invoice-nudges', function () {
     }
     Telegram::allowButtons();
     $n = 0;
-    foreach (Invoice::query()->where('status', 'issued')->whereNotNull('due_date')->whereDate('due_date', '<', today())
-        ->where(fn ($q) => $q->whereNull('overdue_nudged_at')->orWhere('overdue_nudged_at', '<', now()->subDays(7)))->get() as $invoice) {
-        if ($invoice->paidMinor() >= $invoice->total_minor) {
+    $overdue = Invoice::query()->where('status', 'issued')->whereNotNull('due_date')->whereDate('due_date', '<', today())
+        ->where(fn ($q) => $q->whereNull('overdue_nudged_at')->orWhere('overdue_nudged_at', '<', now()->subDays(7)))->get();
+    // What has come in for each, counted as the to-do list counts it (payments linked to it, income for its job).
+    $received = InvoicePayments::received($overdue);
+    foreach ($overdue as $invoice) {
+        ['paid' => $paid, 'elsewhere' => $elsewhere, 'waiting' => $waiting] = $received[$invoice->id] ?? ['paid' => 0, 'elsewhere' => 0, 'waiting' => 0];
+        if ($paid >= $invoice->total_minor) {
             continue;
         }
         $days = (int) $invoice->due_date->diffInDays(today());
+        $money = fn (int $minor) => Money::format($minor, $invoice->currency ?: 'GBP', false);
+        // The reminder email tells the client no payment has been seen, so it's only offered when nothing has come in.
+        $come = match (true) {
+            $waiting > 0 => ' '.Money::format($waiting, 'GBP', false).' that may be for it is waiting in the Inbox: decide it first.',
+            $paid > 0 => ' '.$money($paid).' of it has come in, so '.$money($invoice->total_minor - $paid).' is still to come.',
+            $elsewhere > 0 => ' '.Money::format($elsewhere, 'GBP', false).' came in for this job in another currency: check whether it’s been paid.',
+            default => null,
+        };
         Telegram::sendWithButtons($chat, "Invoice {$invoice->number} to ".($invoice->bill_to_name ?: 'the client').' is '.$days.' days overdue ('
-            .Money::format($invoice->total_minor, $invoice->currency, false).').'.($invoice->reminder_count ? " Reminders sent: {$invoice->reminder_count}." : ''),
-            $invoice->bill_to_email ? [['Send a reminder', 'inv_chase', $invoice->id]] : []);
+            .$money($invoice->total_minor).').'.($come ?? '').($invoice->reminder_count ? " Reminders sent: {$invoice->reminder_count}." : ''),
+            $invoice->bill_to_email && $come === null ? [['Send a reminder', 'inv_chase', $invoice->id]] : []);
         $invoice->forceFill(['overdue_nudged_at' => now()])->save();
         $n++;
     }

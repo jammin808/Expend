@@ -99,6 +99,10 @@ final class MailboxFetcher
      * client who sent the PO, but sends from you@gmail.com+caf_=…: the envelope sender becomes
      * you+caf_=ledger=example.com@gmail.com. That counts as yours only if the receiving server's SPF check
      * passed for that domain, which a stranger can't fake.
+     *
+     * The receiving server's verdict is the topmost Authentication-Results. Only a server that adds none is read
+     * from its Received-SPF instead, and then only the topmost one: headers further down are the sender's own
+     * (anyone can write "Received-SPF: pass" into a message), so they never count.
      */
     private static function autoForwardedBy(string $headers, ?string $auth): ?string
     {
@@ -106,8 +110,9 @@ final class MailboxFetcher
             return null;
         }
         $domain = preg_quote(strtolower($m[2]), '/');
-        $spfPassed = ($auth !== null && preg_match('/\bspf=pass\b[^;]*\bsmtp\.mailfrom=(?:[^\s;@]*@)?'.$domain.'(?![a-z0-9.-])/i', $auth))
-            || preg_match('/^Received-SPF:\s*pass\b.*@'.$domain.'(?![a-z0-9.-])/mi', $headers);
+        $spfPassed = $auth !== null
+            ? preg_match('/\bspf=pass\b[^;]*\bsmtp\.mailfrom=(?:[^\s;@]*@)?'.$domain.'(?![a-z0-9.-])/i', $auth)
+            : preg_match('/^Received-SPF:(.*)$/mi', $headers, $spf) && preg_match('/^\s*pass\b.*@'.$domain.'(?![a-z0-9.-])/i', $spf[1]);
 
         return $spfPassed ? self::normalise($m[1].'@'.$m[2]) : null;
     }

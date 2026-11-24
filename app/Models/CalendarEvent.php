@@ -13,9 +13,19 @@ class CalendarEvent extends Model
 {
     public const TZ = 'Europe/London';
 
-    protected $fillable = ['uid', 'recurrence_id', 'starts_at', 'ends_at', 'all_day', 'summary', 'location'];
+    protected $fillable = ['uid', 'recurrence_id', 'event_key', 'starts_at', 'ends_at', 'all_day', 'summary', 'location'];
 
     protected $casts = ['starts_at' => 'datetime', 'ends_at' => 'datetime', 'all_day' => 'boolean'];
+
+    protected static function booted(): void
+    {
+        // The key is kept with the entry so it can be found by it (CalendarSync sets it on the rows it loads).
+        static::saving(function (CalendarEvent $event) {
+            if ($event->isDirty(['uid', 'recurrence_id']) && ! $event->isDirty('event_key') && filled($event->uid)) {
+                $event->event_key = self::keyFor($event->uid, $event->recurrence_id);
+            }
+        });
+    }
 
     /**
      * A key that stays the same when the feed is reloaded and when the entry is moved: the UID for a one-off entry,

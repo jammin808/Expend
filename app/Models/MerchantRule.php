@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class MerchantRule extends Model
 {
-    protected $fillable = ['merchant_key', 'kind', 'category_id', 'work_job_id', 'business_pct', 'auto_confirm'];
+    protected $fillable = ['merchant_key', 'kind', 'category_id', 'work_job_id', 'business_pct', 'auto_confirm', 'direction'];
 
     protected $casts = ['auto_confirm' => 'boolean', 'business_pct' => 'integer'];
 
