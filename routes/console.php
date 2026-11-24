@@ -1,5 +1,6 @@
 <?php
 
+use App\Console\Commands\IntelBackfill;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Banks\StarlingSync;
 use App\Domain\Calendar\CalendarSync;
@@ -179,6 +180,10 @@ Artisan::command('ledger:reset-link', function () {
 Artisan::command('ledger:findings', function () {
     $r = FindingsRegistry::sync();
     $this->info("Findings: {$r['new']} new, {$r['resolved']} resolved, {$r['open']} open.");
+    if (! empty($r['unseen'])) {
+        // A limit left some out: missing ones aren't called dealt with (see FindingsRegistry).
+        $this->line("{$r['unseen']} not looked for in full this time, so not marked dealt with.");
+    }
     if (! empty($r['failed'])) {
         // Their findings are kept open until the check works again (see FindingsRegistry).
         $this->warn('Not worked out this time (see the log): '.implode(', ', array_map(fn ($p) => rtrim($p, ':'), $r['failed'])).'.');
@@ -224,6 +229,12 @@ Schedule::command('ledger:find-jobs')->dailyAt('04:17')->timezone('Europe/London
 Schedule::command('ledger:opportunities')->dailyAt('04:27')->timezone('Europe/London')->withoutOverlapping();
 Schedule::command('ledger:recheck')->dailyAt('04:47')->timezone('Europe/London')->withoutOverlapping();
 Schedule::command('ledger:findings')->dailyAt('05:07')->timezone('Europe/London')->withoutOverlapping();
+// Fill in the intelligence cycle's new columns for rows kept before them, a little each hour, until each backfill is
+// done (settings intel_backfills_done). Never inside a migration. At most 20 seconds a run: the scheduler runs its
+// work one after another, so a long run would hold up the queue worker below.
+foreach (array_keys(IntelBackfill::backfills()) as $backfill) {
+    Schedule::command('ledger:intel-backfill '.$backfill.' --seconds=20')->hourlyAt(37)->withoutOverlapping()->skip(fn () => IntelBackfill::isDone($backfill));
+}
 // Re-run the Gmail searches weekly for this tax year (and last year until the 31 January deadline), so new,
 // changed and cancelled bookings and POs are picked up. Emails already read are skipped.
 Schedule::call(function () {

@@ -4,6 +4,7 @@ namespace App\Domain\Todo;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Jobs\JobCreator;
@@ -21,6 +22,7 @@ use App\Jobs\ReadDocument;
 use App\Models\BankTransaction;
 use App\Models\CalendarJobLink;
 use App\Models\Document;
+use App\Models\Finding;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\MerchantRule;
@@ -46,7 +48,10 @@ use InvalidArgumentException;
 final class TodoActions
 {
     public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'tx_tax', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
-        'opp_add', 'opp_decline', 'opp_dismiss'];
+        'opp_add', 'opp_decline', 'opp_dismiss', 'fnd_snooze', 'fnd_dismiss'];
+
+    /** How long "Snooze a week" snoozes for. */
+    public const SNOOZE_DAYS = 7;
 
     public function __construct(
         private AllocationWriter $writer, private DecisionService $decisions, private JobFinder $finder, private InvoiceService $invoices,
@@ -80,8 +85,56 @@ final class TodoActions
             'opp_add' => $this->opportunityAdd((int) $id, $offeredAt),
             'opp_decline' => $this->opportunityDecide((int) $id, 'decline', $offeredAt),
             'opp_dismiss' => $this->opportunityDecide((int) $id, 'dismiss', $offeredAt),
+            'fnd_snooze' => $this->findingHide($id, true),
+            'fnd_dismiss' => $this->findingHide($id, false),
             default => throw new InvalidArgumentException('Unknown action.'),
         };
+    }
+
+    /**
+     * Snooze a finding for a week, or mark it not relevant, with a preset reason (a Telegram button: its id is
+     * {finding}:{reason}), as from the to-do page (Dismissals). One hidden by you now, or gone, says so and changes
+     * nothing. Whether it is, is read as the list reads it now (Dismissals::hiddenNow(), and the findings brought up
+     * to date first): the finding's recorded state can be a day behind, and an item back on the list since must take
+     * the press. A week's snooze runs to the start of the same weekday next week, so it's back for the next Monday
+     * digest. Audited from wherever the press came from (Telegram, or the to-do page).
+     */
+    private function findingHide(string $id, bool $snooze): string
+    {
+        if (! preg_match('/^(\d+):([a-z_]+)$/', $id, $m)) {
+            throw new InvalidArgumentException('Choose a reason first.');
+        }
+        $finding = Finding::query()->findOrFail((int) $m[1]);
+        $reasons = Dismissals::reasonsFor($finding->code, $snooze);
+        if (! isset($reasons[$m[2]])) {
+            throw new InvalidArgumentException('Unknown reason.');
+        }
+        if (! self::stillShown($finding, $snooze)) {
+            throw (new ModelNotFoundException)->setModel(Finding::class, [$finding->id]); // dealt with or hidden since
+        }
+        $message = Dismissals::dismiss($finding->key, $snooze ? self::SNOOZE_DAYS : null, Dismissals::note($m[2], null, $snooze, $finding->code),
+            AuditContext::current()['channel'] ?? 'web', fromStartOfDay: true);
+
+        return $snooze ? 'Snoozed for a week: '.$finding->title.'.' : 'Not relevant ('.$reasons[$m[2]].'): '.$finding->title.'. '.preg_replace('/^Marked not relevant[.:]\s*/', '', $message);
+    }
+
+    /**
+     * Whether a finding's item can still be snoozed ($snooze) or marked not relevant: not hidden by you now (a snooze
+     * still running refuses another snooze, not "not relevant"), and not gone. Gone is the finding's recorded state,
+     * once the findings are brought up to date with what the list is made from (FindingsRegistry::refresh()).
+     */
+    public static function stillShown(Finding $finding, bool $snooze): bool
+    {
+        $hidden = Dismissals::hiddenNow($finding->key);
+        if ($hidden === 'dismissed' || ($snooze && $hidden === 'snoozed')) {
+            return false;
+        }
+        if (! in_array($finding->currentState(), ['open', 'unseen'], true)) {
+            FindingsRegistry::refresh();
+            $finding->refresh();
+        }
+
+        return $finding->currentState() !== 'resolved';
     }
 
     /**

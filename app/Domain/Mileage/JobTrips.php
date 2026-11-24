@@ -10,6 +10,7 @@ use App\Models\TravelItem;
 use App\Models\WorkJob;
 use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 
 /**
@@ -25,9 +26,42 @@ final class JobTrips
 
     /**
      * Journeys that mean you didn't drive your own vehicle to the job: no mileage to claim. The to-do list's mileage
-     * items read the same list (TodoList::NOT_DRIVEN).
+     * items use the same list and the same rule (journeys()).
      */
     public const JOURNEYS = ['rail', 'flight', 'coach', 'car_hire'];
+
+    /**
+     * How you reached these jobs other than in your own vehicle (JOURNEYS: train, plane, coach or hire car), by the
+     * rule proposals() leaves a job out by: a journey linked to the job, or not linked to any job and within a day of
+     * a working day (reached()), not cancelled and not marked personal (usable()). For many jobs in one query: the
+     * to-do list's mileage items (Intel\Detectors\TravelUnclaimed) use this, so the two never disagree.
+     *
+     * @param  Collection<int, WorkJob>  $jobs  by id, with their days
+     * @return array<int, list<string>> the kinds of journey, by job id (jobs you may have driven to aren't in it)
+     */
+    public static function journeys(Collection $jobs): array
+    {
+        $dates = $jobs->map(fn (WorkJob $j) => $j->workDates());
+        $all = $dates->flatten()->sort()->values();
+        if ($all->isEmpty()) {
+            return [];
+        }
+        $journeys = self::usable(TravelItem::query())->whereIn('kind', self::JOURNEYS)
+            ->where(fn ($q) => $q->whereIn('work_job_id', $jobs->keys()->all())->orWhere(fn ($q) => $q->whereNull('work_job_id')
+                ->whereDate('starts_on', '>=', CarbonImmutable::parse($all->first())->subDay()->format('Y-m-d'))
+                ->whereDate('starts_on', '<=', CarbonImmutable::parse($all->last())->addDay()->format('Y-m-d'))))
+            ->get(['kind', 'work_job_id', 'starts_on']);
+        $out = [];
+        foreach ($jobs as $id => $j) {
+            $near = self::near($dates[$id]);
+            $kinds = $journeys->filter(fn (TravelItem $i) => self::reached($i, (int) $id, $near))->pluck('kind')->unique()->values()->all();
+            if ($kinds !== []) {
+                $out[$id] = $kinds;
+            }
+        }
+
+        return $out;
+    }
 
     /** @return list<array{job_id:int, title:string, starts_on:string, ends_on:string, venue:?string, postcode:string, one_way:float, trips:int, miles:float, trip_dates:list<string>, why:string}> */
     public static function proposals(string $taxYear): array
@@ -154,26 +188,16 @@ final class JobTrips
         $from = CarbonImmutable::parse($dates[0])->subDay()->format('Y-m-d');
         $to = CarbonImmutable::parse(end($dates))->addDay()->format('Y-m-d');
         /** @var Collection<int, TravelItem> $items */
-        $items = TravelItem::query()->where('status', '!=', 'cancelled')
-            ->where(fn ($q) => $q->whereNull('decision')->orWhere('decision', '!=', 'personal'))
+        $items = self::usable(TravelItem::query())
             ->where(fn ($q) => $q->where('work_job_id', $job->id)->orWhere(fn ($q) => $q
                 ->whereDate('starts_on', '<=', $to)
                 ->where(fn ($q) => $q->whereDate('starts_on', '>=', $from)->orWhereDate('ends_on', '>=', $from))))
             ->get();
 
-        $near = [];
-        foreach ($dates as $d) {
-            $day = CarbonImmutable::parse($d);
-            $near[$day->subDay()->format('Y-m-d')] = true;
-            $near[$d] = true;
-            $near[$day->addDay()->format('Y-m-d')] = true;
-        }
+        $near = self::near($dates);
         $fits = function (TravelItem $item) use ($job, $dates, $near): bool {
-            if ((int) $item->work_job_id === $job->id) {
-                return true;
-            }
-            if ($item->kind !== 'hotel') {
-                return $item->work_job_id === null && isset($near[$item->starts_on->format('Y-m-d')]);
+            if ($item->kind !== 'hotel' || (int) $item->work_job_id === $job->id) {
+                return self::reached($item, $job->id, $near);
             }
             // A night before a working day: you woke up there on it.
             foreach ($item->nights() as $night) {
@@ -193,5 +217,42 @@ final class JobTrips
             'journey' => $relevant->whereIn('kind', self::JOURNEYS)->isNotEmpty(),
             'woke' => $woke,
         ];
+    }
+
+    /** Travel that can say how you got to a job: not cancelled, and not marked personal (that wasn't for work). */
+    private static function usable(Builder $query): Builder
+    {
+        return $query->where('status', '!=', 'cancelled')->where(fn ($q) => $q->whereNull('decision')->orWhere('decision', '!=', 'personal'));
+    }
+
+    /**
+     * Whether a train, plane, coach or hire car (or any travel linked to the job) is how you got to this job: linked
+     * to it, or linked to no job and starting within a day of one of its working days ($near). One linked to another
+     * job was the way to that job.
+     *
+     * @param  array<string, true>  $near  near()'s
+     */
+    private static function reached(TravelItem $item, int $jobId, array $near): bool
+    {
+        return (int) $item->work_job_id === $jobId || ($item->work_job_id === null && isset($near[$item->starts_on->format('Y-m-d')]));
+    }
+
+    /**
+     * Each working day, and the days either side of it.
+     *
+     * @param  list<string>  $dates
+     * @return array<string, true>
+     */
+    private static function near(array $dates): array
+    {
+        $near = [];
+        foreach ($dates as $d) {
+            $day = CarbonImmutable::parse($d);
+            $near[$day->subDay()->format('Y-m-d')] = true;
+            $near[$d] = true;
+            $near[$day->addDay()->format('Y-m-d')] = true;
+        }
+
+        return $near;
     }
 }

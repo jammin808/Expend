@@ -5,12 +5,16 @@ namespace App\Domain\Telegram;
 use App\Domain\Ai\Assistant;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Jobs\OpportunityRules;
+use App\Domain\Todo\Dismissals;
+use App\Domain\Todo\FindingsRegistry;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Jobs\ReadDocument;
 use App\Models\AssistantLog;
 use App\Models\Document;
+use App\Models\Finding;
 use App\Models\Opportunity;
 use App\Models\Setting;
 use App\Support\Money;
@@ -67,16 +71,63 @@ final class Telegram
         return $ok;
     }
 
-    /** Send a message with buttons. Each button is [label, todo action code, id]. */
-    public static function sendWithButtons(string|int $chatId, string $text, array $buttons): void
+    /** Telegram's limit on a button's data, in bytes. */
+    public const CALLBACK_BYTES = 64;
+
+    /**
+     * Send a message with buttons. Each button is [label, todo action code, id]; $more is a second row (a finding's
+     * Snooze a week and Not relevant, under its own actions).
+     */
+    public static function sendWithButtons(string|int $chatId, string $text, array $buttons, array $more = []): void
     {
-        $row = array_map(fn ($b) => ['text' => $b[0], 'callback_data' => mb_substr('t|'.$b[1].'|'.$b[2], 0, 64)], $buttons);
-        if ($row) {
+        $rows = array_values(array_filter([self::buttons($buttons), self::buttons($more)]));
+        if ($rows) {
             // A bot paired before buttons existed only gets messages: make sure presses on these will arrive.
             self::allowButtons();
         }
         self::api('sendMessage', ['chat_id' => $chatId, 'text' => mb_substr($text, 0, 3900), 'disable_web_page_preview' => true]
-            + ($row ? ['reply_markup' => ['inline_keyboard' => [$row]]] : []));
+            + ($rows ? ['reply_markup' => ['inline_keyboard' => $rows]] : []));
+    }
+
+    /** A row of buttons, each [label, todo action code, id], as Telegram takes them: data t|code|id, within 64 bytes. */
+    private static function buttons(array $buttons): array
+    {
+        return array_map(fn ($b) => ['text' => $b[0], 'callback_data' => self::callback($b[1], (string) $b[2])], $buttons);
+    }
+
+    private static function callback(string $code, string $id): string
+    {
+        return mb_strcut('t|'.$code.'|'.$id, 0, self::CALLBACK_BYTES, 'UTF-8');
+    }
+
+    /**
+     * The buttons that hide a finding from the chat: Snooze a week, and Not relevant (which asks why: reasonButtons()),
+     * by the finding's id (fnd_snooze, fnd_dismiss). None for an item that isn't a finding; no Not relevant for one
+     * that can only be snoozed.
+     *
+     * @return list<array{0:string, 1:string, 2:string}>
+     */
+    public static function findingButtons(array $item, ?int $findingId): array
+    {
+        if ($findingId === null) {
+            return [];
+        }
+
+        return array_values(array_filter([
+            ['Snooze a week', 'fnd_snooze', $findingId.':later'],
+            ($item['snooze_only'] ?? false) ? null : ['Not relevant…', 'fnd_dismiss', (string) $findingId],
+        ]));
+    }
+
+    /** The reasons offered after Not relevant…, two to a row. */
+    public static function reasonButtons(Finding $finding): array
+    {
+        $buttons = [];
+        foreach (Dismissals::reasonsFor($finding->code) as $reason => $label) {
+            $buttons[] = ['text' => $label, 'callback_data' => self::callback('fnd_dismiss', $finding->id.':'.$reason)];
+        }
+
+        return array_chunk($buttons, 2);
     }
 
     /**
@@ -86,6 +137,10 @@ final class Telegram
      */
     public static function sendTodo(string|int $chatId, int $max = 8): int
     {
+        // The findings brought up to date with the list first (when anything it's made from has changed since the
+        // last run: a snooze that's ended, a new statement), so a finding new since then has its buttons and each
+        // finding's recorded state agrees with what's sent.
+        FindingsRegistry::refresh();
         $list = TodoList::build(5);
         if ($list['total'] === 0) {
             self::reply($chatId, 'Nothing needs you this week. 👍');
@@ -95,6 +150,8 @@ final class Telegram
         $summary = collect($list['counts'])->map(fn ($n, $g) => '• '.$n.' '.mb_strtolower(TodoList::GROUPS[$g]))->implode("\n");
         self::reply($chatId, "This week: {$list['total']} ".($list['total'] === 1 ? 'thing needs' : 'things need')." you.\n{$summary}\n\nThe most urgent below. Everything: ".url('/todo'));
         $items = array_slice($list['items'], 0, $max);
+        // Findings (not routine items) can be snoozed or set aside from the chat, by the finding's id.
+        $findings = Finding::query()->whereIn('key', array_column($items, 'key') ?: [''])->pluck('id', 'key');
         $sent = 0;
         foreach ($items as $item) {
             // In the item's own currency (an invoice in euros, a stay booked in dollars), in hundredths of it whatever
@@ -102,7 +159,7 @@ final class Telegram
             // (TodoList::howPaid): the time, account, card, place and the currency it was paid in.
             $amount = isset($item['amount']) && $item['amount'] !== null ? ' ('.Money::format($item['amount'], $item['currency'] ?? 'GBP').')' : '';
             self::sendWithButtons($chatId, $item['title'].$amount.($item['detail'] ? "\n".$item['detail'] : ''),
-                array_map(fn ($a) => [$a['label'], $a['code'], $a['id']], $item['actions']));
+                array_map(fn ($a) => [$a['label'], $a['code'], $a['id']], $item['actions']), self::findingButtons($item, $findings[$item['key']] ?? null));
             $sent++;
         }
 
@@ -151,6 +208,21 @@ final class Telegram
 
             return;
         }
+        // Not relevant… asks why first: the reasons replace the buttons, and the one you press does it.
+        if ($code === 'fnd_dismiss' && ctype_digit($id)) {
+            // Gone or set aside now, as the list reads it (not the state recorded at the last findings run).
+            $finding = Finding::query()->find((int) $id);
+            if (! $finding || ! TodoActions::stillShown($finding, false)) {
+                self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => 'Already dealt with.']);
+
+                return;
+            }
+            self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => 'Why isn’t it relevant?']);
+            self::api('editMessageReplyMarkup', ['chat_id' => $chatId, 'message_id' => $query['message']['message_id'] ?? 0,
+                'reply_markup' => ['inline_keyboard' => self::reasonButtons($finding)]]);
+
+            return;
+        }
         // Presses wait for the queue (up to a minute), so a second tap on the same button is likely: do it once.
         // The actions themselves also check the item still needs doing, for old buttons on other messages.
         $press = 'telegram_press:'.$chatId.':'.($query['message']['message_id'] ?? 0).':'.$query['data'];
@@ -165,7 +237,8 @@ final class Telegram
         // it, such as last week's, doesn't).
         $offeredAt = is_numeric($query['message']['date'] ?? null) ? Carbon::createFromTimestamp((int) $query['message']['date']) : null;
         try {
-            $result = '✓ '.$actions->run($code, $id, $offeredAt);
+            // Your tap, from Telegram: recorded as yours, with where it came from.
+            $result = '✓ '.AuditContext::with('you', fn () => $actions->run($code, $id, $offeredAt), 'telegram');
             Cache::put($press, $result, now()->addMinutes(10));
         } catch (ModelNotFoundException) {
             $result = 'Already dealt with.';

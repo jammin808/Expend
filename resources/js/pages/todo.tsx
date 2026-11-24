@@ -5,7 +5,7 @@ import AppLayout from '@/layouts/app-layout';
 import { cn } from '@/lib/utils';
 import { Head, Link, router } from '@inertiajs/react';
 import { CheckCircle2, ChevronRight } from 'lucide-react';
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 
 interface Action {
     code: string;
@@ -25,7 +25,48 @@ interface Item {
     currency?: string;
     /** Comes back under the same key whenever it applies again, so it can be snoozed but not marked not relevant. */
     snooze_only?: boolean;
+    /** What it's about in the shared vocabulary (findings only; routine items have none). */
+    code?: string;
+    direction?: string;
+    grade?: string;
+    grade_basis?: string | null;
+    severity?: 'critical' | 'important' | 'info';
+    /** What it rests on, in plain words. */
+    why_refs?: WhyRef[];
+    /** The reasons offered for marking it not relevant. */
+    reasons?: Record<string, string>;
 }
+
+interface WhyRef {
+    ref: string;
+    label: string;
+    href: string | null;
+    state: 'ok' | 'source_changed' | 'source_missing';
+    check: string | null;
+}
+
+/** Snoozing or marking not relevant, waiting for its reason. */
+interface Asking {
+    item: Item;
+    days?: number;
+}
+
+const CHECK_WORDS: Record<string, string> = {
+    passed: 'checked against its source',
+    partial: 'partly checked',
+    failed: 'didn’t match its source',
+    not_checkable: 'can’t be checked word for word',
+    unchecked: 'not checked yet',
+};
+
+const GRADE_STYLE: Record<string, string> = {
+    certain: 'border-emerald-300 text-emerald-800 dark:border-emerald-800 dark:text-emerald-300',
+    strong: 'border-emerald-200 text-emerald-700 dark:border-emerald-900 dark:text-emerald-400',
+    likely: 'border-amber-200 text-amber-800 dark:border-amber-900 dark:text-amber-300',
+    possible: 'border-amber-300 text-amber-900 dark:border-amber-800 dark:text-amber-200',
+    weak: 'border-rose-300 text-rose-800 dark:border-rose-900 dark:text-rose-300',
+    unmeasured: 'text-muted-foreground',
+};
 
 /** What the money checks looked at this time, so it shows they ran even when they found nothing (null: it went wrong). */
 interface Checked {
@@ -53,6 +94,8 @@ export default function Todo({
     groups,
     all = [],
     checked,
+    directions = {},
+    snooze_reasons = {},
 }: {
     items: Item[];
     counts: Record<string, number>;
@@ -61,8 +104,15 @@ export default function Todo({
     /** The kinds sent in full because you asked for all of them; of the rest, only the first few are sent. */
     all?: string[];
     checked?: Checked;
+    /** How each direction of money reads beside an amount: "you may be owed". */
+    directions?: Record<string, string>;
+    /** The reasons offered for a snooze. */
+    snooze_reasons?: Record<string, string>;
 }) {
     const [busy, setBusy] = useState<string | null>(null);
+    const [why, setWhy] = useState<Record<string, boolean>>({});
+    const [asking, setAsking] = useState<Asking | null>(null);
+    const [other, setOther] = useState('');
     const [filter, setFilter] = useState<string | null>(null);
     const [open, setOpen] = useState<Record<string, boolean>>({});
     const [loading, setLoading] = useState<string | null>(null);
@@ -100,18 +150,31 @@ export default function Todo({
             {},
             { preserveScroll: true, onStart: () => setBusy(key + a.code), onFinish: () => setBusy(null) },
         );
-    // Snooze (days) or not relevant (no days). The server confirms it; this gives that confirmation an Undo (the
-    // toaster shows the same message once, keeping the one with the Undo), so its words must match the server's.
-    const dismiss = (i: Item, days?: number) =>
-        router.post('/todo/dismiss', days ? { key: i.key, days } : { key: i.key }, {
-            preserveScroll: true,
-            onSuccess: () =>
-                toast(days ? `Snoozed for ${days} days.` : 'Marked not relevant.', 'success', {
-                    label: 'Undo',
-                    run: () => router.post('/todo/dismiss', { key: i.key, undo: true }, { preserveScroll: true }),
-                }),
-            onError: (errors) => toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error'),
-        });
+    // Snooze (days) or not relevant (no days), with your reason (kept with it). The server confirms it; this gives
+    // that confirmation an Undo (the toaster shows the same message once, keeping the one with the Undo), so its words
+    // must match the server's.
+    const dismiss = (i: Item, days: number | undefined, reason: string, note?: string) =>
+        router.post(
+            '/todo/dismiss',
+            { key: i.key, reason, ...(days ? { days } : {}), ...(note ? { note } : {}) },
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    setAsking(null);
+                    setOther('');
+                    toast(days ? `Snoozed for ${days} days.` : 'Marked not relevant.', 'success', {
+                        label: 'Undo',
+                        run: () => router.post('/todo/dismiss', { key: i.key, undo: true }, { preserveScroll: true }),
+                    });
+                },
+                onError: (errors) => toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error'),
+            },
+        );
+    const reasonsFor = (a: Asking) => (a.days ? snooze_reasons : (a.item.reasons ?? { other: 'Other' }));
+    const submitOther = (e: FormEvent) => {
+        e.preventDefault();
+        if (asking) dismiss(asking.item, asking.days, 'other', other.trim() || undefined);
+    };
 
     return (
         <AppLayout breadcrumbs={[{ title: 'To do', href: '/todo' }]}>
@@ -182,6 +245,97 @@ export default function Todo({
                                                 <p className="font-medium">{i.title}</p>
                                             )}
                                             {i.detail && <p className="text-muted-foreground text-sm">{i.detail}</p>}
+                                            {(i.grade || (i.direction && directions[i.direction]) || (i.why_refs?.length ?? 0) > 0) && (
+                                                <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                                                    {i.grade && (
+                                                        <span
+                                                            className={cn('rounded-full border px-1.5 py-px', GRADE_STYLE[i.grade])}
+                                                            title={i.grade_basis ?? undefined}
+                                                        >
+                                                            {i.grade[0].toUpperCase() + i.grade.slice(1)}
+                                                        </span>
+                                                    )}
+                                                    {i.amount !== undefined && i.amount !== null && i.direction && directions[i.direction] && (
+                                                        <span className="text-muted-foreground">{directions[i.direction]}</span>
+                                                    )}
+                                                    {(i.why_refs?.length ?? 0) > 0 && (
+                                                        <button
+                                                            type="button"
+                                                            className="text-muted-foreground hover:text-foreground underline underline-offset-2"
+                                                            aria-expanded={!!why[i.key]}
+                                                            onClick={() => setWhy({ ...why, [i.key]: !why[i.key] })}
+                                                        >
+                                                            {why[i.key] ? 'Hide why' : 'Why'}
+                                                        </button>
+                                                    )}
+                                                </p>
+                                            )}
+                                            {why[i.key] && (
+                                                <div className="bg-muted/40 mt-1.5 space-y-1 rounded-md p-2 text-xs">
+                                                    {i.grade && i.grade_basis && (
+                                                        <p>
+                                                            {i.grade[0].toUpperCase() + i.grade.slice(1)}: {i.grade_basis}.
+                                                        </p>
+                                                    )}
+                                                    <ul className="space-y-0.5">
+                                                        {i.why_refs?.map((r) => (
+                                                            <li key={r.ref}>
+                                                                {r.state === 'source_missing' ? (
+                                                                    // Its label says so: "An invoice that’s no longer there".
+                                                                    <span className="text-rose-700 dark:text-rose-400">{r.label}</span>
+                                                                ) : r.href ? (
+                                                                    <Link href={r.href} className="underline underline-offset-2">
+                                                                        {r.label}
+                                                                    </Link>
+                                                                ) : (
+                                                                    r.label
+                                                                )}
+                                                                {r.state === 'source_changed' && (
+                                                                    <span className="text-amber-700 dark:text-amber-400"> · changed since</span>
+                                                                )}
+                                                                {r.check && CHECK_WORDS[r.check] && (
+                                                                    <span className="text-muted-foreground"> · {CHECK_WORDS[r.check]}</span>
+                                                                )}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            )}
+                                            {asking?.item.key === i.key && (
+                                                <div className="mt-2 space-y-1.5 rounded-md border p-2 text-xs">
+                                                    <p className="font-medium">{asking.days ? 'Why snooze it?' : 'Why isn’t it relevant?'}</p>
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {Object.entries(reasonsFor(asking))
+                                                            .filter(([code]) => code !== 'other')
+                                                            .map(([code, label]) => (
+                                                                <button
+                                                                    key={code}
+                                                                    type="button"
+                                                                    className="hover:bg-muted rounded-full border px-2.5 py-1"
+                                                                    onClick={() => dismiss(i, asking.days, code)}
+                                                                >
+                                                                    {label}
+                                                                </button>
+                                                            ))}
+                                                    </div>
+                                                    <form onSubmit={submitOther} className="flex flex-wrap items-center gap-1.5">
+                                                        <input
+                                                            value={other}
+                                                            onChange={(e) => setOther(e.target.value)}
+                                                            maxLength={200}
+                                                            placeholder="Or say why"
+                                                            aria-label="Your reason"
+                                                            className="bg-background min-w-0 flex-1 rounded-md border px-2 py-1"
+                                                        />
+                                                        <Button type="submit" size="sm" variant="outline">
+                                                            {asking.days ? 'Snooze' : 'Not relevant'}
+                                                        </Button>
+                                                        <Button type="button" size="sm" variant="ghost" onClick={() => setAsking(null)}>
+                                                            Cancel
+                                                        </Button>
+                                                    </form>
+                                                </div>
+                                            )}
                                         </div>
                                         <div className="flex shrink-0 items-center gap-2">
                                             {i.amount !== undefined && i.amount !== null && (
@@ -191,7 +345,10 @@ export default function Todo({
                                                 <button
                                                     type="button"
                                                     className="text-muted-foreground hover:text-foreground"
-                                                    onClick={() => dismiss(i, 7)}
+                                                    onClick={() => {
+                                                        setOther('');
+                                                        setAsking({ item: i, days: 7 });
+                                                    }}
                                                 >
                                                     Snooze a week
                                                 </button>
@@ -199,7 +356,10 @@ export default function Todo({
                                                     <button
                                                         type="button"
                                                         className="text-muted-foreground hover:text-foreground"
-                                                        onClick={() => dismiss(i)}
+                                                        onClick={() => {
+                                                            setOther('');
+                                                            setAsking({ item: i });
+                                                        }}
                                                     >
                                                         Not relevant
                                                     </button>

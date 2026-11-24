@@ -57,9 +57,12 @@ class FindingsTest extends TestCase
         $this->assertNull($gap->fresh()->resolved_at);
         $this->assertSame(1, $gap->fresh()->reopened);
 
+        // Money is totalled by which way it goes, never as one figure: the gap is money missing from your records.
         $this->actingAs(User::factory()->create())->get('/todo/history')->assertOk()->assertInertia(fn ($p) => $p
             ->where('resolved', 1)
-            ->where('money_open', 5000 + (int) Finding::query()->whereNull('resolved_at')->where('key', '!=', $gap->key)->get()->sum(fn ($f) => abs((int) $f->amount_pence)))
+            ->missing('money_open')
+            ->where('by_direction', fn ($d) => collect($d)->firstWhere('direction', 'unrecorded')['open']['GBP'] === 5000
+                + (int) Finding::query()->whereNull('resolved_at')->where('direction', 'unrecorded')->where('key', '!=', $gap->key)->get()->sum(fn ($f) => abs((int) $f->amount_pence)))
             ->has('recent'));
         Carbon::setTestNow();
     }

@@ -377,7 +377,8 @@ class NewFixesLedgerTest extends TestCase
         $this->row($bank, '2025-06-10', -1000, 104000);
         FindingsRegistry::sync();
         $gap = Finding::query()->where('group', 'reconcile')->where('key', 'like', 'gap:%')->sole();
-        $this->assertSame([5000, 'gap:'.$bank->id.':2025-06-02:2025-06-09:5000'], [$gap->amount_pence, $gap->key]);
+        // Kept by its account and first day (M3), so what's left of it is the same finding.
+        $this->assertSame([5000, 'gap:'.$bank->id.':2025-06-02'], [$gap->amount_pence, $gap->key]);
 
         // Part of it imported: still the same finding, with what's left.
         Carbon::setTestNow('2025-07-02 09:00:00');
@@ -409,7 +410,7 @@ class NewFixesLedgerTest extends TestCase
         $this->assertFalse(collect(TodoList::build()['items'])->contains(fn ($i) => str_starts_with($i['key'], 'gap:')), 'The snooze still hides it');
         FindingsRegistry::sync();
         $f = Finding::query()->where('group', 'reconcile')->sole();
-        $this->assertSame(['gap:'.$bank->id.':2025-06-02:2025-06-09:5000', 'snoozed', '2025-06-20'], [$f->key, $f->resolution, $f->first_seen_at->format('Y-m-d')]);
+        $this->assertSame(['gap:'.$bank->id.':2025-06-02', 'snoozed', '2025-06-20'], [$f->key, $f->resolution, $f->first_seen_at->format('Y-m-d')]);
         $this->assertSame(0, FindingsRegistry::summary('2025-01-01')['resolved'], 'A new key for the same gap is not the gap dealt with');
     }
 
@@ -591,13 +592,14 @@ class NewFixesLedgerTest extends TestCase
         Carbon::setTestNow('2025-07-02 09:00:00');
         $this->row($bank, '2025-06-05', 3000, 103000);
         FindingsRegistry::sync();
-        $this->assertSame(2000, FindingsRegistry::summary('2025-01-01')['money_open'], 'What’s still missing');
+        $missing = fn (array $s, string $which) => collect($s['by_direction'])->firstWhere('direction', 'unrecorded')[$which]['GBP'] ?? 0;
+        $this->assertSame(2000, $missing(FindingsRegistry::summary('2025-01-01'), 'open'), 'What’s still missing');
         Carbon::setTestNow('2025-07-03 09:00:00');
         $this->row($bank, '2025-06-07', 2000, 105000);
         FindingsRegistry::sync();
 
         $summary = FindingsRegistry::summary('2025-01-01');
-        $this->assertSame([1, 5000, 0], [$summary['resolved'], $summary['money_resolved'], $summary['money_open']]);
+        $this->assertSame([1, 5000, 0], [$summary['resolved'], $missing($summary, 'resolved'), $missing($summary, 'open')]);
         $this->assertSame(5000, collect($summary['recent'])->firstWhere('resolution', 'resolved')['amount_pence']);
     }
 
@@ -611,7 +613,8 @@ class NewFixesLedgerTest extends TestCase
         $gap = collect(TodoList::build()['items'])->firstWhere('group', 'reconcile');
         $this->assertSame('Amex: £3.00 missing', $gap['title']);
         FindingsRegistry::sync();
-        TodoDismissal::query()->create(['key' => $gap['key'], 'until' => null]);
+        // "Not relevant" is kept under the gap as you saw it (its dates and amount: dismiss_key), not its finding's key.
+        TodoDismissal::query()->create(['key' => $gap['dismiss_key'], 'until' => null]);
         $this->assertNull(collect(TodoList::build()['items'])->firstWhere('group', 'reconcile'));
         Carbon::setTestNow('2025-07-06 09:00:00');
         FindingsRegistry::sync();
@@ -640,7 +643,8 @@ class NewFixesLedgerTest extends TestCase
         $this->row($gbp, '2026-05-15', -500, 19500, [], $this->batch($gbp, 'gbp-may.csv', ['last_date' => '2026-05-15']));
         $r = Reconciler::account($eur->fresh());
         $this->assertSame([true, '2026-03-28', '2026-03-28'], [$r['stale'], $r['last_line'], $r['last_import']]);
-        $todo = collect(TodoList::build()['items'])->firstWhere('key', 'stale:'.$eur->id.':2026-03-28');
+        $todo = collect(TodoList::build()['items'])->firstWhere('key', 'stale:'.$eur->id);
+        $this->assertSame('stale:'.$eur->id.':2026-03-28', $todo['dismiss_key'], 'Not relevant until it has new lines');
         $this->assertSame('Revolut EUR: nothing imported since 28 Mar 2026', $todo['title']);
         $this->assertStringContainsString('If you used this pocket after 28 Mar 2026, import its statement', $todo['detail']);
 

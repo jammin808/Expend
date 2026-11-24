@@ -153,6 +153,22 @@ class HealthTest extends TestCase
         $this->assertSame(['health:ai_cap'], array_keys($this->health()));
     }
 
+    public function test_documents_refused_because_a_read_could_pass_the_cap_say_nearly_reached(): void
+    {
+        $doc = fn (string $n, string $error) => Document::query()->create(['original_name' => $n.'.pdf', 'stored_path' => 'documents/'.$n.'.pdf', 'sha256' => hash('sha256', $n),
+            'source' => 'upload', 'status' => 'failed', 'error' => $error]);
+        $nearly = 'This month’s AI spending cap ($40) is nearly reached: this request could go over it. Raise the cap in Settings › AI to continue.';
+        $doc('a', $nearly);
+        $doc('b', $nearly);
+        $item = $this->health()['health:ai_cap'];
+        $this->assertSame('2 documents not read: the AI spending cap was nearly reached', $item['title']);
+        $this->assertStringStartsWith('Reading them could have taken this month past the cap.', $item['detail']);
+
+        // One refused at the cap itself: the cap was reached.
+        $doc('c', 'This month’s AI spending cap ($40) is reached. Raise it in Settings › AI to continue.');
+        $this->assertSame('3 documents not read: the AI spending cap was reached', $this->health()['health:ai_cap']['title']);
+    }
+
     public function test_failed_work_is_only_recent_failures_and_can_be_set_aside(): void
     {
         $fail = function (string $job, string $at): int {

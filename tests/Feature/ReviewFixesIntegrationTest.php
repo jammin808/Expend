@@ -275,8 +275,9 @@ class ReviewFixesIntegrationTest extends TestCase
         $this->assertSame('EUR', Finding::query()->where('key', 'invoice_overdue:'.$euros->id)->value('currency'));
         $this->assertNull(Finding::query()->where('key', 'invoice_overdue:'.$pounds->id)->value('currency'));
         $summary = FindingsRegistry::summary();
-        $this->assertSame([45000, ['EUR' => 100000]], [$summary['money_open'], $summary['money_open_other']], 'Euros aren’t added into the pounds');
-        $this->get('/todo/history')->assertOk()->assertInertia(fn ($p) => $p->where('money_open', 45000)->where('money_open_other.EUR', 100000));
+        $owed = collect($summary['by_direction'])->firstWhere('direction', 'owed_to_you');
+        $this->assertSame(['EUR' => 100000, 'GBP' => 45000], $owed['open'], 'Euros aren’t added into the pounds');
+        $this->get('/todo/history')->assertOk()->assertInertia(fn ($p) => $p->where('by_direction', fn ($d) => collect($d)->firstWhere('direction', 'owed_to_you')['open'] === ['EUR' => 100000, 'GBP' => 45000]));
         $this->assertSame('EUR', collect($summary['recent'])->firstWhere('key', 'invoice_overdue:'.$euros->id)['currency']);
     }
 
@@ -424,7 +425,9 @@ class ReviewFixesIntegrationTest extends TestCase
         $items = collect(TodoList::build()['items'])->keyBy('key');
 
         $this->assertTrue($items['deadline:2024-25']['snooze_only']);
-        $this->get('/todo')->assertOk()->assertInertia(fn ($p) => $p->where('items.0.key', 'deadline:2024-25')->where('items.0.snooze_only', true));
+        // The page carries it too. (Not necessarily first: within a priority the list is ranked by what's at stake, so
+        // the year's fines, with money on them, can come before the return itself.)
+        $this->get('/todo')->assertOk()->assertInertia(fn ($p) => $p->where('items', fn ($items) => collect($items)->firstWhere('key', 'deadline:2024-25')['snooze_only'] === true));
     }
 
     public function test_an_action_that_says_why_it_cant_be_done_isnt_logged_as_an_error(): void
