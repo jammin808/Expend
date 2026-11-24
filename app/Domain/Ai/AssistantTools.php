@@ -20,7 +20,9 @@ use App\Domain\Tax\FilingDates;
 use App\Domain\Tax\MileageCalculator;
 use App\Domain\Tax\PenaltyEstimator;
 use App\Domain\Tax\PenaltyRegime;
+use App\Domain\Tax\Planning;
 use App\Domain\Tax\ReturnSummary;
+use App\Domain\Tax\StructureCalculator;
 use App\Domain\Tax\TaxEstimator;
 use App\Domain\Tax\TaxGuide;
 use App\Domain\Tax\TaxLaw;
@@ -146,6 +148,20 @@ final class AssistantTools
                     'kind' => ['type' => 'string', 'enum' => ['case', 'legislation', 'guidance', 'development']], 'id' => $str + ['description' => 'An item id from an earlier result'], 'limit' => $int])],
             ['name' => 'tax_savings', 'description' => 'Legal ways to pay less tax for a tax year, checked against the records: claims missing (use of home, phone, travel to venues, meals away), reliefs worth using at their rate of tax (pension contributions, losses), choices to review (vehicle method, trading allowance, VAT), payments on account to reduce, voluntary Class 2, deadlines and penalties. Each has what was found, an ESTIMATE of the saving where one can be worked out, conditions, risks, needs_accountant when one is needed, and the law with links (source_note says when a link opens something other than its title). total_saving_estimate is the headline (fines left out, the trading allowance counted once against new expense claims); fines_and_interest_so_far is not a saving. in_progress means the year isn\'t over, so figures are from the records so far. "more" lists other ideas to ask about.',
                 'inputSchema' => $obj(['tax_year' => $str], ['tax_year'])],
+            ['name' => 'planning', 'description' => 'The verified research on structures and tax planning for a UK sole trader, each item checked against legislation.gov.uk, GOV.UK or HMRC manuals: business structures (sole trader, limited company, partnership, LLP), planning techniques (pensions, salary and dividends, reliefs, ISAs, capital allowances, VAT), family and trust measures (employing or taking a spouse into partnership, family loans, bare and other trusts), grants, loans and support (for events, film, TV, theatre and music workers, and general schemes, each with who can get it, how much and how it is taxed), traps to avoid, and leading cases. Each item has its legality (legal_planning_with_conditions, relief_intended_by_parliament, avoid_targeted_by_hmrc or illegal), conditions, risks, status (law, announced or proposed: say which), figures per tax year (figures_disputed when sources disagree) and its official link (url) to cite. Items with never_recommend are avoidance HMRC targets, or illegal: never suggest one; explain it only as something to avoid, and why. Search by words, optionally by section or legality, or pass id for one item.',
+                'inputSchema' => $obj(['query' => $str + ['description' => 'e.g. "spouse partnership", "employer pension contributions", "grant for theatre technicians", "remuneration trust"'],
+                    'section' => ['type' => 'string', 'enum' => Planning::SECTIONS], 'legality' => ['type' => 'string', 'enum' => Planning::LEGALITIES],
+                    'id' => $str + ['description' => 'An item id from an earlier result'], 'tax_year' => $str + ['description' => 'Only this year\'s figures, e.g. 2026-27'], 'limit' => $int])],
+            ['name' => 'compare_structures', 'description' => 'An ESTIMATE, for one tax year and one level of business profit (before anything the owner pays themselves), of tax and take-home as a sole trader, as a limited company with the owner as only director (the salary of nothing, the employer NIC threshold or the personal allowance that leaves the least tax, no Employment Allowance, corporation tax with marginal relief, dividends, running costs) and as a partnership with a spouse or partner (no trading allowance for partners), optionally with a pension contribution in each, plus break_even: every band of profit (nearest £500) where a company leaves more to take home (windows; there can be more than one), with a note. Defaults to the current tax year and the owner\'s own profit from their records (projected while the year runs: profit_basis says how). law.announced marks a year whose rates are partly announced, not yet law (2027-28). Comes with assumptions, warnings (not advice, IR35, the admin and penalties of a company, the settlements rules and what makes a genuine partnership) and sources (links): pass on the warnings that apply, and recommend an accountant checks before anyone incorporates.',
+                'inputSchema' => $obj(['tax_year' => $str + ['description' => 'One of '.implode(', ', Planning::YEARS).'; omit for the current year'],
+                    'profit' => $str + ['description' => 'Business profit for the year in pounds, e.g. "60000"; omit for the owner\'s own'],
+                    'salary' => ['type' => 'string', 'enum' => StructureCalculator::SALARY_OPTIONS, 'description' => 'best (default) tries each; custom needs salary_amount'],
+                    'salary_amount' => $str + ['description' => 'Pounds a year, with salary=custom'], 'retain' => $str + ['description' => 'Pounds left in the company, not paid out this year'],
+                    'accountant' => $str + ['description' => 'Pounds a year; default is Expend\'s placeholder'], 'software' => $str + ['description' => 'Pounds a year'],
+                    'partner_share_pct' => ['type' => 'number', 'description' => 'The spouse or partner\'s share of profit in a partnership, 0 to 100 (default 50)'],
+                    'partner_other_income' => $str + ['description' => 'Pounds a year the partner already has'],
+                    'partner_other_self_employed' => ['type' => 'boolean', 'description' => 'True if that other income is from self-employment (their Class 4 is then on both together); default wages or a pension'],
+                    'pension' => $str + ['description' => 'Pounds a year gross into a pension, in each structure']])],
             ['name' => 'explain_payment', 'description' => 'What one bank transaction is, how it has been treated, whether it is normally allowable and on what conditions, the evidence to keep, and notes from its context (jobs that day, bookings, vehicle mileage method).',
                 'inputSchema' => $obj(['transaction_id' => $int], ['transaction_id'])],
             ['name' => 'list_opportunities', 'description' => 'Work the owner might get, found in their emails and documents (or told to the app): availability checks ("are you free?"), holds and pencils (1st or 2nd option), offers, and bookings with no job yet, plus ones declined, lost, passed or dismissed. Each has its status, dates and the kind of each day (work, rig, derig, travel), client, contact, venue, rate, date to reply by, PO number, the job it became (job_id), and the evidence: the words each detail came from and whether they were found in the source (unverified_fields lists details not found word for word: say so). Nothing has been replied to.',
@@ -230,6 +246,8 @@ final class AssistantTools
             'explain_payment' => ($t = BankTransaction::query()->with('account')->find((int) ($input['transaction_id'] ?? 0))) ? Explainer::payment($t) : ['error' => 'No such transaction'],
             'tax_law' => $this->taxLaw($input),
             'tax_savings' => $this->taxSavings($input['tax_year'] ?? ''),
+            'planning' => $this->planning($input),
+            'compare_structures' => $this->compareStructures($input),
             'propose_decision' => $this->propose($input),
             'list_opportunities' => $this->listOpportunities($input),
             'po_chase' => $this->poChase($input),
@@ -429,6 +447,102 @@ final class AssistantTools
         }, $review['items']);
 
         return $review;
+    }
+
+    /**
+     * The verified planning research: items matching the words (or one by id), each with its legality, conditions,
+     * risks, status, figures and link. Anything HMRC targets or that is illegal says never to recommend it.
+     */
+    private function planning(array $in): array
+    {
+        $year = in_array($in['tax_year'] ?? null, Planning::YEARS, true) ? (string) $in['tax_year'] : null;
+        $note = 'Each item was checked against a primary source on the date above: cite its url. Suggest only items outside the traps section whose legality is legal_planning_with_conditions or relief_intended_by_parliament. '
+            .'never_recommend items are avoidance HMRC targets or illegal: never suggest one, only explain why to avoid it. '
+            .'Items from the traps section are warnings, not ideas, whatever their legality: those marked pitfall are where lawful planning goes wrong, so explain them only as something to watch for. '
+            .'Say when a status or figure is announced, proposed or disputed rather than law.';
+        if (! empty($in['id'])) {
+            $item = Planning::item((string) $in['id']);
+
+            return $item ? ['researched_on' => Planning::researchedOn(), 'item' => self::planningItem($item, $year), 'note' => $note] : ['error' => 'No item with that id.'];
+        }
+        $section = in_array($in['section'] ?? null, Planning::SECTIONS, true) ? $in['section'] : null;
+        $legality = in_array($in['legality'] ?? null, Planning::LEGALITIES, true) ? $in['legality'] : null;
+        $limit = max(1, min(12, (int) ($in['limit'] ?? 6)));
+
+        return ['researched_on' => Planning::researchedOn(), 'results' => array_map(fn ($i) => self::planningItem($i, $year),
+            Planning::search((string) ($in['query'] ?? ''), $section, $legality, $limit)), 'note' => $note];
+    }
+
+    /** One planning item as the assistant gets it: what it is, its legality, conditions, risks, status, figures and link. */
+    private static function planningItem(array $i, ?string $year): array
+    {
+        $out = array_filter([
+            'id' => $i['id'] ?? null, 'section' => $i['section'] ?? null, 'name' => $i['name'] ?? null, 'type' => $i['type'] ?? null,
+            'summary' => Planning::summaryOf($i) ?: null, 'legality' => $i['legality'] ?? null,
+            'who' => $i['who'] ?? null, 'amount' => $i['amount'] ?? null, 'how_taxed' => $i['how_taxed'] ?? null,
+            'conditions' => $i['conditions'] ?? null, 'risks' => $i['risks'] ?? null, 'citation' => $i['citation'] ?? null,
+            'status' => $i['status'] ?? null,
+            'figures' => $year ? Planning::figureLines($i, $year) : ($i['figures'] ?? null),
+            'figures_disputed' => ($i['figures_disputed'] ?? false) ?: null,
+            'relevance' => $i['relevance'] ?? null, 'url' => $i['url'] ?? null,
+        ], fn ($v) => $v !== null && $v !== '' && $v !== []);
+        if (Planning::mustAvoid($i)) {
+            $out['never_recommend'] = Planning::NEVER_RECOMMEND;
+        } elseif (Planning::isPitfall($i)) {
+            $out['pitfall'] = Planning::PITFALL;
+        }
+
+        return $out;
+    }
+
+    /**
+     * The structure comparison for a year and a profit (the owner's own by default), with every amount as
+     * {pence, formatted} so each figure in an answer can be checked.
+     */
+    private function compareStructures(array $in): array
+    {
+        $years = StructureCalculator::years();
+        $year = in_array($in['tax_year'] ?? null, $years, true) ? (string) $in['tax_year'] : StructureCalculator::defaultYear();
+        $pounds = function (string $key) use ($in): ?int {
+            if (! isset($in[$key]) || $in[$key] === '' || $in[$key] === null) {
+                return null;
+            }
+            $p = Money::parse(is_int($in[$key]) ? $in[$key] : (string) $in[$key]);
+
+            return $p !== null && $p >= 0 ? $p : null;
+        };
+        $basis = null;
+        $profit = $pounds('profit');
+        if ($profit === null) {
+            $basis = StructureCalculator::ownerProfit($year);
+            $profit = $basis['profit_pence'];
+        }
+        $options = array_filter([
+            'salary' => $in['salary'] ?? null, 'salary_pence' => $pounds('salary_amount'), 'retain_pence' => $pounds('retain'),
+            'accountant_pence' => $pounds('accountant'), 'software_pence' => $pounds('software'),
+            'partner_share_pct' => isset($in['partner_share_pct']) && is_numeric($in['partner_share_pct']) ? $in['partner_share_pct'] : null,
+            'partner_other_income_pence' => $pounds('partner_other_income'), 'pension_pence' => $pounds('pension'),
+            'partner_other_self_employed' => isset($in['partner_other_self_employed']) ? filter_var($in['partner_other_self_employed'], FILTER_VALIDATE_BOOLEAN) : null,
+        ], fn ($v) => $v !== null);
+        $result = StructureCalculator::compare($year, $profit, $options);
+        $result['profit_basis'] = $basis ? $basis['label'] : 'The profit asked about.';
+
+        return self::moneyFields($result);
+    }
+
+    /** Every "…_pence" amount as {pence, formatted} under the name without "_pence" (null stays null). */
+    private static function moneyFields(array $data): array
+    {
+        $out = [];
+        foreach ($data as $key => $value) {
+            if (is_string($key) && str_ends_with($key, '_pence') && (is_int($value) || $value === null)) {
+                $out[substr($key, 0, -6)] = $value === null ? null : self::money($value);
+            } else {
+                $out[$key] = is_array($value) ? self::moneyFields($value) : $value;
+            }
+        }
+
+        return $out;
     }
 
     private static function money(int $pence, string $currency = 'GBP'): array

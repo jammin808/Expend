@@ -25,6 +25,7 @@ import {
     Moon,
     Network,
     ReceiptText,
+    Scale,
     Settings,
     Sparkles,
 } from 'lucide-react';
@@ -42,6 +43,7 @@ export function AppSidebar() {
         { title: 'Inbox', url: '/inbox', icon: Inbox, badge: nav?.inbox, also: [] },
         { title: 'Assistant', url: '/assistant', icon: Sparkles, also: [] },
         { title: 'Tax years', url: '/years', icon: ListChecks, also: [] },
+        { title: 'Planning', url: '/planning', icon: Scale, also: [] },
         { title: 'Transactions', url: '/transactions', icon: FileSpreadsheet, also: [] },
     ];
     const work = [

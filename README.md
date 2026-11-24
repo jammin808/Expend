@@ -139,6 +139,34 @@ Gmail is searched for a job's emails and POs when the job is added, and again wh
 venue change (your Sent mail is left out). Not built yet (see the plan): the Calendar API (the iCal feed is used),
 recharge invoicing, Making Tax Digital quarterly export, passkeys.
 
+## Structures and planning
+
+**Planning** (in the menu after Tax years, `/planning`) is a page for deciding how to run the business as it grows:
+
+- **Side by side**: for a tax year (2024-25 to 2027-28) and a profit (blank uses your own: from your records for a
+  finished year, projected for the year in progress), the tax and take-home as a sole trader, as a limited company with
+  you as the only director (the salary that leaves the least tax, or your own, corporation tax with marginal relief,
+  dividends, running costs) and as a partnership with a spouse or partner (no trading allowance for partners), with
+  an optional pension contribution, and the profits at which a company would leave you more. The sole-trader figures
+  agree with the tax year pages' estimate. Every figure is an estimate; IR35 and the year you incorporate are
+  explained, not worked out; 2027-28 income tax rates are announced, not yet law, and are marked as such.
+- **Ideas that fit you**: legal planning and reliefs only, each with its conditions, risks, status, that year's figures
+  and its official link. **Grants, loans and support** (events, film, TV, theatre and music first) with who can get
+  it, how much and how it's taxed. **Things to avoid**: common traps, and what HMRC targets as avoidance or is
+  illegal, each with why. These are never shown as ideas.
+
+The assistant (in the app and on Telegram) has the same knowledge through two read-only tools: `planning` (search the
+research, or look up one item) and `compare_structures` (the comparison above). It only suggests legal items, never
+offers a trap as advice, labels estimates, says what is announced or disputed, passes on the warnings and recommends
+an accountant before anyone incorporates or forms a partnership.
+
+The research is in `resources/tax/planning.json` (rates per year, structures, techniques, family and trust measures,
+funding, traps, cases and notes for the calculator). It was researched on 23 November 2026 and every item was checked
+against primary sources (legislation.gov.uk, GOV.UK, HMRC's manuals) on 24 November 2026. **Recheck it after each
+Budget** (and any Finance Act or rates change), update `config/tax.php` to match, and bump `BREAK_EVEN_VERSION` in
+`app/Domain/Tax/StructureCalculator.php` if the break-even code changes; `tests/Feature/Planning/PlanningDataTest.php`
+checks the file's shape and that the app's rates agree with it.
+
 ## Run it on your computer
 
 Needs PHP 8.2+ (8.4 recommended), Composer and Node 22.
@@ -282,6 +310,7 @@ runs `backup.sh` and this check end to end on MariaDB (`DB_CONNECTION=mysql php 
 | Decisions and their rules | `app/Domain/Ledger/AllocationWriter.php` |
 | Suggestions, transfers, merchants | `app/Domain/Matching/` |
 | Return figures, estimate, bill, checks, mileage | `app/Domain/Tax/` |
+| Structures and planning: research, comparison | `resources/tax/planning.json`, `app/Domain/Tax/Planning.php`, `app/Domain/Tax/StructureCalculator.php` |
 | Exchange rates | `app/Domain/Fx/ExchangeRates.php` |
 | Audit log | `app/Domain/Audit/AuditLog.php` |
 | Documents, text extraction, grounding checks | `app/Domain/Documents/` |

@@ -317,7 +317,7 @@ final class TaxSavings
     }
 
     /** Profit for the whole year, scaled up from the days so far. A labelled projection, not a forecast. */
-    private static function projection(UkTaxYear $period, CarbonImmutable $today, int $profit): int
+    public static function projection(UkTaxYear $period, CarbonImmutable $today, int $profit): int
     {
         $days = (int) round($period->startsOn()->diffInDays($period->endsOn())) + 1;
         $elapsed = max(1, (int) round($period->startsOn()->diffInDays($today)) + 1);

@@ -17,6 +17,7 @@ use App\Http\Controllers\JobFinderController;
 use App\Http\Controllers\ManualExpenseController;
 use App\Http\Controllers\MileageController;
 use App\Http\Controllers\OpportunityController;
+use App\Http\Controllers\PlanningController;
 use App\Http\Controllers\RuleLearningController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SetupController;
@@ -130,6 +131,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('explain/category/{category}', [TaxHelpController::class, 'category'])->name('explain.category');
     Route::get('explain/{source}/{id}', [TaxHelpController::class, 'payment'])->whereIn('source', ['bank', 'manual'])->whereNumber('id')->name('explain.payment');
     Route::get('tax-guide', [TaxHelpController::class, 'guide'])->name('tax-guide');
+    // Structures and planning: sole trader, company or partnership side by side, legal ideas, grants and loans, traps.
+    Route::get('planning', [PlanningController::class, 'index'])->name('planning');
     Route::post('rules/learn', [RuleLearningController::class, 'accept'])->name('rules.learn');
     Route::post('rules/learn/decline', [RuleLearningController::class, 'decline'])->name('rules.decline');
     Route::post('rules/{rule}/undo', [RuleLearningController::class, 'undo'])->name('rules.undo');
