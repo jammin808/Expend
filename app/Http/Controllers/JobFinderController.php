@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Jobs\JobFinder;
+use App\Domain\Jobs\JobGatherer;
+use App\Domain\Jobs\PoStatus;
 use App\Domain\Verification\Verifier;
 use App\Jobs\FindJobs;
 use App\Models\CalendarEvent;
@@ -189,14 +191,14 @@ class JobFinderController extends Controller
             'starts_on' => 'required|date', 'ends_on' => 'required|date|after_or_equal:starts_on', 'start_time' => 'nullable|date_format:H:i',
             'end_time' => 'nullable|date_format:H:i', 'location' => 'nullable|string|max:200', 'postcode' => 'nullable|string|max:10',
             'fee' => 'nullable|string', 'po_number' => 'nullable|string|max:100', 'notes' => 'nullable|string|max:2000', 'status' => 'nullable|in:booked,done',
-            'po_not_required' => 'boolean',
+            'po_not_required' => 'boolean', 'then' => 'nullable|in:job',
         ]);
         $event = JobFinder::event($data['key'], $data['date']);
         abort_unless($event, 404);
         if (! empty($data['new_client'])) {
             $data['client_id'] = Client::query()->firstOrCreate(['name' => trim($data['new_client'])])->id;
         }
-        $fields = collect($data)->except(['key', 'date', 'new_client', 'fee'])->all();
+        $fields = collect($data)->except(['key', 'date', 'new_client', 'fee', 'then'])->all();
         $fields['fee_pence'] = Money::parse($data['fee'] ?? null);
         $fields['postcode'] = ! empty($data['postcode']) ? strtoupper(trim($data['postcode'])) : null;
         $fields['status'] = $data['status'] ?? 'booked';
@@ -206,12 +208,15 @@ class JobFinderController extends Controller
             $job = WorkJob::query()->create($fields);
             AuditLog::record('job.created', $job, null, $job->toArray(), 'From a calendar entry');
             $finder->linkCalendar($event, $job, 'you', 'You made this entry a job');
-            $finder->followUp($job);
 
             return $job;
         });
+        // Then everything that belongs to it: other days, POs and documents, Gmail, payments, stays, the fee.
+        $found = app(JobGatherer::class)->gather($job);
+        $message = "Added {$job->title} and linked the calendar entry. ".$found['summary']
+            .(PoStatus::forJobs([$job->fresh()])[$job->id]['missing'] ? ' It has no PO yet, so it’s flagged until one is linked.' : '');
 
-        return back()->with('success', "Added {$job->title} and linked the calendar entry.".($job->po_number || $job->po_not_required ? '' : ' It has no PO yet, so it’s flagged until one is linked.'));
+        return ($data['then'] ?? null) === 'job' ? redirect('/jobs/'.$job->id)->with('success', $message) : back()->with('success', $message);
     }
 
     /** Mark a calendar entry "not a job" (or undo that). */

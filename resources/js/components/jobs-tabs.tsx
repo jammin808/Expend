@@ -3,6 +3,7 @@ import { Link, usePage } from '@inertiajs/react';
 
 const TABS = [
     { href: '/jobs', label: 'Jobs' },
+    { href: '/jobs/calendar', label: 'Calendar' },
     { href: '/jobs/finder', label: 'Possible jobs' },
     { href: '/documents', label: 'Documents' },
     { href: '/travel', label: 'Stays & travel' },

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Jobs\JobGatherer;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Tax\MileageCalculator;
 use App\Http\Presenters\Present;
@@ -119,6 +120,8 @@ class JobController extends Controller
                 ]),
             'documents' => $documents->map(fn ($d) => DocumentController::row($d) + ['invoiced' => $invoicedDocs[$d->id] ?? null, 'linked_by' => $d->job_linked_by, 'check' => $docChecks[$d->id] ?? null]),
             'calendar' => JobFinderController::calendarFor($job),
+            'finds' => JobCalendarController::finds($job),
+            'gather' => ['at' => $job->gathered_at?->format('Y-m-d H:i'), 'state' => $job->gather_state, 'gmail_query' => JobGatherer::gmailQuery($job)],
             'travel' => $travel->map(fn (TravelItem $t) => [
                 'id' => $t->id, 'kind' => TravelItem::KINDS[$t->kind] ?? $t->kind, 'provider' => $t->provider, 'place' => $t->kind === 'hotel' ? $t->place : trim($t->place.' → '.$t->destination, ' →'),
                 'starts_on' => $t->starts_on->format('Y-m-d'), 'ends_on' => $t->ends_on?->format('Y-m-d'), 'amount_minor' => $t->amount_minor, 'currency' => $t->currency,

@@ -2,6 +2,7 @@ import { CheckBadge, type Check } from '@/components/check-badge';
 import { DocLine, InvoicedTick, type DocRow, type Invoiced } from '@/components/doc-line';
 import { Explain } from '@/components/explain';
 import { ItemDrawer } from '@/components/item-drawer';
+import { JobFinds, type Find, type GatherState } from '@/components/job-finds';
 import { JobForm, type JobData } from '@/components/job-form';
 import { JobSheet, type SheetFact } from '@/components/job-sheet';
 import { Money } from '@/components/money';
@@ -72,11 +73,29 @@ interface Props {
         source: string;
         check: Check | null;
     }[];
+    finds: Find[];
+    gather: GatherState;
 }
 
 const byLabel = (by: string | null) => (by === 'you' ? 'linked by you' : by === 'ai' ? 'linked by AI (checked)' : by ? 'linked automatically' : '');
 
-export default function JobShow({ job, lines, mileage, totals, near, lookups, clients, facts, documents, invoices, kinds, calendar, travel }: Props) {
+export default function JobShow({
+    job,
+    lines,
+    mileage,
+    totals,
+    near,
+    lookups,
+    clients,
+    facts,
+    documents,
+    invoices,
+    kinds,
+    calendar,
+    travel,
+    finds,
+    gather,
+}: Props) {
     const link = (data: Record<string, string | number>) => router.post(`/jobs/${job.id}/links`, data, { preserveScroll: true });
     const [editing, setEditing] = useState(false);
     const [drawer, setDrawer] = useState<{ source: 'bank' | 'manual'; id: number } | null>(null);
@@ -140,6 +159,8 @@ export default function JobShow({ job, lines, mileage, totals, near, lookups, cl
                         </p>
                     )
                 )}
+
+                <JobFinds jobId={job.id} finds={finds} gather={gather} onOpenPayment={(id) => setDrawer({ source: 'bank', id })} />
 
                 <div className="grid gap-3 sm:grid-cols-4">
                     {[

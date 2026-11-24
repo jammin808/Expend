@@ -184,6 +184,7 @@ class ConnectionsController extends Controller
         $txs = BankTransaction::query()->with(['allocations.category', 'account'])
             ->where(fn ($q) => $q->whereBetween('posted_on', [$f, $t])->orWhereHas('allocations', fn ($q) => $q->whereIn('work_job_id', $jobIds)))
             ->orderBy('posted_on')->limit(3000)->get();
+        OwnAccounts::flush();
         foreach ($txs as $tx) {
             $date = $tx->effectiveDate()->format('Y-m-d');
             $jobAllocs = $tx->allocations->whereNotNull('work_job_id');

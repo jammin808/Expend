@@ -6,6 +6,7 @@ use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
 use App\Jobs\ReadDocument;
 use App\Jobs\ReadTravelEmail;
+use App\Models\Document;
 use App\Models\GmailMessage;
 use App\Models\Setting;
 use App\Support\UkTaxYear;
@@ -61,46 +62,71 @@ final class GmailScanner
         $new = 0;
 
         foreach ($page['ids'] as $id) {
-            $seen = GmailMessage::query()->where('message_id', $id)->first();
-            if ($seen && ($seen->document_id || $seen->status !== 'failed')) {
-                continue; // already read; a message that failed to download is tried again
-            }
-            // One bad message (deleted since the search, too big, unreadable) is logged and skipped, not the whole search.
-            try {
-                $message = GmailClient::message($id);
-                [$from, $subject] = self::headers($message['raw']);
-                $sentAt = $message['sent_at'] ? date('Y-m-d H:i:s', $message['sent_at']) : null;
-                $document = $this->intake->store($message['raw'], mb_substr($subject ?: 'email', 0, 200).'.eml', 'message/rfc822', 'gmail', [
-                    'from' => $from, 'subject' => $subject, 'received_at' => $sentAt,
-                ]);
-            } catch (Throwable $e) {
-                GmailMessage::query()->updateOrCreate(['message_id' => $id], [
-                    'search' => $search, 'subject' => mb_substr((string) ($subject ?? ''), 0, 500) ?: null,
-                    'email_from' => isset($from) ? mb_substr((string) $from, 0, 300) : null, 'sent_at' => $sentAt ?? null,
-                    'status' => 'failed', 'error' => mb_substr($e->getMessage(), 0, 1000),
-                ]);
-                unset($from, $subject, $sentAt);
-
-                continue;
-            }
-            $logged = GmailMessage::query()->updateOrCreate(['message_id' => $id], [
-                'thread_id' => $message['thread_id'], 'search' => $search, 'status' => 'stored', 'error' => null,
-                'email_from' => mb_substr((string) $from, 0, 300), 'subject' => mb_substr((string) $subject, 0, 500),
-                'sent_at' => $sentAt, 'document_id' => $document->id,
-            ]);
-            unset($from, $subject, $sentAt);
-            $new++;
-
-            if ($search !== 'job_documents') {
-                ReadTravelEmail::dispatch($logged->id);
-            } elseif (Setting::get('ai_extraction') === 'on' && AiConfig::ready() && $document->kind === 'email' && $document->status === 'new' && mb_strlen((string) $document->text) > 300) {
-                // The email itself is read too (attachments already are): POs and job details are often in the body.
-                $document->update(['status' => 'queued']);
-                ReadDocument::dispatch($document->id);
-            }
+            $new += (int) ($this->store($id, $search) !== null);
         }
 
         return ['found' => count($page['ids']), 'new' => $new, 'next' => $page['next']];
+    }
+
+    /**
+     * Search Gmail for one job's emails (its client, venue, PO number or title around its dates) and keep what's
+     * found as documents. Only the first page of results is read.
+     *
+     * @return array{found:int, new:int, documents:list<int>}
+     */
+    public function scanQuery(string $query, int $max = 40): array
+    {
+        $page = GmailClient::search($query, null, $max);
+        $docs = [];
+        foreach ($page['ids'] as $id) {
+            if ($doc = $this->store($id, 'job')) {
+                $docs[] = $doc->id;
+            }
+        }
+
+        return ['found' => count($page['ids']), 'new' => count($docs), 'documents' => $docs];
+    }
+
+    /** Fetch and keep one message (with its attachments) unless it's already kept. Null when skipped or failed. */
+    public function store(string $id, string $search): ?Document
+    {
+        $seen = GmailMessage::query()->where('message_id', $id)->first();
+        if ($seen && ($seen->document_id || $seen->status !== 'failed')) {
+            return null; // already read; a message that failed to download is tried again
+        }
+        $from = $subject = $sentAt = null;
+        // One bad message (deleted since the search, too big, unreadable) is logged and skipped, not the whole search.
+        try {
+            $message = GmailClient::message($id);
+            [$from, $subject] = self::headers($message['raw']);
+            $sentAt = $message['sent_at'] ? date('Y-m-d H:i:s', $message['sent_at']) : null;
+            $document = $this->intake->store($message['raw'], mb_substr($subject ?: 'email', 0, 200).'.eml', 'message/rfc822', 'gmail', [
+                'from' => $from, 'subject' => $subject, 'received_at' => $sentAt,
+            ]);
+        } catch (Throwable $e) {
+            GmailMessage::query()->updateOrCreate(['message_id' => $id], [
+                'search' => $search, 'subject' => mb_substr((string) $subject, 0, 500) ?: null,
+                'email_from' => $from !== null ? mb_substr((string) $from, 0, 300) : null, 'sent_at' => $sentAt,
+                'status' => 'failed', 'error' => mb_substr($e->getMessage(), 0, 1000),
+            ]);
+
+            return null;
+        }
+        $logged = GmailMessage::query()->updateOrCreate(['message_id' => $id], [
+            'thread_id' => $message['thread_id'], 'search' => $search, 'status' => 'stored', 'error' => null,
+            'email_from' => mb_substr((string) $from, 0, 300), 'subject' => mb_substr((string) $subject, 0, 500),
+            'sent_at' => $sentAt, 'document_id' => $document->id,
+        ]);
+
+        if (! in_array($search, ['job_documents', 'job'], true)) {
+            ReadTravelEmail::dispatch($logged->id);
+        } elseif (Setting::get('ai_extraction') === 'on' && AiConfig::ready() && $document->kind === 'email' && $document->status === 'new' && mb_strlen((string) $document->text) > 300) {
+            // The email itself is read too (attachments already are): POs and job details are often in the body.
+            $document->update(['status' => 'queued']);
+            ReadDocument::dispatch($document->id);
+        }
+
+        return $document;
     }
 
     /** Whether hotel and travel emails without booking markup can be read (needs AI). */
