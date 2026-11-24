@@ -186,7 +186,9 @@ prefix) for rows written before the method column existed.
 
 - Additive only: new tables, or nullable columns with no default **appended without `->after()`**, so MariaDB adds
   them instantly. Old code runs on the new schema, and every milestone can be rolled back by redeploying the
-  previous release.
+  previous release. For the audit chain this needs one extra step: M6 writes audit events the old (v1) way until
+  `settings.intel_audit_context` is on, because a release before M6 would read a v2 event as a broken chain. M7
+  turns it on (section 3.3); from then on, M6 is the oldest release to roll back to.
 - **No `json()` on existing tables.** On MariaDB, Laravel's `json()` becomes `JSON`, which is `LONGTEXT` plus a
   `json_valid` CHECK, and adding a CHECKed column can force a table copy. Lists are `text` cast to `array` in the
   model. New tables use `text` too, so hashed content is always canonical JSON produced by PHP.
@@ -290,7 +292,7 @@ column**, so it can never become a second source of truth.
 | object_ref | varchar(191) null |
 | method | varchar(40) |
 | method_version | smallint unsigned |
-| basis | varchar(12) |
+| basis | varchar(16) (`ai_ungrounded` is 13 characters) |
 | score | smallint null |
 | evidence | text null |
 | alternatives | text null (array of {ref, score}: the runner-ups) |
@@ -405,15 +407,19 @@ Unique: (counterparty_key, client_id).
 | Table | Columns (all nullable, appended) | Milestone |
 |---|---|---|
 | `findings` | `code` varchar(40) idx; `detector_version` smallint unsigned; `subject_ref` varchar(191) idx; `scope_ref` varchar(191) idx (`job:14`, `acct:3`, `year:2024-25`); `evidence` text; `direction` varchar(12); `grade` varchar(10); `severity` varchar(10); `due_on` date; `state` varchar(10); `note` varchar(255) (the owner's reason); `resolution_ref` varchar(191); `last_run_id` bigint unsigned | M3 |
-| `allocations` | `method` varchar(40); `method_version` smallint unsigned; `basis` varchar(12); `score` smallint; `evidence` text; `alternatives` text; `run_id` bigint unsigned idx; `confirmed_by` varchar(10) (`you`, `rule`, `policy`: tells accepting a suggestion apart from making one) | M6 (`2026_12_14_000001_provenance_and_audit_context.php`) |
+| `allocations` | `method` varchar(40); `method_version` smallint unsigned; `basis` varchar(16); `score` smallint; `evidence` text; `alternatives` text; `run_id` bigint unsigned idx; `confirmed_by` varchar(10) (`you`, `rule`, `policy`: tells accepting a suggestion apart from making one) | M6 (`2026_12_14_000001_provenance_and_audit_context.php`) |
 | `audit_events` | `channel` varchar(10); `correlation` char(26) idx (a ULID shared by an owner action and every knock-on write); `run_id` bigint unsigned | M6, same file |
 | `bank_transactions` | `source_line` int unsigned (`NormalizedRow::$line`, discarded today) | M8 |
 | `statement_balances` | `source` varchar(10) (null = you, `api`, `document`); `currency` char(3); `document_id` FK nullOnDelete | M8 |
 | `verifications` | `independence` tinyint unsigned | M8 |
 
-**Audit hash v2.** `AuditLog::hashFor` appends `'|v2|'.channel.'|'.correlation.'|'.run_id` **only when one of them
-is non-null**, so every existing event hashes exactly as before. The `cycle.completed` seal, the year-lock
-snapshot and act records live in the audit `after` payload, so no further audit columns are needed.
+**Audit hash v2.** **Only when one of channel, correlation or run id is non-null**, `AuditLog::hashFor` hashes
+`'v2|'.channel.'|'.correlation.'|'.run_id.'|'` followed by the v1 fields, with `before` and `after` re-encoded
+canonically (keys in order at every level, PHP's encoding), so every existing event hashes exactly as before. The
+context comes first, not last: appended after the free-text reason, it could be emptied and its text added to the
+reason, and the event would hash to the same value. v2 is written only once `intel_audit_context` is on (below), and
+always on a database whose JSON type reorders keys (MySQL 8). The `cycle.completed` seal, the year-lock snapshot and
+act records live in the audit `after` payload, so no further audit columns are needed.
 
 **Settings keys** (no migration):
 
@@ -429,6 +435,7 @@ snapshot and act records live in the audit `after` payload, so no further audit 
 | `intel_report_time` | `07:30` | morning report time |
 | `intel_report_detail` | `full` | `full` or `counts` |
 | `intel_backfills_done` | `[]` | finished backfills |
+| `intel_audit_context` | false | audit events record channel, correlation and run id (hash v2). Off in M6, so M6 can still be rolled back; on from M7 |
 
 `ai_usage_YYYY_MM` gains `reserved` and `by_purpose` fields (M2, M5).
 
@@ -448,7 +455,7 @@ snapshot and act records live in the audit `after` payload, so no further audit 
 | Backfill | Milestone | What it does |
 |---|---|---|
 | `findings` | M3 | Sets `code`, `subject_ref`, `scope_ref` and `direction` from the key prefix (the table in 4.4, the same parsing as migration `2026_11_29_000901`). `state` comes from `resolved_at`/`resolution`. Writes a `detected` event at `first_seen_at` and a closing event at `resolved_at`. Unparsable keys stay null. |
-| `allocations.confirmed_by` | M6 | Set where `decided_by = you` (`you`), or `decided_by = rule` with `confirmed_at` set (`rule`). Everything else stays null. `method` is not backfilled: the `Methods` legacy recogniser reads the reason at query time. |
+| `allocations.confirmed_by` | M6 | Set where `decided_by = you` (`you`), or `decided_by = rule` confirmed when it was made (`confirmed_at = created_at`, with no later `allocation.confirmed` event) (`rule`). A rule's suggestion confirmed later stays null: the tap may have been yours. Everything else stays null. `method` is not backfilled: the `Methods` legacy recogniser reads the reason at query time. |
 | `proposal_outcomes` backtests | M10 | Replays `transfer.pair`, `suggest.hmrc` and `suggest.invoice` over the owner's catch-up decisions (`allocation.decided` with an empty `before`, actor `you`), using only inputs created before the decision. |
 
 ---
@@ -688,7 +695,7 @@ Interfaces and code that changes:
   - a queue job middleware (`app/Jobs/Middleware/AuditQueueContext.php` **(new)**).
 
   `AuditLog::record` takes its default actor from the context. M2 introduces the context in memory only, so actors
-  become honest at once; M6 persists channel, correlation and run id.
+  become honest at once; M6 persists channel, correlation and run id once `intel_audit_context` is on (M7).
 - **`app/Domain/Ledger/AllocationWriter.php`:**
   - **M2:**
     - `lockForUpdate` on the source row and its allocations inside the transaction (today two writers can both pass
@@ -1432,7 +1439,9 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
 **Risks.**
 
 - **Audit hash compatibility is the highest risk in the plan.**
-  - The suffix is added only when the fields are set.
+  - The v2 prefix is added only when the fields are set.
+  - M6 ships writing v1 only (`intel_audit_context` off), so redeploying the release before it stays safe. Until it
+    is on, the why-panel history shows no channel or knock-ons, and events carry no run id.
   - Mixed-chain tests run on both databases.
   - The chain is verified on a restored live copy before deploy.
   - Refuse MySQL 8's native JSON, which reorders keys, until hashing re-encodes canonically.
@@ -1452,6 +1461,9 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
 - **Reason chips** and the alternatives considered in the Inbox; `/intel/proposals` with Not this one.
 - **Suggester** applies a rule's `work_job_id` only within that job's dates. Today `DecisionService::apply` can
   save a job on a rule, and every future payment then gets it.
+- **Audit context on.** `intel_audit_context` defaults to on, so events record channel,
+  correlation and run id (hash v2). From this release, roll back no further than M6, the first release that reads
+  v2. Verify the chain on a restored live copy after turning it on.
 
 **Files.**
 
@@ -1463,6 +1475,7 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
 - `app/Domain/Jobs/{JobFinder,JobGatherer}.php`, `app/Domain/Mileage/JobTrips.php`
 - `app/Domain/Intel/Cycle/Steps/RelateSweep.php` **(new)**
 - `app/Domain/Todo/TodoActions.php`, `app/Domain/Telegram/Telegram.php`
+- `app/Models/Setting.php`, `app/Domain/Audit/AuditLog.php` (`recordsContext()` reads the default)
 - `resources/js/pages/{inbox.tsx,intel/proposals.tsx}`, `resources/js/components/why-panel.tsx`
 
 **Migrations.** One.

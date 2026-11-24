@@ -136,14 +136,14 @@ final class CalendarSync
                 if ($rejected !== array_values($keep->rejected ?? [])) {
                     $before = $keep->only(['rejected']);
                     $keep->update(['rejected' => $rejected ?: null]);
-                    AuditLog::record('calendar.linked', $keep, $before, $keep->only(['rejected']), 'Kept your “not this job” from a duplicate link to the same entry', 'rules');
+                    AuditLog::record('calendar.linked', $keep, $before, $keep->only(['rejected']), 'Kept your “not this job” from a duplicate link to the same entry', 'matcher');
                 }
                 AuditLog::record('calendar.link_removed', $drop, $drop->only(['work_job_id', 'linked_by', 'not_job', 'rejected', 'event_key']), null,
                     match (true) {
                         $drop === $holder => 'Made automatically while your earlier decision on this entry wasn’t found; yours is kept',
                         $holder->linked_by === 'you' => 'Made automatically; your decision on this entry is kept',
                         default => 'Made automatically; the entry already has a link of its own',
-                    }, 'rules');
+                    }, 'matcher');
                 $drop->delete();
                 if ($drop === $link) {
                     continue;
@@ -152,7 +152,7 @@ final class CalendarSync
             $before = $link->only(['event_key']);
             $link->update(['event_key' => $match['key']]);
             $byKey[$match['key']] = $link;
-            AuditLog::record('calendar.link_rekeyed', $link, $before, ['event_key' => $match['key']], 'Matched to its calendar entry again', 'rules');
+            AuditLog::record('calendar.link_rekeyed', $link, $before, ['event_key' => $match['key']], 'Matched to its calendar entry again', 'matcher');
             $links++;
         }
 
@@ -169,7 +169,7 @@ final class CalendarSync
             }
             if ($changed) {
                 $candidate->update(['sources' => $sources, 'fingerprint' => $candidate->fingerprint ? sha1(collect($sources)->pluck('key')->sort()->implode('|')) : null]);
-                AuditLog::record('jobs.candidate_rekeyed', $candidate, null, ['sources' => $candidate->sourceKeys()], 'Matched to its calendar entries again', 'rules');
+                AuditLog::record('jobs.candidate_rekeyed', $candidate, null, ['sources' => $candidate->sourceKeys()], 'Matched to its calendar entries again', 'matcher');
                 $candidates++;
             }
         }

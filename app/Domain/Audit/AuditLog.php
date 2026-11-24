@@ -4,6 +4,7 @@ namespace App\Domain\Audit;
 
 use App\Domain\Intel\AuditContext;
 use App\Models\AuditEvent;
+use App\Models\Setting;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -14,7 +15,16 @@ use Illuminate\Support\Facades\DB;
 final class AuditLog
 {
     /**
-     * @param  string|null  $actor  who did it; when not given, the actor of the surrounding AuditContext ('you' outside one)
+     * The setting that turns on recording where each event came from (recordsContext()). Off until turned on: see there.
+     */
+    public const CONTEXT_SETTING = 'intel_audit_context';
+
+    /** @var array<string, bool> by connection: whether its JSON columns keep their own key order (reordersJson()) */
+    private static array $reorders = [];
+
+    /**
+     * @param  string|null  $actor  who did it; when not given, the actor of the surrounding AuditContext ('you' outside one).
+     *                              A legacy name ('rules') is recorded as what it means now ('matcher').
      * @param  int|null  $subjectId  the subject's id when $subject is given as a type name rather than a model
      */
     public static function record(
@@ -28,17 +38,27 @@ final class AuditLog
     ): AuditEvent {
         $type = $subject instanceof Model ? class_basename($subject) : $subject;
         $id = $subject instanceof Model ? $subject->getKey() : $subjectId;
-        $actor ??= AuditContext::actor();
+        $actor = AuditContext::normalise($actor ?? AuditContext::actor());
+        $context = ['channel' => AuditContext::channel(), 'correlation' => AuditContext::correlation(), 'run_id' => AuditContext::runId()];
+        // Recorded only once turned on, so the release before this one can still verify every event (recordsContext()).
+        if (array_filter($context, fn ($v) => $v !== null) !== [] && ! self::recordsContext()) {
+            $context = ['channel' => null, 'correlation' => null, 'run_id' => null];
+        }
+        if (array_filter($context, fn ($v) => $v !== null) === [] && self::reordersJson()) {
+            // A database that reorders JSON keys (MySQL's native JSON) would break an event hashed the first way, which
+            // hashes the JSON as stored: name where the event came from, so it's hashed the second way (canonically).
+            $context['channel'] = app()->runningInConsole() ? 'cli' : 'web';
+        }
 
         // One writer at a time: the chain head row is locked until this write (and any surrounding
         // transaction) commits, so two processes can never both chain onto the same previous event.
-        return DB::transaction(function () use ($action, $type, $id, $before, $after, $reason, $actor) {
+        return DB::transaction(function () use ($action, $type, $id, $before, $after, $reason, $actor, $context) {
             $head = DB::table('audit_heads')->where('id', 1)->lockForUpdate()->first();
             if (! $head) {
                 DB::table('audit_heads')->insertOrIgnore(['id' => 1, 'hash' => null, 'event_id' => null, 'created_at' => now(), 'updated_at' => now()]);
                 $head = DB::table('audit_heads')->where('id', 1)->lockForUpdate()->first();
             }
-            $event = self::make($action, $type, $id, $before, $after, $reason, $actor, $head->hash);
+            $event = self::make($action, $type, $id, $before, $after, $reason, $actor, $head->hash, $context);
             $event->save();
             DB::table('audit_heads')->where('id', 1)->update(['hash' => $event->hash, 'event_id' => $event->id, 'updated_at' => now()]);
 
@@ -46,9 +66,13 @@ final class AuditLog
         });
     }
 
-    private static function make(string $action, string $type, mixed $id, ?array $before, ?array $after, ?string $reason, string $actor, ?string $prev): AuditEvent
+    /** @param  array{channel:?string, correlation:?string, run_id:?int}  $context */
+    private static function make(string $action, string $type, mixed $id, ?array $before, ?array $after, ?string $reason, string $actor, ?string $prev, array $context): AuditEvent
     {
         $at = Carbon::now()->utc()->format('Y-m-d H:i:s');
+        // Only what's set is written: an event with none of them is stored (and hashed) exactly as before they existed.
+        $context = array_filter($context, fn ($v) => $v !== null);
+        $v2 = $context !== [];
 
         $event = new AuditEvent([
             'occurred_at' => $at,
@@ -56,12 +80,15 @@ final class AuditLog
             'action' => $action,
             'subject_type' => $type,
             'subject_id' => $id,
-            'before' => $before,
-            'after' => $after,
+            // The second way stores the JSON as it's hashed: plain arrays (a collection, model or object inside becomes
+            // one, as it reads back) with their keys in order, so the stored text is the canonical text
+            // (deploy/restore-check.sh hashes the stored text).
+            'before' => $v2 ? self::canonical(self::plain($before)) : $before,
+            'after' => $v2 ? self::canonical(self::plain($after)) : $after,
             // Shortened to fit the column before hashing, so the stored row and its hash agree.
             'reason' => $reason !== null && mb_strlen($reason) > 255 ? mb_substr($reason, 0, 254).'…' : $reason,
             'prev_hash' => $prev,
-        ]);
+        ] + $context);
         $event->hash = self::hashFor($event);
 
         return $event;
@@ -69,24 +96,129 @@ final class AuditLog
 
     /**
      * The event's hash. deploy/restore-check.sh computes the same in SQL to check a restored copy: change both together.
+     *
+     * Two ways, told apart by the event itself:
+     *  - v1, an event with no channel, correlation or run id (every event written before they existed): its fields
+     *    joined by "|", with before and after as PHP encodes them, unchanged since the first release;
+     *  - v2, an event with any of them: "v2|", the channel, correlation and run id joined by "|", then "|" and the same
+     *    fields as v1, with before and after re-encoded canonically (keys in order at every level, PHP's own encoding).
+     *    A database that reorders a JSON column's keys (MySQL's native JSON) or spaces them out can't break it, and the
+     *    text written is the canonical text, so the SQL check of a MariaDB copy can hash the stored text as it is.
+     *
+     * The v2 text starts with them, after a mark no v1 text can start with (v1 text starts with the previous event's
+     * hash, 64 hexadecimal digits, or with "|" for the first event), so neither way's text can be made from the other's
+     * fields. Were they at the end, after the free-text reason, an event's channel, correlation and run id could be
+     * emptied and their text added to its reason, and it would hash as v1 to the very same hash: where it came from
+     * removed without a trace. Between the mark and the previous event's hash (which verify() checks on its own) none of
+     * them can hold a "|", so none can be moved into another either.
      */
     public static function hashFor(AuditEvent $event): string
     {
         $at = $event->occurred_at instanceof \DateTimeInterface
             ? $event->occurred_at->format('Y-m-d H:i:s')
             : (string) $event->occurred_at;
+        $v2 = $event->channel !== null || $event->correlation !== null || $event->run_id !== null;
 
-        return hash('sha256', implode('|', [
+        $hashed = implode('|', [
             $event->prev_hash ?? '',
             $at,
             $event->actor,
             $event->action,
             $event->subject_type,
             (string) $event->subject_id,
-            json_encode($event->before),
-            json_encode($event->after),
+            $v2 ? self::canonicalJson($event->before) : json_encode($event->before),
+            $v2 ? self::canonicalJson($event->after) : json_encode($event->after),
             $event->reason ?? '',
-        ]));
+        ]);
+        if ($v2) {
+            $hashed = 'v2|'.$event->channel.'|'.$event->correlation.'|'.$event->run_id.'|'.$hashed;
+        }
+
+        return hash('sha256', $hashed);
+    }
+
+    /** A value as v2 hashes it: canonical() encoded the way PHP (and the model's array cast) encodes JSON. */
+    public static function canonicalJson(mixed $value): string
+    {
+        return (string) json_encode(self::canonical(self::plain($value)));
+    }
+
+    /**
+     * A value as it reads back from the database: encoded and decoded, so a collection, model or object inside it is
+     * the plain array it's stored as. canonical() orders only arrays' keys, so without this an object's keys would be
+     * stored in its own order but hashed in order, and the SQL check, which hashes the stored text, would fail.
+     */
+    private static function plain(mixed $value): mixed
+    {
+        return $value === null || is_scalar($value) ? $value : json_decode(json_encode($value, JSON_THROW_ON_ERROR), true);
+    }
+
+    /**
+     * Keys in order at every level (a list keeps its order). Encoding the result, decoding it and doing this again
+     * gives the same text, so an event reads back as it was hashed whatever order the database keeps its keys in.
+     *
+     * @template T
+     *
+     * @param  T  $value
+     * @return T
+     */
+    public static function canonical(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+        $value = array_map(fn ($v) => self::canonical($v), $value);
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return $value;
+    }
+
+    /**
+     * Whether new events record where they came from: the channel, correlation and run id of the AuditContext, hashed the
+     * second way. Off unless the setting intel_audit_context is on.
+     *
+     * Every release before this one knows only the first way, and would read an event hashed the second way as a broken
+     * chain (the nightly check's alarm). So this release, the first that reads the second way, writes only the first
+     * way, and redeploying the release before it is still safe (docs/intelligence-cycle.md 3.1: every milestone can be
+     * rolled back). Turn it on once there's no going back past this release; the next release turns it on by default.
+     * A database that reorders JSON keys is the exception: there every event is written the second way regardless, as
+     * no earlier release can verify that database's events anyway (reordersJson()).
+     */
+    public static function recordsContext(): bool
+    {
+        return (bool) Setting::get(self::CONTEXT_SETTING, false);
+    }
+
+    /**
+     * Whether the audit log's JSON columns keep their own key order (MySQL's native JSON type does; MariaDB keeps the
+     * text as written), so every event has to be written the second way. Asked once per connection.
+     */
+    public static function reordersJson(): bool
+    {
+        $connection = DB::connection();
+        $name = (string) $connection->getName();
+        if (isset(self::$reorders[$name])) {
+            return self::$reorders[$name];
+        }
+        if ($connection->getDriverName() !== 'mysql') {
+            return self::$reorders[$name] = false;
+        }
+        try {
+            $version = (string) $connection->selectOne('select version() as v')?->v;
+            $columns = collect($connection->select("select column_name as c, data_type as t from information_schema.columns where table_schema = database() and table_name = 'audit_events'"))
+                ->mapWithKeys(fn ($r) => [strtolower((string) ($r->c ?? $r->C ?? '')) => strtolower((string) ($r->t ?? $r->T ?? ''))]);
+        } catch (\Throwable) {
+            return false; // not known yet: asked again next time
+        }
+
+        $native = ! str_contains(strtolower($version), 'mariadb') && ($columns['before'] ?? '') === 'json';
+        if ($native && ! $columns->has('channel')) {
+            return false; // the migrations adding the channel haven't run yet: nothing to write it in, asked again later
+        }
+
+        return self::$reorders[$name] = $native;
     }
 
     /**

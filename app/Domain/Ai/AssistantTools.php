@@ -3,6 +3,7 @@
 namespace App\Domain\Ai;
 
 use App\Domain\Documents\Grounding;
+use App\Domain\Intel\Provenance;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\Opportunities;
@@ -640,8 +641,9 @@ final class AssistantTools
         $jobId = isset($in['job_id']) && WorkJob::query()->whereKey($in['job_id'])->exists() ? (int) $in['job_id'] : null;
 
         try {
+            // Its evidence is the job it names, if any: the conversation isn't stored until the answer is (M4 adds ask:).
             $saved = $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, $in['kind'], $categoryId, $jobId, (int) ($in['business_pct'] ?? 100)),
-                'ai', false, mb_substr((string) $in['reason'], 0, 240));
+                'ai', false, mb_substr((string) $in['reason'], 0, 240), null, new Provenance('ai.assistant', [$jobId ? 'job:'.$jobId : null]));
         } catch (InvalidArgumentException $e) {
             return ['error' => $e->getMessage()];
         }

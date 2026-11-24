@@ -5,6 +5,7 @@ import { StatusPill } from '@/components/status-pill';
 import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { WhyPanel } from '@/components/why-panel';
 import { day, decidedByLabels, kindLabels, paidIn, paidWith, rateText } from '@/lib/format';
 import { type CalendarEntry, type Decision, type Item, type JobRef, type Lookups } from '@/types';
 import { router } from '@inertiajs/react';
@@ -18,6 +19,8 @@ interface Detail {
     events: CalendarEntry[];
     jobs_near: JobRef[];
     links?: { type: string; label: string; detail: string | null; href: string | null }[];
+    /** What the why-panels explain: the decision, and calendar entries that day that are on a job */
+    why?: { decision: string; calendar: { ref: string; summary: string | null; job: string | null; linked_by: string | null }[] };
 }
 
 const linkTypes: Record<string, string> = {
@@ -172,6 +175,7 @@ export function ItemDrawer({
                                     {item.allocations[0].confirmed ? 'Confirmed' : 'Suggested'} by {decidedByLabels[item.allocations[0].decided_by]}
                                     {item.allocations[0].reason ? `: ${item.allocations[0].reason}` : ''}
                                 </p>
+                                {detail.why && <WhyPanel refId={detail.why.decision} className="mt-2" />}
                                 {!item.allocations[0].confirmed && (
                                     <Button
                                         size="sm"
@@ -199,6 +203,15 @@ export function ItemDrawer({
                                         </li>
                                     ))}
                                 </ul>
+                                {detail.why && detail.why.calendar.length > 0 && (
+                                    <ul className="mt-2 space-y-1">
+                                        {detail.why.calendar.map((c) => (
+                                            <li key={c.ref}>
+                                                <WhyPanel refId={c.ref} label={`Why is “${c.summary ?? 'this entry'}” on ${c.job ?? 'a job'}?`} />
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
                             </div>
                         )}
 

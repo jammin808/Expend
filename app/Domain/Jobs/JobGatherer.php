@@ -5,6 +5,7 @@ namespace App\Domain\Jobs;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Intel\AuditContext;
+use App\Domain\Intel\Provenance;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\OwnAccounts;
@@ -194,7 +195,8 @@ final class JobGatherer
             $which = $kind !== 'work' ? ' (the '.mb_strtolower(JobDay::KINDS[$kind]).')' : '';
             $label = ($e->summary ?: 'Calendar entry').' · '.CarbonImmutable::parse($e->day())->format('D j M');
             if ($same && $onDay) {
-                $this->finder->linkCalendar($e, $job, 'rules', 'The same entry as this job’s other days');
+                $this->finder->linkCalendar($e, $job, 'rules', 'The same entry as this job’s other days', null,
+                    new Provenance('jobs.gather', ['cal:'.$e->key(), 'job:'.$job->id]));
                 $this->add('calendar', $ref, 'linked', $label, 'The same entry as this job’s other days', $e->day());
             } elseif ($same) {
                 $this->add('calendar', $ref, 'possible', $label, 'The same entry on a day that isn’t one of the job’s days yet: another day of it'.$which.'? Linking it adds the day.', $e->day());
@@ -239,7 +241,7 @@ final class JobGatherer
                     $label = $doc->email_subject ?: $doc->original_name;
                     $date = $doc->received_at?->format('Y-m-d');
                     if ($ev['ok'] && $ev['why'] === ['the job’s PO number is in it']) {
-                        $this->finder->linkDocument($doc, $job, 'rules');
+                        $this->finder->linkDocument($doc, $job, 'rules', true, new Provenance('jobs.gather', ['doc:'.$doc->id, 'job:'.$job->id]));
                         $this->add('document', (string) $doc->id, 'linked', $label, 'Linked because the job’s PO number is in it', $date);
 
                         continue;
@@ -258,7 +260,7 @@ final class JobGatherer
                     $weak = collect($ev['why'])->first(fn ($w) => str_starts_with($w, 'it mentions '));
                     $mentions = $named ?? ($weak ? mb_substr($weak, mb_strlen('it mentions ')) : null);
                     if ($dated && $named && ! $other) {
-                        $this->finder->linkDocument($doc, $job, 'rules');
+                        $this->finder->linkDocument($doc, $job, 'rules', true, new Provenance('jobs.gather', ['doc:'.$doc->id, 'job:'.$job->id]));
                         $this->add('document', (string) $doc->id, 'linked', $label, 'Linked because it gives '.CarbonImmutable::parse($dated)->format('j M Y').' and it mentions '.$named, $date);
                     } elseif ($mentions) {
                         $this->add('document', (string) $doc->id, 'possible', $label, match (true) {
@@ -330,7 +332,10 @@ final class JobGatherer
                     $jobCost = $a->where('kind', 'business_expense')->every(fn (Allocation $x) => in_array($x->category?->code, Categoriser::JOB_COSTS, true));
                     if ($automatic && $mineAlone && $jobCost) {
                         $lines = $a->map(fn (Allocation $x) => self::line($x, $x->kind === 'business_expense' ? $job->id : null))->all();
-                        $this->writer->decide($tx, $lines, 'matcher', false, 'A business cost on '.$job->title.'’s dates');
+                        // What it was suggested as before stays among the evidence; the job is this search's.
+                        $before = Provenance::keep($a);
+                        $this->writer->decide($tx, $lines, 'matcher', false, 'A business cost on '.$job->title.'’s dates', null,
+                            new Provenance('jobs.gather', ['job:'.$job->id, ...($before?->evidence ?? [])]));
                         $this->add('payment', $ref, 'linked', $label, 'A business cost on the job’s dates: suggested as its cost (confirm it in the Inbox)', $day, $tx->amount_pence);
                     } else {
                         $this->add('payment', $ref, 'possible', $label, match (true) {
@@ -522,7 +527,25 @@ final class JobGatherer
         }
         $automatic = $tx->allocations->every(fn (Allocation $a) => $a->confirmed_at === null && ! $a->is_manual);
         $lines = $tx->allocations->map(fn (Allocation $a) => self::line($a, $a->work_job_id === $job->id ? null : $a->work_job_id))->all();
-        $this->writer->decide($tx, $lines, $automatic ? 'matcher' : 'you', ! $automatic, 'Not for '.$job->title);
+        $this->writer->decide($tx, $lines, $automatic ? 'matcher' : 'you', ! $automatic, 'Not for '.$job->title, null, $automatic ? self::notFor($tx->allocations, $job) : null);
+    }
+
+    /**
+     * The why of a suggestion written again without the job you said it isn't for: the suggestion it was (its method and
+     * evidence), except a Categoriser's. That is recorded as this search's own, citing the job, so the Categoriser no
+     * longer counts the line as its own (Categoriser::notOurs reads the method first) and learning from your next
+     * decision can't suggest it afresh and put the job back on it.
+     *
+     * @param  Collection<int, Allocation>  $allocations
+     */
+    private static function notFor(Collection $allocations, WorkJob $job): ?Provenance
+    {
+        $kept = Provenance::keep($allocations);
+        if ($kept === null || ! str_starts_with($kept->method, 'categorise.')) {
+            return $kept;
+        }
+
+        return new Provenance('jobs.gather', ['job:'.$job->id, ...$kept->evidence]);
     }
 
     /** A calendar entry isn't this job's: unlinked if it's on it, otherwise remembered, wherever the entry is now. */
@@ -633,7 +656,7 @@ final class JobGatherer
             $near = collect($dates)->contains(fn ($d) => $job->worksOn($d) || ($item->kind === 'hotel' ? $job->worksOn(CarbonImmutable::parse($d)->addDay()->format('Y-m-d')) : $job->isNear($d)));
             try {
                 if (! $near) {
-                    $this->finder->linkTravel($item, null, 'rules');
+                    $this->finder->linkTravel($item, null, 'rules', new Provenance('jobs.gather', ['travel:'.$item->id, 'job:'.$job->id]));
                     JobFind::query()->where('work_job_id', $job->id)->where('type', 'travel')->where('ref', (string) $item->id)->where('status', 'linked')->delete();
                 } elseif (collect($dates)->contains(fn ($d) => isset($check[$d]) || isset($check[CarbonImmutable::parse($d)->addDay()->format('Y-m-d')]))) {
                     app(TravelMatcher::class)->suggest($item->fresh());

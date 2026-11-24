@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\AuditChannel;
 use App\Http\Middleware\HandleInertiaRequests;
 use App\Http\Middleware\SecurityHeaders;
 use Illuminate\Foundation\Application;
@@ -20,6 +21,8 @@ return Application::configure(basePath: dirname(__DIR__))
             SecurityHeaders::class,
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
+            // Last, so it's around the controller: what a request writes to the audit trail is from the web, as one action.
+            AuditChannel::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

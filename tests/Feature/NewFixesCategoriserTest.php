@@ -439,10 +439,15 @@ class NewFixesCategoriserTest extends TestCase
     {
         $this->actingAs(User::factory()->create());
         $writer = app(AllocationWriter::class);
+        $earlier = $this->tx('JB SOUND HIRE', -7000, '2025-04-01');
+        $writer->decide($earlier, AllocationWriter::lines(-7000, 'business_expense', $this->cat('equipment')), 'ai', false, 'An equipment hire');
         $accepted = $this->tx('JB SOUND HIRE', -9000, '2025-05-01');
         $writer->decide($accepted, AllocationWriter::lines(-9000, 'business_expense', $this->cat('equipment')), 'ai', false, 'An equipment hire');
         $waiting = $this->tx('JB SOUND HIRE', -4000, '2025-06-01');
 
+        // An accepted suggestion counts half a decision of yours: the first acceptance alone teaches nothing.
+        $this->post("/items/bank/{$earlier->id}/confirm")->assertSessionHas('success', fn ($m) => ! str_contains($m, 'Updated the suggestion'));
+        $this->assertSame(0, $waiting->fresh()->allocations()->count());
         $this->post("/items/bank/{$accepted->id}/confirm")->assertSessionHas('success', fn ($m) => str_contains($m, 'Updated the suggestion for 1 other waiting payment'));
         $this->assertSame(['business_expense', 'equipment', Categoriser::MARKER], [$this->s($waiting)['kind'], $this->s($waiting)['category'], $this->s($waiting)['matcher']]);
     }

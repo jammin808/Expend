@@ -74,7 +74,7 @@ final class JobDays
             }
         }
         $job->unsetRelation('days');
-        self::recordChange($job, $before, 'The job’s dates were changed', 'you');
+        self::recordChange($job, $before, 'The job’s dates were changed');
         self::afterRemoval($job, $before);
     }
 
@@ -102,7 +102,9 @@ final class JobDays
         $day->fill(array_filter(['kind' => $fresh || $mine || $day->kind === 'work' ? $kind : null, 'start_time' => $start, 'end_time' => $end, 'calendar_key' => $calendarKey, 'note' => $note])
             + ['source' => $fresh || $mine ? $source : $day->source]);
         $day->save();
-        $actor = $source === 'you' || $source === 'calendar' ? 'you' : 'rules';
+        // Recorded as whoever is acting (AuditContext): you, for a day you add or an entry you link; the matcher when a
+        // search links an entry. Only days the search itself adds are named as the matcher's outright.
+        $actor = $source === 'you' || $source === 'calendar' ? null : 'matcher';
         if ($fresh) {
             AuditLog::record('job.day_added', $job, null, ['date' => $date, 'kind' => $day->kind] + array_filter(['start_time' => $day->start_time, 'end_time' => $day->end_time]), null, $actor);
         } elseif ($day->wasChanged()) {
@@ -197,7 +199,7 @@ final class JobDays
             }
         }
         $job->unsetRelation('days');
-        self::recordChange($job, $before, 'Calendar entry '.($summary !== '' ? '“'.mb_substr($summary, 0, 80).'” ' : '').'unlinked', 'you');
+        self::recordChange($job, $before, 'Calendar entry '.($summary !== '' ? '“'.mb_substr($summary, 0, 80).'” ' : '').'unlinked');
         self::sync($job);
         self::afterRemoval($job, $before);
     }
@@ -298,8 +300,11 @@ final class JobDays
         return $day->only(['kind', 'start_time', 'end_time', 'calendar_key', 'note']);
     }
 
-    /** One history entry for days added and removed together (a date change, an entry unlinked). */
-    private static function recordChange(WorkJob $job, array $before, string $reason, string $actor): void
+    /**
+     * One history entry for days added and removed together (a date change, an entry unlinked), recorded as whoever is
+     * acting (AuditContext): you on the web or in Telegram, the matcher when a search moved or unlinked the entry.
+     */
+    private static function recordChange(WorkJob $job, array $before, string $reason, ?string $actor = null): void
     {
         $after = self::snapshot($job);
         $was = array_column($before, 'date');

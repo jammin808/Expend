@@ -113,6 +113,8 @@ class DocumentController extends Controller
     public function update(Request $request, Document $document): RedirectResponse
     {
         $data = $request->validate(['work_job_id' => 'nullable|integer|exists:work_jobs,id', 'kind' => 'nullable|string', 'approve' => 'boolean']);
+        // What it was, so the history shows the job a document was moved off (or onto), not only where it went.
+        $before = ['work_job_id' => $document->work_job_id, 'job_linked_by' => $document->job_linked_by, 'kind' => $document->kind, 'status' => $document->status];
         if ($request->has('work_job_id')) {
             DocumentReader::relink($document, $data['work_job_id'], 'you');
         }
@@ -123,7 +125,7 @@ class DocumentController extends Controller
             $document->update(['status' => 'new', 'error' => null]);
             $document->children()->where('status', 'held')->update(['status' => 'new', 'error' => null]);
         }
-        AuditLog::record('document.updated', $document, null, $data);
+        AuditLog::record('document.updated', $document, $before, $data);
 
         return back()->with('success', 'Saved.');
     }

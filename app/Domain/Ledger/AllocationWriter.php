@@ -4,6 +4,7 @@ namespace App\Domain\Ledger;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Intel\AuditContext;
+use App\Domain\Intel\Provenance;
 use App\Domain\Matching\TransferPairer;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -25,7 +26,10 @@ use InvalidArgumentException;
  *  - every change is audited, with who really made it: a decision names its maker, and confirming or clearing
  *    takes the actor of the surrounding AuditContext ('you' outside one);
  *  - two writers never decide the same line at once: the line and its allocations are locked while they are
- *    checked and replaced, so the guard above always sees the latest decision.
+ *    checked and replaced, so the guard above always sees the latest decision;
+ *  - an automatic writer says why: its Provenance (the method, its score, the evidence and runner-ups) is stored with
+ *    the lines, and confirming a line records who confirmed it (confirmed_by), so accepting a suggestion is told
+ *    apart from making one.
  *
  * Deciding what a line already says changes nothing and records nothing (a nightly pass that comes to the same
  * suggestion again leaves no trace).
@@ -34,6 +38,8 @@ final class AllocationWriter
 {
     /**
      * @param  list<array{kind:string, category_id?:?int, work_job_id?:?int, amount_pence:int, business_use_pct?:?int, note?:?string}>  $lines
+     * @param  Provenance|null  $provenance  why an automatic writer proposes this (every automatic writer gives one);
+     *                                       null for your own decisions
      * @return bool true when the line now says this (written now, or it already did); false when skipped because
      *              automation tried to touch a protected decision
      */
@@ -44,13 +50,14 @@ final class AllocationWriter
         bool $confirm = true,
         ?string $reason = null,
         ?int $ruleId = null,
+        ?Provenance $provenance = null,
     ): bool {
         $amount = $source->amount_pence;
         $taxYear = $this->taxYearOf($source);
         $this->assertUnlocked($taxYear);
         $this->assertLines($lines, $amount);
 
-        $done = DB::transaction(function () use ($source, $lines, $decidedBy, $confirm, $reason, $ruleId, $taxYear) {
+        $done = DB::transaction(function () use ($source, $lines, $decidedBy, $confirm, $reason, $ruleId, $taxYear, $provenance) {
             $existing = $this->lockedAllocations($source, $status);
 
             if ($decidedBy !== 'you' && $existing->contains(fn (Allocation $a) => $a->is_manual || $a->confirmed_at !== null)) {
@@ -65,8 +72,9 @@ final class AllocationWriter
 
             $now = now();
             $created = [];
+            $why = $provenance?->columns() ?? [];
             foreach ($lines as $line) {
-                $created[] = $source->allocations()->create([
+                $created[] = $source->allocations()->create($why + [
                     'tax_year' => $taxYear,
                     'kind' => $line['kind'],
                     'category_id' => in_array($line['kind'], Allocation::NEEDS_CATEGORY, true) ? ($line['category_id'] ?? null) : null,
@@ -77,6 +85,8 @@ final class AllocationWriter
                     'decided_by' => $decidedBy,
                     'is_manual' => $decidedBy === 'you',
                     'confirmed_at' => $confirm ? $now : null,
+                    // Made and confirmed in one go: by you, or by a rule that confirms on its own.
+                    'confirmed_by' => $confirm ? AuditContext::normalise($decidedBy) : null,
                     'merchant_rule_id' => $ruleId,
                     'reason' => self::fit($reason),
                     'note' => self::fit($line['note'] ?? null),
@@ -119,7 +129,9 @@ final class AllocationWriter
 
     /**
      * Accept the current suggestion as it stands. Recorded as the surrounding AuditContext's actor: 'you' for your
-     * tap, 'matcher' when a matcher settles a line for you (the other side of a transfer you decided).
+     * tap, 'matcher' when a matcher settles a line for you (the other side of a transfer you decided). The lines it
+     * confirms keep who confirmed them (confirmed_by), so a suggestion you accepted is told apart from one confirmed
+     * automatically.
      */
     public function confirm(BankTransaction|ManualExpense $source, ?string $reason = null): void
     {
@@ -131,7 +143,7 @@ final class AllocationWriter
             if ($allocations->isEmpty()) {
                 throw new InvalidArgumentException('There is nothing to confirm yet. Choose what this is first.');
             }
-            $source->allocations()->whereNull('confirmed_at')->update(['confirmed_at' => now()]);
+            $source->allocations()->whereNull('confirmed_at')->update(['confirmed_at' => now(), 'confirmed_by' => $actor]);
             $source->forceFill(['review_status' => 'confirmed'])->saveQuietly();
             AuditLog::record('allocation.confirmed', $source, null, $allocations->map(fn ($a) => $this->snapshot($a))->all(), $reason, $actor);
         });
@@ -287,9 +299,13 @@ final class AllocationWriter
         }
     }
 
+    /**
+     * A line as the history keeps it: enough to rebuild what was decided, by whom and why (its invoice, rule, method and
+     * reason), so outcomes can be worked out from the audit trail alone.
+     */
     private function snapshot(Allocation $a): array
     {
-        return $a->only(['kind', 'category_id', 'work_job_id', 'amount_pence', 'business_use_pct', 'decided_by', 'is_manual', 'note'])
+        return $a->only(['kind', 'category_id', 'work_job_id', 'invoice_id', 'amount_pence', 'business_use_pct', 'decided_by', 'is_manual', 'note', 'merchant_rule_id', 'method', 'reason'])
             + ['confirmed' => $a->confirmed_at !== null];
     }
 }

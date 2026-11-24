@@ -5,6 +5,7 @@ namespace App\Domain\Import;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Fx\ExchangeRates;
 use App\Domain\Fx\RateUnavailable;
+use App\Domain\Intel\Provenance;
 use App\Domain\Ledger\AllocationWriter;
 use App\Models\Account;
 use App\Models\BankTransaction;
@@ -743,7 +744,7 @@ final class RevolutImport
                 ? [...AllocationWriter::lines($out->amount_pence + $fee, 'transfer'), ...AllocationWriter::lines(-$fee, 'business_expense', (int) $finance, note: 'The exchange fee')]
                 : AllocationWriter::lines($tx->amount_pence, 'transfer');
             try {
-                $this->writer->decide($tx, $lines, 'matcher', false, $why);
+                $this->writer->decide($tx, $lines, 'matcher', false, $why, null, new Provenance('revolut.exchange', ['tx:'.$out->id, 'tx:'.$in->id]));
             } catch (InvalidArgumentException) {
                 // a locked year, or decided by you
             }

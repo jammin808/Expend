@@ -239,7 +239,8 @@ class OpportunityAcquireTest extends TestCase
         // The cancellation in the same thread starts nothing, and the rules never change where it stands.
         $this->assertSame('enquiry', $o->fresh()->status);
         $found = AuditEvent::query()->where('action', 'opportunity.found')->sole();
-        $this->assertSame(['rules', 'Are you available'], [$found->actor, $found->after['matched']]);
+        // The opportunity finder's rules are recorded as the matcher (the actor vocabulary; 'rules' was its old name).
+        $this->assertSame(['matcher', 'Are you available'], [$found->actor, $found->after['matched']]);
         $this->assertSame([], $this->ai->requests, 'No AI was asked');
         $this->assertSame(0, WorkJob::query()->count(), 'Nothing is made a job by itself');
 
@@ -350,7 +351,7 @@ class OpportunityAcquireTest extends TestCase
         $this->assertSame(['enquiry', 'lost'], [$o->status, collect($o->evidenceFor('status'))->last()['value']], 'Shown, never closed by the rules');
         $this->assertStringContainsString('cancelled the Acme Awards', $o->mayBeOff()['quote']);
         $this->assertTrue($o->mayBeOff()['verified']);
-        $this->assertSame('rules', AuditEvent::query()->where('action', 'opportunity.updated')->sole()->actor);
+        $this->assertSame('matcher', AuditEvent::query()->where('action', 'opportunity.updated')->sole()->actor);
     }
 
     public function test_with_ai_off_a_booking_confirmation_and_a_crew_call_to_a_list_are_proposed_for_you_to_check(): void

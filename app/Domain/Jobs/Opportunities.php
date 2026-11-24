@@ -243,7 +243,7 @@ final class Opportunities
             }
             $before = self::snapshot($o);
             $o->update(['status' => 'expired']);
-            AuditLog::record('opportunity.expired', $o, $before, self::snapshot($o), $why, 'rules');
+            AuditLog::record('opportunity.expired', $o, $before, self::snapshot($o), $why, 'matcher');
             $counts['expired']++;
         }
 
@@ -251,7 +251,7 @@ final class Opportunities
         $counts['open'] = Opportunity::query()->open()->count();
         Setting::put('opportunities_refreshed_at', $started->toIso8601String());
         Setting::put('opportunities_last_run', $counts + ['at' => now()->toIso8601String()]);
-        AuditLog::record('opportunities.refreshed', 'Opportunities', null, $counts, null, 'rules');
+        AuditLog::record('opportunities.refreshed', 'Opportunities', null, $counts, null, 'matcher');
 
         return $counts;
     }
@@ -1200,7 +1200,7 @@ final class Opportunities
         $before = self::snapshot($o);
         $onJob = $why === 'Its email or document is on this job';
         $o->update(['work_job_id' => $job->id] + ($onJob && ! $o->ownerSet('status') ? ['status' => 'confirmed'] : []));
-        AuditLog::record('opportunity.linked_to_job', $o, $before, self::snapshot($o), $why.': '.$job->title.($onJob ? '' : '. A suggestion: say whether it’s this job.'), 'rules');
+        AuditLog::record('opportunity.linked_to_job', $o, $before, self::snapshot($o), $why.': '.$job->title.($onJob ? '' : '. A suggestion: say whether it’s this job.'), 'matcher');
 
         return $job;
     }

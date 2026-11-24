@@ -7,6 +7,8 @@ use App\Domain\Matching\OwnAccounts;
 use App\Http\Presenters\Present;
 use App\Models\AuditEvent;
 use App\Models\BankTransaction;
+use App\Models\CalendarEvent;
+use App\Models\CalendarJobLink;
 use App\Models\Document;
 use App\Models\JobFind;
 use App\Models\ManualExpense;
@@ -109,7 +111,26 @@ class TransactionController extends Controller
             'events' => CalendarSync::eventsOn($date),
             'jobs_near' => Present::jobsNear($date),
             'links' => self::links($item),
+            // What the why-panels explain: the line's decision, and the calendar entries that day on a job.
+            'why' => ['decision' => ($item instanceof BankTransaction ? 'tx:' : 'exp:').$item->id, 'calendar' => self::calendarLinksOn($date)],
         ]);
+    }
+
+    /**
+     * Calendar entries on a UK day that are on a job, by you or automatically: each with the ref its why-panel explains.
+     * Timed entries are kept in UTC, so the day runs from UK midnight; an all-day entry is kept at its date's midnight.
+     *
+     * @return list<array{ref:string, summary:?string, job:?string, linked_by:?string}>
+     */
+    private static function calendarLinksOn(string $date): array
+    {
+        $day = CarbonImmutable::parse(substr($date, 0, 10), CalendarEvent::TZ)->startOfDay();
+
+        return CalendarJobLink::query()->with('job:id,title')->whereNotNull('work_job_id')->where('not_job', false)
+            ->where(fn ($q) => $q->whereBetween('event_starts_at', [$day->utc()->format('Y-m-d H:i:s'), $day->addDay()->subSecond()->utc()->format('Y-m-d H:i:s')])
+                ->orWhere('event_starts_at', $day->format('Y-m-d 00:00:00')))
+            ->orderBy('event_starts_at')->limit(10)->get()
+            ->map(fn (CalendarJobLink $l) => ['ref' => 'cal:'.$l->event_key, 'summary' => $l->summary, 'job' => $l->job?->title, 'linked_by' => $l->linked_by])->all();
     }
 
     /**

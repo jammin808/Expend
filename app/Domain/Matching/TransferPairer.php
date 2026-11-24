@@ -4,6 +4,7 @@ namespace App\Domain\Matching;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Intel\AuditContext;
+use App\Domain\Intel\Provenance;
 use App\Domain\Ledger\AllocationWriter;
 use App\Models\Account;
 use App\Models\Allocation;
@@ -46,7 +47,7 @@ final class TransferPairer
     private const PAIR_REASON_END = 'moving between your accounts';
 
     /** How a one-sided suggestion of this class starts (OwnAccounts::reason, the earlier wording included). */
-    private const ONE_SIDED_REASONS = ['Paid to you (your own name)', 'Paid in by you (your own name)', 'A top-up', 'A savings pot, exchange', 'A payment towards this card', 'Paid to your ', 'Paid in from your ', 'Names ', 'Money added to this account', 'Moved to ', 'Moved from '];
+    public const ONE_SIDED_REASONS = ['Paid to you (your own name)', 'Paid in by you (your own name)', 'A top-up', 'A savings pot, exchange', 'A payment towards this card', 'Paid to your ', 'Paid in from your ', 'Names ', 'Money added to this account', 'Moved to ', 'Moved from '];
 
     /** Suggestions of this class that a run took back because they no longer hold (for a message). */
     public int $cleared = 0;
@@ -146,6 +147,12 @@ final class TransferPairer
             }
         }
         usort($scored, fn ($a, $b) => [$b[0], $a[1], $a[2], $a[3]] <=> [$a[0], $b[1], $b[2], $b[3]]);
+        // Each line's possible partners, best first: the runner-up a pair beat is kept with it (its provenance).
+        $byLine = [];
+        foreach ($scored as $p) {
+            $byLine[$p[2]][] = $p;
+            $byLine[$p[3]][] = $p;
+        }
 
         // Equally good pairs (as sure, as near) are taken together, joined where they share a line. A pair on its own
         // is made. Where lines have more than one equally good partner, none is guessed and every line joined to
@@ -170,7 +177,7 @@ final class TransferPairer
                     foreach ($part as [, , $inId, $outId]) {
                         if (! isset($linked[$inId]) && ! isset($linked[$outId])) {
                             $linked[$inId] = $linked[$outId] = true;
-                            $paired += (int) $this->link($rows[$inId], $rows[$outId]);
+                            $paired += (int) $this->link($rows[$inId], $rows[$outId], $this->pairProvenance($inId, $outId, $byLine));
                         }
                     }
 
@@ -262,8 +269,31 @@ final class TransferPairer
         return true;
     }
 
+    /**
+     * Why a pair was made: how sure (its strength, out of 10 for both sides), the other side, and the best partner either
+     * side had besides this one, with its strength (the runner-up).
+     *
+     * @param  array<int, list<array{0:int, 1:int, 2:int, 3:int}>>  $byLine  [strength, days, in id, out id], best first
+     */
+    private function pairProvenance(int $inId, int $outId, array $byLine): Provenance
+    {
+        $score = 0;
+        $alternatives = [];
+        foreach ([...($byLine[$inId] ?? []), ...($byLine[$outId] ?? [])] as [$s, , $i, $o]) {
+            if ($i === $inId && $o === $outId) {
+                $score = $s;
+
+                continue;
+            }
+            $alternatives[] = ['ref' => 'tx:'.($i === $inId ? $o : $i), 'score' => $s];
+        }
+        usort($alternatives, fn ($a, $b) => $b['score'] <=> $a['score']);
+
+        return new Provenance('transfer.pair', ['tx:'.$inId, 'tx:'.$outId], $score, $alternatives);
+    }
+
     /** Link the two sides and suggest each as a transfer, unless it's already decided as one. */
-    private function link(BankTransaction $in, BankTransaction $out): bool
+    private function link(BankTransaction $in, BankTransaction $out, ?Provenance $pairWhy = null): bool
     {
         $why = 'Matches '.($in->account->name ?? 'another account').' and '.($out->account->name ?? 'another account').': '.Money::format(abs($in->amount_pence)).' '.self::PAIR_REASON_END;
         $linked = DB::transaction(function () use ($in, $out, $why) {
@@ -286,7 +316,8 @@ final class TransferPairer
                 continue; // decided as a transfer already (by you, your rule, or confirmed): the decision stands
             }
             try {
-                $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'transfer'), 'matcher', false, $why);
+                $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'transfer'), 'matcher', false, $why, null,
+                    $pairWhy ?? new Provenance('transfer.pair', ['tx:'.$in->id, 'tx:'.$out->id]));
             } catch (InvalidArgumentException) {
                 // protected by a decision of yours since it was loaded: the pair link stays, the decision is yours
             }
@@ -336,7 +367,8 @@ final class TransferPairer
                         $reason .= '. It had been matched to invoice '.($invoices[$invoiceId] ?? '#'.$invoiceId).' for the same amount; that invoice is left open for the client’s payment';
                     }
                     try {
-                        $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'transfer'), 'matcher', false, $reason);
+                        $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'transfer'), 'matcher', false, $reason, null,
+                            new Provenance('transfer.one_sided', $invoiceId ? ['inv:'.$invoiceId] : []));
                     } catch (InvalidArgumentException) {
                         // locked, or decided by you meanwhile
                     }

@@ -2,6 +2,7 @@
 
 namespace App\Domain\Ai;
 
+use App\Domain\Intel\Provenance;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Verification\Verifier;
 use App\Http\Presenters\Present;
@@ -98,7 +99,7 @@ final class TransactionAdvisor
 
             try {
                 $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, $s['kind'], $needs ? $category->id : null, $needs ? $jobId : null, $pct),
-                    'ai', false, mb_substr('AI: '.($s['reason'] ?? ''), 0, 240));
+                    'ai', false, mb_substr('AI: '.($s['reason'] ?? ''), 0, 240), null, new Provenance('ai.advisor', [$needs && $jobId ? 'job:'.$jobId : null]));
             } catch (\InvalidArgumentException) {
                 $skipped++;
             }

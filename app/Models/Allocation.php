@@ -29,6 +29,8 @@ class Allocation extends Model
     protected $casts = [
         'amount_pence' => 'integer', 'business_use_pct' => 'integer', 'is_manual' => 'boolean', 'confirmed_at' => 'datetime',
         'voided_at' => 'datetime',
+        // Provenance (App\Domain\Intel\Provenance): what proposed the line, on what evidence, against which runner-ups.
+        'method_version' => 'integer', 'score' => 'integer', 'evidence' => 'array', 'alternatives' => 'array', 'run_id' => 'integer',
     ];
 
     protected static function booted(): void

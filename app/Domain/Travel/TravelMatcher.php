@@ -3,6 +3,7 @@
 namespace App\Domain\Travel;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\Provenance;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\OwnAccounts;
 use App\Models\BankTransaction;
@@ -83,16 +84,31 @@ final class TravelMatcher
             $reasons[] = $item->unverified_count.' detail(s) couldn’t be checked against the email: look at it before deciding';
         }
 
-        $item->update([
-            'bank_transaction_id' => $payment?->id,
-            // A job you linked (or unlinked) stays as you set it.
-            'work_job_id' => $item->job_linked_by === 'you' ? $item->work_job_id : ($item->work_job_id ?? $jobId),
-            'job_linked_by' => $item->job_linked_by === 'you' || $item->work_job_id ? $item->job_linked_by : ($jobId ? 'rules' : null),
-            'suggestion' => [
-                'decision' => $decision, 'job_id' => $jobId, 'business_nights' => $business + $review, 'nights' => count($verdicts),
-                'reasons' => $reasons, 'at' => now()->toIso8601String(),
-            ],
-        ]);
+        // Why: the nights lined up with your job days (its score is the nights for work), the job most of them are for,
+        // and the payment found.
+        $why = new Provenance('travel.match', ['travel:'.$item->id, $jobId ? 'job:'.$jobId : null, $payment ? 'tx:'.$payment->id : null], $business + $review,
+            collect($jobCounts)->keys()->slice(1)->map(fn ($id) => ['ref' => 'job:'.$id, 'score' => $jobCounts[$id]]));
+        $foundPayment = $payment !== null && $item->bank_transaction_id === null;
+        $linksJob = $item->job_linked_by !== 'you' && ! $item->work_job_id && $jobId;
+        DB::transaction(function () use ($item, $payment, $jobId, $decision, $business, $review, $verdicts, $reasons, $why, $foundPayment, $linksJob) {
+            $item->update([
+                'bank_transaction_id' => $payment?->id,
+                // A job you linked (or unlinked) stays as you set it.
+                'work_job_id' => $item->job_linked_by === 'you' ? $item->work_job_id : ($item->work_job_id ?? $jobId),
+                'job_linked_by' => $item->job_linked_by === 'you' || $item->work_job_id ? $item->job_linked_by : ($jobId ? 'rules' : null),
+                'suggestion' => [
+                    'decision' => $decision, 'job_id' => $jobId, 'business_nights' => $business + $review, 'nights' => count($verdicts),
+                    'reasons' => $reasons, 'at' => now()->toIso8601String(),
+                ],
+            ]);
+            // The links this made on its own, with why (only while they stay as made: see LinkProvenance::current).
+            if ($foundPayment) {
+                $why->recordLink('travel_payment', 'travel:'.$item->id, 'tx:'.$payment->id);
+            }
+            if ($linksJob) {
+                $why->recordLink('travel_job', 'travel:'.$item->id, 'job:'.$jobId);
+            }
+        });
 
         // The same proposal goes on the payment, unconfirmed. "Check" nights are proposed as business, the rest
         // as personal, so a stay with any personal night is split. Locked years and your own decisions are left alone.
@@ -103,7 +119,7 @@ final class TravelMatcher
                 default => 'business',
             };
             $lines = $this->lines($item, $payment->amount_pence, $kind, $jobId, $business + $review);
-            $this->writer->decide($payment, $lines, 'matcher', false, $this->summary($item).': '.implode('; ', array_slice($reasons, 0, 3)));
+            $this->writer->decide($payment, $lines, 'matcher', false, $this->summary($item).': '.implode('; ', array_slice($reasons, 0, 3)), null, $why);
         }
     }
 

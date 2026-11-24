@@ -259,7 +259,7 @@ final class OpportunityRules
                 'found_by' => 'rules', 'confidence' => $o->confidence, 'matched' => $asked['words'],
                 'unchecked' => $o->unverifiedFields(),
             ], 'Spotted by its words (not read with AI) in “'.mb_substr((string) ($top->email_subject ?: $email->original_name), 0, 100).'”'
-                .($top->received_at ? ' of '.$top->received_at->format('j M Y') : '').($status === 'confirmed' ? ': it says you’re booked, check it' : ''), 'rules');
+                .($top->received_at ? ' of '.$top->received_at->format('j M Y') : '').($status === 'confirmed' ? ': it says you’re booked, check it' : ''), 'matcher');
 
             return $o;
         });
@@ -442,7 +442,7 @@ final class OpportunityRules
             $o->update($changes);
             AuditLog::record('opportunity.updated', $o, $before, ['status' => $o->status, 'dates' => $o->dates, 'last_seen_at' => $o->last_seen_at?->format('Y-m-d H:i:s'),
                 'evidence_added' => $added], 'Spotted by its words (not read with AI) in “'.mb_substr((string) ($top->email_subject ?: $email->original_name), 0, 100).'”'
-                .($top->received_at ? ' of '.$top->received_at->format('j M Y') : '').($locked ? ': evidence only' : ''), 'rules');
+                .($top->received_at ? ' of '.$top->received_at->format('j M Y') : '').($locked ? ': evidence only' : ''), 'matcher');
 
             return $o;
         });

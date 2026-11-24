@@ -3,6 +3,8 @@
 namespace App\Domain\Ledger;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\Provenance;
+use App\Domain\Matching\Categoriser;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
@@ -17,7 +19,8 @@ use InvalidArgumentException;
 
 /**
  * Learns from your decisions. Once you've decided the same merchant the same way at least twice (and never another
- * way), it offers "always do this". Accepting saves a rule that applies automatically, as a decision by your rule
+ * way), it offers "always do this". A suggestion you accepted counts half as much as a decision you made yourself
+ * (Categoriser::weight): two accepted suggestions aren't enough on their own. Accepting saves a rule that applies automatically, as a decision by your rule
  * (not as one of yours), to what's waiting from that merchant and to each new statement; it can be undone in one
  * go. The job is never part of a rule, since that changes from payment to payment.
  *
@@ -112,10 +115,11 @@ final class RuleLearner
      */
     private function offerFrom(string $merchantKey, Collection $latest, callable $waitingCount, callable $categoryName): ?array
     {
-        // Decided by you, or a suggestion you accepted (as the Categoriser learns): never what a rule decided.
-        $decided = $latest->filter(fn (BankTransaction $t) => $t->allocations->isNotEmpty() && $t->allocations->every(fn (Allocation $a) => $a->decided_by === 'you'
-            || ($a->confirmed_at !== null && in_array($a->decided_by, ['matcher', 'ai'], true))))->values();
-        if ($decided->count() < 2) {
+        // Decided by you, or a suggestion you accepted, at half weight (as the Categoriser learns): never what a rule
+        // decided, or what was confirmed on its own.
+        $weights = $latest->mapWithKeys(fn (BankTransaction $t) => [$t->id => Categoriser::weight($t->allocations)]);
+        $decided = $latest->filter(fn (BankTransaction $t) => $weights[$t->id] !== null)->values();
+        if ($weights->filter()->sum() < 2) {
             return null;
         }
         $shapes = $decided->map(fn (BankTransaction $t) => self::shape($t))->unique(fn ($s) => json_encode($s));
@@ -167,13 +171,14 @@ final class RuleLearner
                 'merchant_key' => $merchantKey, 'kind' => $offer['kind'], 'category_id' => $offer['category_id'],
                 'work_job_id' => null, 'business_pct' => $offer['business_pct'], 'auto_confirm' => true, 'direction' => $offer['direction'],
             ]);
-            AuditLog::record('rule.learned', $rule, null, $rule->toArray(), "Learned from {$offer['count']} of your decisions"
+            $learned = AuditLog::record('rule.learned', $rule, null, $rule->toArray(), "Learned from {$offer['count']} of your decisions"
                 .($offer['direction'] ? ' ('.self::DIRECTIONS[$offer['direction']].' only)' : ''));
             $applied = 0;
             foreach ($this->waiting($merchantKey, $offer['direction'], $offer['kind'])->get() as $tx) {
                 $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, null, $rule->business_pct);
                 try {
-                    $applied += (int) $this->writer->decide($tx, $lines, 'rule', true, "Your rule for {$offer['name']}", $rule->id);
+                    $applied += (int) $this->writer->decide($tx, $lines, 'rule', true, "Your rule for {$offer['name']}", $rule->id,
+                        new Provenance('rule.learned', ['rule:'.$rule->id, 'audit:'.$learned->id.'@'.substr($learned->hash, 0, 8), 'tx:'.$offer['example_id']], $offer['count']));
                 } catch (InvalidArgumentException) {
                     // a locked year, or lines that don't fit this payment: left for you
                 }

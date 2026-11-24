@@ -8,6 +8,7 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\Grounding;
 use App\Domain\Intel\AuditContext;
+use App\Domain\Intel\Provenance;
 use App\Domain\Travel\TravelMatcher;
 use App\Domain\Verification\Verifier;
 use App\Models\CalendarEvent;
@@ -39,7 +40,8 @@ use Throwable;
  *  3. Calendar entries the rules can't call are asked about with AI (if switched on). An AI answer only counts
  *     when the words it quotes are really in the calendar entry and any client it names is one of yours.
  *
- * Links you make are never changed by automation. Everything automatic can be confirmed, changed or undone.
+ * Links you make are never changed by automation. Everything automatic can be confirmed, changed or undone, and
+ * says why: each automatic link keeps its method, score, evidence and the runner-up job in link_provenance.
  */
 final class JobFinder
 {
@@ -124,7 +126,7 @@ final class JobFinder
                 continue; // linked earlier in this run, with the rest of its email
             }
             $match = $this->bestJob($signal, $jobs, $jobPos);
-            if ($match['job'] && ! $match['ambiguous'] && $this->linkSignal($signal, $match['job'], ($signal['ai'] ?? false) ? 'ai' : 'rules', implode('; ', $match['reasons']), $jobPos)) {
+            if ($match['job'] && ! $match['ambiguous'] && $this->linkSignal($signal, $match['job'], ($signal['ai'] ?? false) ? 'ai' : 'rules', implode('; ', $match['reasons']), $jobPos, $match)) {
                 $stats['linked']++;
 
                 continue;
@@ -174,7 +176,7 @@ final class JobFinder
         });
 
         Setting::put('job_finder_last_run', $stats + ['at' => now()->toIso8601String(), 'year' => $taxYear]);
-        AuditLog::record('jobs.finder_run', 'JobFinder', null, $stats, null, 'rules');
+        AuditLog::record('jobs.finder_run', 'JobFinder', null, $stats, null, 'matcher');
 
         return $stats;
     }
@@ -315,8 +317,9 @@ final class JobFinder
      * typed when making the job from it) only its days within those dates.
      *
      * @param  array{0:string, 1:string}|null  $within
+     * @param  Provenance|null  $why  why an automatic link is made (the job finder's own when not given)
      */
-    public function linkCalendar(CalendarEvent $event, WorkJob $job, string $by, ?string $reason = null, ?array $within = null): CalendarJobLink
+    public function linkCalendar(CalendarEvent $event, WorkJob $job, string $by, ?string $reason = null, ?array $within = null, ?Provenance $why = null): CalendarJobLink
     {
         $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
         if ($by !== 'you' && $link->exists && (($link->linked_by === 'you' && ($link->work_job_id || $link->not_job)) || in_array($job->id, $link->rejected ?? [], true))) {
@@ -324,8 +327,16 @@ final class JobFinder
         }
 
         $previous = $link->work_job_id && $link->work_job_id !== $job->id ? WorkJob::query()->find($link->work_job_id) : null;
-        $saved = $this->saveCalendarLink($link, $event, ['work_job_id' => $job->id, 'linked_by' => $by, 'not_job' => false,
-            'rejected' => array_values(array_diff($link->rejected ?? [], [$job->id])) ?: null, 'reason' => $reason], $by);
+        $saved = DB::transaction(function () use ($link, $event, $job, $by, $reason, $why) {
+            $saved = $this->saveCalendarLink($link, $event, ['work_job_id' => $job->id, 'linked_by' => $by, 'not_job' => false,
+                'rejected' => array_values(array_diff($link->rejected ?? [], [$job->id])) ?: null, 'reason' => $reason], $by);
+            if ($by !== 'you') {
+                ($why ?? new Provenance($by === 'ai' ? 'jobs.calendar_ai' : 'jobs.calendar_rules', ['cal:'.$event->key(), 'job:'.$job->id]))
+                    ->recordLink('calendar_job', 'cal:'.$event->key(), 'job:'.$job->id);
+            }
+
+            return $saved;
+        });
         if ($previous) {
             JobDays::forgetCalendar($previous, $event);
         }
@@ -367,7 +378,10 @@ final class JobFinder
         if (! $link || $link->work_job_id !== $job->id || $link->linked_by === 'you') {
             return;
         }
-        $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'rules', 'not_job' => false, 'rejected' => $link->rejected, 'reason' => $reason], 'rules');
+        DB::transaction(function () use ($link, $event, $job, $reason) {
+            $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'rules', 'not_job' => false, 'rejected' => $link->rejected, 'reason' => $reason], 'rules');
+            (new Provenance('jobs.gather', ['cal:'.$event->key(), 'job:'.$job->id]))->recordLink('calendar_job', 'cal:'.$event->key(), null);
+        });
     }
 
     /**
@@ -456,9 +470,18 @@ final class JobFinder
         $before = $link->exists ? $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected']) : null;
         $fields['reason'] = isset($fields['reason']) ? mb_substr((string) $fields['reason'], 0, 300) : null;
         $link->fill($fields + ['event_uid' => $event->uid, 'event_starts_at' => $event->starts_at, 'summary' => mb_substr((string) $event->summary, 0, 250)])->save();
-        AuditLog::record('calendar.linked', $link, $before, $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected', 'summary']), $fields['reason'], $by);
+        AuditLog::record('calendar.linked', $link, $before, $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected', 'summary']), $fields['reason'], self::actor($by));
 
         return $link;
+    }
+
+    /**
+     * Who an audit event names for a link made "by" someone: you, the AI (a calendar entry it answered about), or,
+     * for the rules ('rules', as links still store it), the matcher.
+     */
+    private static function actor(string $by): string
+    {
+        return AuditContext::normalise($by);
     }
 
     /**
@@ -466,14 +489,20 @@ final class JobFinder
      * never changes a link you made, or links to a job you unlinked it from; unlinking it yourself records "not this
      * job". Returns whether it was linked.
      */
-    public function linkDocument(Document $document, ?WorkJob $job, string $by, bool $attachments = true): bool
+    public function linkDocument(Document $document, ?WorkJob $job, string $by, bool $attachments = true, ?Provenance $why = null): bool
     {
         if ($by !== 'you' && ($document->job_linked_by === 'you' || ($job && in_array($job->id, $document->job_rejected ?? [], true)))) {
             return false;
         }
         $before = ['work_job_id' => $document->work_job_id, 'job_linked_by' => $document->job_linked_by];
-        DocumentReader::relink($document, $job?->id, $by, $attachments);
-        AuditLog::record('document.job_linked', $document, $before, ['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : null], $attachments ? null : 'Only this document: other parts of its email are for another job', $by);
+        DB::transaction(function () use ($document, $job, $by, $attachments, $why, $before) {
+            DocumentReader::relink($document, $job?->id, $by, $attachments);
+            AuditLog::record('document.job_linked', $document, $before, ['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : null], $attachments ? null : 'Only this document: other parts of its email are for another job', self::actor($by));
+            if ($by !== 'you') {
+                ($why ?? new Provenance('jobs.document', ['doc:'.$document->id, $job ? 'job:'.$job->id : null]))
+                    ->recordLink('document_job', 'doc:'.$document->id, $job ? 'job:'.$job->id : null);
+            }
+        });
 
         return true;
     }
@@ -528,14 +557,20 @@ final class JobFinder
         return $out;
     }
 
-    public function linkTravel(TravelItem $item, ?WorkJob $job, string $by): void
+    public function linkTravel(TravelItem $item, ?WorkJob $job, string $by, ?Provenance $why = null): void
     {
         if ($item->job_linked_by === 'you' && $by !== 'you') {
             return;
         }
         $before = $item->only(['work_job_id', 'job_linked_by']);
-        $item->update(['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : ($by === 'you' ? 'you' : null)]);
-        AuditLog::record('travel.job_linked', $item, $before, $item->only(['work_job_id', 'job_linked_by']), null, $by);
+        DB::transaction(function () use ($item, $job, $by, $why, $before) {
+            $item->update(['work_job_id' => $job?->id, 'job_linked_by' => $job ? $by : ($by === 'you' ? 'you' : null)]);
+            AuditLog::record('travel.job_linked', $item, $before, $item->only(['work_job_id', 'job_linked_by']), null, self::actor($by));
+            if ($by !== 'you') {
+                ($why ?? new Provenance('jobs.travel', ['travel:'.$item->id, $job ? 'job:'.$job->id : null]))
+                    ->recordLink('travel_job', 'travel:'.$item->id, $job ? 'job:'.$job->id : null);
+            }
+        });
         if (! $item->decided_at) {
             $this->matcher->suggest($item->fresh());
         }
@@ -580,8 +615,11 @@ final class JobFinder
                     continue;
                 }
                 try {
-                    $invoice->update(['work_job_id' => $job->id]);
-                    AuditLog::record('invoice.job_linked', $invoice, ['work_job_id' => null], ['work_job_id' => $job->id], 'Same PO number as the job', 'rules');
+                    DB::transaction(function () use ($invoice, $job) {
+                        $invoice->update(['work_job_id' => $job->id]);
+                        AuditLog::record('invoice.job_linked', $invoice, ['work_job_id' => null], ['work_job_id' => $job->id], 'Same PO number as the job', 'matcher');
+                        (new Provenance('jobs.invoice_po', ['inv:'.$invoice->id, 'job:'.$job->id]))->recordLink('invoice_job', 'inv:'.$invoice->id, 'job:'.$job->id);
+                    });
                     $invoices++;
                 } catch (Throwable $e) {
                     report($e);
@@ -741,7 +779,7 @@ final class JobFinder
     // ---------------------------------------------------------------- matching
 
     /**
-     * @return array{job:?WorkJob, ambiguous:bool, reasons:list<string>, options:list<int>}
+     * @return array{job:?WorkJob, ambiguous:bool, reasons:list<string>, options:list<int>, score?:int, runner_up?:?array{job:int, score:int}}
      */
     private function bestJob(array $s, Collection $jobs, array $jobPos): array
     {
@@ -825,7 +863,8 @@ final class JobFinder
             return ['job' => null, 'ambiguous' => false, 'reasons' => [], 'options' => $options];
         }
 
-        return ['job' => $best['job'], 'ambiguous' => $best['score'] - $second < 3, 'reasons' => $best['why'], 'options' => $options];
+        return ['job' => $best['job'], 'ambiguous' => $best['score'] - $second < 3, 'reasons' => $best['why'], 'options' => $options,
+            'score' => $best['score'], 'runner_up' => isset($scored[1]) ? ['job' => $scored[1]['job']->id, 'score' => $scored[1]['score']] : null];
     }
 
     /**
@@ -835,15 +874,19 @@ final class JobFinder
      * is for a different job: then only the attachment is linked, checked against its own text and the email's body.
      *
      * @param  array<int, list<string>>  $jobPos
+     * @param  array{score?:int, runner_up?:?array{job:int, score:int}}  $match  bestJob's: its score and the runner-up job
      */
-    private function linkSignal(array $s, WorkJob $job, string $by, string $reason, array $jobPos = []): bool
+    private function linkSignal(array $s, WorkJob $job, string $by, string $reason, array $jobPos = [], array $match = []): bool
     {
+        // Why: the match score (5 or more links, and 3 clear of the next job) and the runner-up job with its score.
+        $why = fn (string $method, string $subject) => new Provenance($method, [$subject, 'job:'.$job->id], $match['score'] ?? null,
+            isset($match['runner_up']) ? [['ref' => 'job:'.$match['runner_up']['job'], 'score' => $match['runner_up']['score']]] : []);
         if ($s['type'] === 'calendar') {
             $event = self::event($s['id'], $s['from']);
             if (! $event) {
                 return false;
             }
-            $this->linkCalendar($event, $job, $by, ucfirst($reason));
+            $this->linkCalendar($event, $job, $by, ucfirst($reason), null, $why($by === 'ai' ? 'jobs.calendar_ai' : 'jobs.calendar_rules', 'cal:'.$event->key()));
 
             return true;
         }
@@ -864,7 +907,7 @@ final class JobFinder
                 return false;
             }
 
-            return $this->linkDocument($target, $job, $by, $attachments);
+            return $this->linkDocument($target, $job, $by, $attachments, $why('jobs.document', 'doc:'.$target->id));
         }
 
         return false;

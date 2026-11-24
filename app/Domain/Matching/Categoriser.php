@@ -2,6 +2,7 @@
 
 namespace App\Domain\Matching;
 
+use App\Domain\Intel\Provenance;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Travel\TravelDays;
@@ -36,12 +37,14 @@ use InvalidArgumentException;
  * Meals, hotels, fuel and travel are always judged against your job days, nights away and mileage method, also
  * when they are learned from you: a lunch you decided as business while working away doesn't make a lunch at home
  * business. Only evidence makes them business: a hotel stay, the distance, a hotel naming the job's town. Without
- * it they're personal, with a note when a job might make them business. A choice counts when you made it or when
- * you accepted a suggestion (a rule's doesn't count).
+ * it they're personal, with a note when a job might make them business. A choice counts when you made it, and
+ * half as much when you accepted a suggestion (one you're shown tends to be accepted); a rule's, or one confirmed on
+ * its own, doesn't count.
  *
- * Everything is a suggestion with its reason, for you to confirm or change. The allocations it makes are marked
- * (matcher "categoriser"), or known by wording only this class uses, so learning from your decisions only ever
- * updates its own suggestions (and a rule's, when you change the rule).
+ * Everything is a suggestion with its reason, for you to confirm or change, stored with its method (categorise.*),
+ * how many of your decisions agree and examples of them. Its own allocations are known by that method, or (written
+ * before methods were stored) by its marker (matcher "categoriser") or wording only this class uses, so learning
+ * from your decisions only ever updates its own suggestions (and a rule's, when you change the rule).
  */
 final class Categoriser
 {
@@ -232,8 +235,10 @@ final class Categoriser
                         if ($p && $tx->amount_pence < 0 && ! $ruleApplies && self::sameLines($tx->allocations, $p['lines'])) {
                             $reason = self::fit($p['reason']);
                             $first = $tx->allocations->first();
-                            if ($first->reason !== $reason || $first->matcher !== self::MARKER) {
-                                $reworded[$reason][] = $tx->id; // the same suggestion: only how many times you decided it has changed
+                            if ($first->reason !== $reason || $first->matcher !== self::MARKER || $first->method === null) {
+                                // The same suggestion: only how many times you decided it has changed.
+                                $reworded[$reason]['ids'][] = $tx->id;
+                                $reworded[$reason]['why'] = self::provenance($p);
                             }
 
                             continue;
@@ -250,10 +255,11 @@ final class Categoriser
                 }
                 $again->push($tx);
             }
-            foreach ($reworded as $reason => $ids) {
-                Allocation::query()->whereIn('bank_transaction_id', $ids)->where('decided_by', 'matcher')->where('is_manual', false)->whereNull('confirmed_at')
+            foreach ($reworded as $reason => $r) {
+                $why = $r['why']->columns();
+                Allocation::query()->whereIn('bank_transaction_id', $r['ids'])->where('decided_by', 'matcher')->where('is_manual', false)->whereNull('confirmed_at')
                     ->where(fn ($q) => $q->whereNull('matcher')->orWhere('matcher', self::MARKER))
-                    ->update(['reason' => $reason, 'matcher' => self::MARKER]);
+                    ->update(['reason' => $reason, 'matcher' => self::MARKER] + array_map(fn ($v) => is_array($v) ? json_encode($v) : $v, $why));
             }
             $this->proposed = [];
             $this->suggestFor($again);
@@ -269,8 +275,9 @@ final class Categoriser
 
     /**
      * Allocations learning must leave alone: yours, anything confirmed, another matcher's or the AI's, and a rule's
-     * other than these merchants' own rules. This class's own suggestions are marked, or (when the Suggester wrote
-     * them, as an import does) known by wording only this class uses.
+     * other than these merchants' own rules. This class's own suggestions are known by their method (categorise.*);
+     * those written before methods were stored, by its marker, or (when the Suggester wrote them, as an import does)
+     * by wording only this class uses.
      *
      * @param  list<int>  $ruleIds  the rules of the merchants being learned from
      */
@@ -278,8 +285,11 @@ final class Categoriser
     {
         $q->where('is_manual', true)->orWhereNotNull('confirmed_at')
             ->orWhereNotIn('decided_by', ['matcher', 'rule'])
-            ->orWhere(fn ($q) => $q->whereNotNull('matcher')->where('matcher', '!=', self::MARKER))
-            ->orWhere(fn ($q) => $q->where('decided_by', 'matcher')->whereNull('matcher')
+            // The method it was written with says whose it is.
+            ->orWhere(fn ($q) => $q->where('decided_by', 'matcher')->whereNotNull('method')->where('method', 'not like', 'categorise.%'))
+            // Written before methods were stored: the marker, then the wording.
+            ->orWhere(fn ($q) => $q->whereNull('method')->whereNotNull('matcher')->where('matcher', '!=', self::MARKER))
+            ->orWhere(fn ($q) => $q->where('decided_by', 'matcher')->whereNull('method')->whereNull('matcher')
                 ->where(fn ($q) => $q->whereNull('reason')->orWhereNot(fn ($q) => self::ownWording($q))))
             ->orWhere(fn ($q) => $q->where('decided_by', 'rule')->where(fn ($q) => $q->whereNull('merchant_rule_id')->orWhereNotIn('merchant_rule_id', $ruleIds ?: [0])));
     }
@@ -331,18 +341,28 @@ final class Categoriser
      * Write one of this class's proposals as a suggestion, marked as its own. The Suggester uses this for the last
      * step of its chain.
      *
-     * @param  array{lines:list<array>, reason:string}  $proposal
+     * @param  array{lines:list<array>, reason:string, source?:string, n?:int, examples?:list<string>, alts?:list<array>}  $proposal
      */
     public function suggest(BankTransaction $tx, array $proposal): bool
     {
         return DB::transaction(function () use ($tx, $proposal) {
-            $done = $this->writer->decide($tx, $proposal['lines'], 'matcher', false, $proposal['reason']);
+            $done = $this->writer->decide($tx, $proposal['lines'], 'matcher', false, $proposal['reason'], null, self::provenance($proposal));
             if ($done) {
                 $tx->allocations()->update(['matcher' => self::MARKER]);
             }
 
             return $done;
         });
+    }
+
+    /**
+     * Why a proposal is made: its method (categorise.merchant, .similar, .bank_learned, .hint, .bank_hint), how many of
+     * your decisions agree with it (its score), up to five of them as examples, and the other ways you decided it with
+     * how many times each (its runner-ups). "3 of 4" is a score of 3 with one runner-up decided once.
+     */
+    public static function provenance(array $proposal): Provenance
+    {
+        return new Provenance('categorise.'.($proposal['source'] ?? 'hint'), $proposal['examples'] ?? [], $proposal['n'] ?? null, $proposal['alts'] ?? []);
     }
 
     /** Mark the suggestions written from this class's proposals (by the Suggester) as its own. */
@@ -407,7 +427,7 @@ final class Categoriser
         if ($shape && ! ($shape['kind'] === 'business_income' && preg_match(self::TAX_PAYER, $tx->description.' '.$tx->counterparty))) {
             $times = $shape['n'] === $shape['of'] ? "the {$shape['of']} ".($shape['of'] === 1 ? 'time' : 'times') : "{$shape['n']} of the last {$shape['of']} times";
 
-            return $this->fromLearned($tx, $shape, ["Like {$times} you decided {$name}", "Unlike {$times} you decided {$name}"], 'merchant', $hint);
+            return self::withShape($this->fromLearned($tx, $shape, ["Like {$times} you decided {$name}", "Unlike {$times} you decided {$name}"], 'merchant', $hint), $shape);
         }
         if (OwnAccounts::reason($tx)) {
             // Your own money moving: the transfer check deals with it. Only your own decisions for this merchant
@@ -421,7 +441,7 @@ final class Categoriser
         if (($bucket = self::bucket($tx)) && ($shape = self::majority($this->learned['token'][$bucket] ?? [], 3, 0.75))) {
             $token = strstr($bucket, '|', true);
 
-            return $this->fromLearned($tx, $shape, ["Like the other {$token} payments you decided ({$shape['n']} of {$shape['of']})", "Unlike the other {$token} payments you decided ({$shape['n']} of {$shape['of']})"], 'similar', $hint);
+            return self::withShape($this->fromLearned($tx, $shape, ["Like the other {$token} payments you decided ({$shape['n']} of {$shape['of']})", "Unlike the other {$token} payments you decided ({$shape['n']} of {$shape['of']})"], 'similar', $hint), $shape);
         }
         // 3. How you treat the bank's own category: not for a payment to a person (crew and your landlord share the
         // bank's "Payments"), nor for a catch-all category.
@@ -429,14 +449,14 @@ final class Categoriser
         if (self::learnableBank($bank) && ! self::paysAPerson($tx) && ($shape = self::majority($this->learned['bank'][mb_strtoupper($bank)] ?? [], 3, 0.75))) {
             $pretty = self::pretty($bank);
 
-            return $this->fromLearned($tx, $shape, ["You usually decide the bank’s “{$pretty}” payments this way ({$shape['n']} of {$shape['of']})", "Not how you usually decide the bank’s “{$pretty}” payments ({$shape['n']} of {$shape['of']})"], 'bank_learned', $hint);
+            return self::withShape($this->fromLearned($tx, $shape, ["You usually decide the bank’s “{$pretty}” payments this way ({$shape['n']} of {$shape['of']})", "Not how you usually decide the bank’s “{$pretty}” payments ({$shape['n']} of {$shape['of']})"], 'bank_learned', $hint), $shape);
         }
         // 4. Common merchants, then the bank's category.
         if ($hint) {
             return $this->fromHint($tx, $hint['kind'], $hint['code'], 'Looks like '.$hint['what']);
         }
         if (($fromBank = self::bankHint($bank)) !== null) {
-            return $this->fromHint($tx, $fromBank['kind'], $fromBank['code'], 'The bank calls it “'.self::pretty($bank).'”');
+            return $this->fromHint($tx, $fromBank['kind'], $fromBank['code'], 'The bank calls it “'.self::pretty($bank).'”', 'bank_hint');
         }
 
         return null;
@@ -530,21 +550,21 @@ final class Categoriser
     }
 
     /** A common-merchant (or bank-category) hint, judged against your job days where it depends on them. */
-    private function fromHint(BankTransaction $tx, string $kind, ?string $code, string $subject): array
+    private function fromHint(BankTransaction $tx, string $kind, ?string $code, string $subject, string $source = 'hint'): array
     {
         $date = $tx->effectiveDate()->format('Y-m-d');
         if ($kind === 'personal') {
-            return $this->proposal(AllocationWriter::lines($tx->amount_pence, 'personal'), $subject.': usually personal', 'hint');
+            return $this->proposal(AllocationWriter::lines($tx->amount_pence, 'personal'), $subject.': usually personal', $source);
         }
         if ($kind === 'phone') {
             // Only the business share of a phone or broadband bill counts: never the whole bill by default.
             if (($share = $this->phoneShare()) !== null) {
                 return $this->proposal(AllocationWriter::lines($tx->amount_pence, 'business_expense', $this->category($code), null, $share),
-                    "Check: {$subject}: only the business share counts. {$share}% business, as you decided your last phone or internet bill", 'hint');
+                    "Check: {$subject}: only the business share counts. {$share}% business, as you decided your last phone or internet bill", $source);
             }
 
             return $this->proposal(AllocationWriter::lines($tx->amount_pence, 'personal'),
-                "Check: {$subject}: only the business share counts, so split it into business and personal (left as personal until you do)", 'hint');
+                "Check: {$subject}: only the business share counts, so split it into business and personal (left as personal until you do)", $source);
         }
         if ($kind === 'business_expense') {
             // A job's own costs (kit, travel) go with the job on its day; overheads never do.
@@ -556,10 +576,10 @@ final class Categoriser
             }
 
             return $this->proposal(AllocationWriter::lines($tx->amount_pence, 'business_expense', $this->category($code), $job?->id),
-                $subject.': usually a business cost'.($job ? ', on a day of '.$job->title : '').$note, 'hint');
+                $subject.': usually a business cost'.($job ? ', on a day of '.$job->title : '').$note, $source);
         }
 
-        return $this->judged($tx, $this->judge($kind, $code, $date, self::text($tx)), $this->category($code), 100, $subject, 'hint');
+        return $this->judged($tx, $this->judge($kind, $code, $date, self::text($tx)), $this->category($code), 100, $subject, $source);
     }
 
     /** Lines and reason from a judgement of the day. */
@@ -737,6 +757,23 @@ final class Categoriser
         return ['lines' => $lines, 'reason' => $reason, 'source' => $source];
     }
 
+    /**
+     * A proposal learned from your decisions, with how many agree (n of of), up to five of them as examples (tx refs),
+     * and the other ways you decided it, each with an example and how many times.
+     */
+    private static function withShape(?array $proposal, array $shape): ?array
+    {
+        if ($proposal === null) {
+            return null;
+        }
+
+        return $proposal + [
+            'n' => $shape['n'], 'of' => $shape['of'],
+            'examples' => array_map(fn ($id) => 'tx:'.$id, $shape['ids'] ?? []),
+            'alts' => array_map(fn ($a) => ['ref' => 'tx:'.$a['id'], 'score' => $a['n']], $shape['alts'] ?? []),
+        ];
+    }
+
     /** Whether you only claim simplified mileage (which covers fuel) for your own vehicles. */
     private function simplifiedOnly(): bool
     {
@@ -774,7 +811,7 @@ final class Categoriser
     {
         $out = ['merchant' => [], 'token' => [], 'bank' => []];
         $query = BankTransaction::query()->where('review_status', 'confirmed')->where('posted_on', '>=', now()->subYears(3)->format('Y-m-d'))
-            ->with('allocations:id,bank_transaction_id,kind,category_id,work_job_id,amount_pence,business_use_pct,decided_by,is_manual,confirmed_at')
+            ->with('allocations:id,bank_transaction_id,kind,category_id,work_job_id,amount_pence,business_use_pct,decided_by,is_manual,confirmed_at,confirmed_by')
             ->select(['id', 'merchant_key', 'bank_category', 'amount_pence', 'description', 'counterparty', 'payment_type', 'posted_on', 'transaction_on']);
         if ($scope) {
             $query->where(function ($q) use ($scope) {
@@ -789,12 +826,13 @@ final class Categoriser
         }
         $query->orderByDesc('posted_on')->orderByDesc('id')->limit(8000)->get()
             ->each(function (BankTransaction $t) use (&$out) {
-                if (! self::yours($t->allocations) || ! ($shape = self::shape($t))) {
+                if (! ($weight = self::weight($t->allocations)) || ! ($shape = self::shape($t))) {
                     return;
                 }
                 $dir = $t->amount_pence < 0 ? 'out' : 'in';
                 $transfer = $shape['kind'] === 'transfer';
-                $entry = ['k' => json_encode($shape), 'd' => $t->effectiveDate()->format('Y-m-d'), 'j' => $t->allocations->contains(fn (Allocation $a) => $a->work_job_id !== null), 't' => $transfer];
+                $entry = ['k' => json_encode($shape), 'd' => $t->effectiveDate()->format('Y-m-d'), 'j' => $t->allocations->contains(fn (Allocation $a) => $a->work_job_id !== null), 't' => $transfer,
+                    'w' => $weight, 'id' => $t->id];
                 if ($t->merchant_key !== 'UNKNOWN') {
                     $out['merchant'][$dir][$t->merchant_key][] = $entry; // a transfer only to leave that payee alone
                 }
@@ -822,11 +860,24 @@ final class Categoriser
         ];
     }
 
-    /** Whether these lines were your choice: made by you, or a matcher's or the AI's suggestion you accepted. */
-    private static function yours(Collection $allocations): bool
+    /**
+     * How much these lines count as your choice: 1 when you made them; half when they were a matcher's or the AI's
+     * suggestion you accepted (one you're shown tends to be accepted, so it's weaker evidence than your own); none when
+     * a rule made them, or they were confirmed on their own (the other side of a transfer you decided). A suggestion
+     * accepted before who confirmed it was stored counts as accepted by you.
+     */
+    public static function weight(Collection $allocations): ?float
     {
-        return $allocations->isNotEmpty() && $allocations->every(fn (Allocation $a) => $a->decided_by === 'you'
-            || ($a->confirmed_at !== null && in_array($a->decided_by, ['matcher', 'ai'], true)));
+        if ($allocations->isEmpty()) {
+            return null;
+        }
+        if ($allocations->every(fn (Allocation $a) => $a->decided_by === 'you')) {
+            return 1.0;
+        }
+        $accepted = $allocations->every(fn (Allocation $a) => $a->decided_by === 'you'
+            || ($a->confirmed_at !== null && in_array($a->decided_by, ['matcher', 'ai'], true) && in_array($a->confirmed_by, [null, 'you'], true)));
+
+        return $accepted ? 0.5 : null;
     }
 
     /**
@@ -854,22 +905,40 @@ final class Categoriser
         return ['kind' => $main->kind, 'category_id' => $main->category_id === null ? null : (int) $main->category_id, 'business_pct' => $pct];
     }
 
-    /** @return array{kind:string, category_id:?int, business_pct:int, n:int, of:int, dates:list<string>, job:bool}|null */
+    /**
+     * The way most of your decisions went, weighed: your own count 1 and suggestions you accepted half (see weight()).
+     * $min and $share apply to the weights; n and of count the decisions themselves, for the wording.
+     *
+     * @return array{kind:string, category_id:?int, business_pct:int, n:int, of:int, dates:list<string>, job:bool, ids:list<int>, alts:list<array{id:int, n:int}>}|null
+     */
     private static function majority(array $entries, int $min, float $share): ?array
     {
-        if (count($entries) < $min) {
+        $total = array_sum(array_map(fn (array $e) => $e['w'] ?? 1.0, $entries));
+        if ($entries === [] || $total < $min) {
             return null;
         }
-        $counts = array_count_values(array_column($entries, 'k'));
-        arsort($counts);
-        $top = array_key_first($counts);
-        if ($share > $counts[$top] / count($entries)) {
+        $weights = [];
+        foreach ($entries as $e) {
+            $weights[$e['k']] = ($weights[$e['k']] ?? 0) + ($e['w'] ?? 1.0);
+        }
+        arsort($weights);
+        $top = array_key_first($weights);
+        if ($share > $weights[$top] / $total) {
             return null;
         }
         $winning = array_values(array_filter($entries, fn (array $e) => $e['k'] === $top));
         $withJob = count(array_filter($winning, fn (array $e) => $e['j']));
+        $alts = [];
+        foreach (array_keys($weights) as $k) {
+            if ($k !== $top) {
+                $like = array_values(array_filter($entries, fn (array $e) => $e['k'] === $k));
+                $alts[] = ['id' => (int) ($like[0]['id'] ?? 0), 'n' => count($like)];
+            }
+        }
 
-        return json_decode($top, true) + ['n' => $counts[$top], 'of' => count($entries), 'dates' => array_slice(array_column($winning, 'd'), 0, 5), 'job' => $withJob * 2 >= count($winning)];
+        return json_decode($top, true) + ['n' => count($winning), 'of' => count($entries), 'dates' => array_slice(array_column($winning, 'd'), 0, 5),
+            'job' => $withJob * 2 >= count($winning), 'ids' => array_slice(array_filter(array_column($winning, 'id')), 0, 5),
+            'alts' => array_values(array_filter($alts, fn ($a) => $a['id'] > 0))];
     }
 
     /**

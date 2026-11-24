@@ -3,11 +3,13 @@
 namespace Tests\Feature;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Ledger\AllocationWriter;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\ImportBatch;
+use App\Models\Setting;
 use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -82,6 +84,17 @@ class BackupRestoreTest extends TestCase
         AuditLog::record('test.backup', 'Test', null, ['ok' => true]);
         // What the chain check has to read exactly as the app wrote it: accents, quotes, slashes, decimals, no subject id.
         AuditLog::record('test.backup', 'Test', ['rate' => 1.5, 'path' => 'a/b'], ['note' => 'café “PO-1” ✓', 'nested' => ['x' => [1, 2]], 'empty' => []], 'Checked by Alex Smith', 'system');
+        // Events hashed the second way (v2), once recording where events came from is turned on: with where they came
+        // from, the correlation and a run id, and keys given out of order, some inside a collection or an object
+        // (stored, and hashed, as plain JSON in order); chained between events hashed the first way.
+        Setting::put(AuditLog::CONTEXT_SETTING, true);
+        AuditContext::with(null, function () use ($tx) {
+            app(AllocationWriter::class)->confirm($tx, 'Confirmed on the web');
+            AuditLog::record('test.backup_v2', 'Test', ['z' => 1, 'a' => ['y' => 'café ✓', 'b' => [2, 1]], 'row' => (object) ['b' => 1, 'a' => 2]],
+                ['ok' => true, 'totals' => collect(['zeta' => 1, 'alpha' => 2])], 'From the web');
+        }, 'web', AuditContext::newCorrelation());
+        AuditContext::with('system', fn () => AuditLog::record('test.backup_run', 'Test', null, ['n' => 1]), 'schedule', null, 7);
+        AuditLog::record('test.backup', 'Test', null, ['last' => true]);
         DB::setDefaultConnection('mysql');
     }
 
@@ -150,7 +163,8 @@ class BackupRestoreTest extends TestCase
         $this->assertStringContainsString('checksum matches', $check->output());
         $this->assertStringContainsString('uploaded files: 1', $check->output());
         $events = DB::connection($src)->table('audit_events')->count();
-        $this->assertGreaterThanOrEqual(3, $events);
+        $this->assertGreaterThanOrEqual(6, $events);
+        $this->assertSame(3, DB::connection($src)->table('audit_events')->whereNotNull('channel')->count(), 'Some events hashed each way');
         $this->assertStringContainsString("audit trail's chain intact ({$events} events)", $check->output());
 
         // Every table, row for row.
@@ -180,6 +194,43 @@ class BackupRestoreTest extends TestCase
         // The app's own check of the copy agrees.
         DB::setDefaultConnection($dst);
         $this->assertSame(['ok' => false, 'checked' => $good, 'broken_at' => $tampered], AuditLog::verify());
+    }
+
+    public function test_a_changed_correlation_fails_the_check_on_the_restored_copy(): void
+    {
+        $this->requirements();
+        $src = $this->scratch('csrc');
+        $dst = $this->scratch('cdst');
+        $this->fill($src);
+        // Somebody moves an event to another action's correlation, straight in the database.
+        $tampered = (int) DB::connection($src)->table('audit_events')->where('action', 'test.backup_v2')->value('id');
+        DB::connection($src)->table('audit_events')->where('id', $tampered)->update(['correlation' => AuditContext::newCorrelation()]);
+        $good = DB::connection($src)->table('audit_events')->where('id', '<', $tampered)->count();
+
+        [$check] = $this->backUpAndCheck($src, $dst, 'correlation');
+
+        $this->assertStringContainsString("FAIL  audit trail's chain broken at event {$tampered} after {$good} good events", $check->output());
+        DB::setDefaultConnection($dst);
+        $this->assertSame(['ok' => false, 'checked' => $good, 'broken_at' => $tampered], AuditLog::verify());
+    }
+
+    public function test_where_an_event_came_from_folded_into_its_reason_fails_the_check(): void
+    {
+        $this->requirements();
+        $src = $this->scratch('fsrc');
+        $dst = $this->scratch('fdst');
+        $this->fill($src);
+        // Somebody empties where an event came from and adds that text to its reason instead, straight in the database.
+        $row = DB::connection($src)->table('audit_events')->where('action', 'test.backup_v2')->first();
+        DB::connection($src)->table('audit_events')->where('id', $row->id)->update(['channel' => null, 'correlation' => null, 'run_id' => null,
+            'reason' => $row->reason.'|v2|'.$row->channel.'|'.$row->correlation.'|'.$row->run_id]);
+        $good = DB::connection($src)->table('audit_events')->where('id', '<', $row->id)->count();
+
+        [$check] = $this->backUpAndCheck($src, $dst, 'fold');
+
+        $this->assertStringContainsString("FAIL  audit trail's chain broken at event {$row->id} after {$good} good events", $check->output());
+        DB::setDefaultConnection($dst);
+        $this->assertSame(['ok' => false, 'checked' => $good, 'broken_at' => (int) $row->id], AuditLog::verify());
     }
 
     public function test_a_wrong_key_or_a_damaged_file_is_reported(): void

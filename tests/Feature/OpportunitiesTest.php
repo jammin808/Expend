@@ -323,7 +323,8 @@ class OpportunitiesTest extends TestCase
         $o = $this->opportunities()->fromDocument($this->email($this->block(), ['work_job_id' => $job->id]));
 
         $this->assertSame([$job->id, 'confirmed', null], [$o->work_job_id, $o->status, $o->decided_by]);
-        $this->assertSame('rules', AuditEvent::query()->where('action', 'opportunity.linked_to_job')->value('actor'));
+        // Recorded as the matcher (the actor vocabulary; 'rules' was its old name).
+        $this->assertSame('matcher', AuditEvent::query()->where('action', 'opportunity.linked_to_job')->value('actor'));
         $this->assertFalse($o->isAccepted(), 'Matched by the rules, not made a job by you');
     }
 
@@ -439,7 +440,7 @@ class OpportunitiesTest extends TestCase
         $this->assertNull($twoJobs->fresh()->work_job_id, 'Two jobs could be it: left for you');
         $this->assertSame(1, Opportunity::query()->needsJob()->count());
         $this->assertSame($unread->id, Opportunity::query()->latest('id')->first()->documentIds()[0], 'A read document that was missed is taken in');
-        $this->assertSame(3, AuditEvent::query()->where('action', 'opportunity.expired')->where('actor', 'rules')->count());
+        $this->assertSame(3, AuditEvent::query()->where('action', 'opportunity.expired')->where('actor', 'matcher')->count());
 
         // Not that job: reopened, it's never matched to it again.
         $this->opportunities()->reopen($held->fresh());

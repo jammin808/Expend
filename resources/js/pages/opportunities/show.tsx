@@ -87,6 +87,7 @@ const ACTORS: Record<string, string> = {
     you: 'you',
     ai: 'read with AI',
     rules: 'the rules',
+    matcher: 'the rules',
     assistant: 'you, through the assistant',
     telegram: 'you, in Telegram',
 };

@@ -2,6 +2,8 @@
 
 namespace App\Domain\Matching;
 
+use App\Domain\Intel\Methods;
+use App\Domain\Intel\Provenance;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\RuleLearner;
@@ -68,6 +70,7 @@ final class Suggester
         $penalty = Category::query()->where('code', 'travel_penalties')->value('id');
         $carHire = Category::query()->where('code', 'travel_car_hire')->value('id');
         $made = 0;
+        $ruleMethods = [];
 
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label')->all();
 
@@ -92,12 +95,15 @@ final class Suggester
                     // Only an invoice nothing has come in for yet (counted as everywhere else: payments linked to it,
                     // and income recorded for its job).
                     $received ??= InvoicePayments::received($openInvoices);
-                    $invoice = $openInvoices->first(fn ($i) => $i->total_minor === $tx->amount_pence && ($received[$i->id]['paid'] ?? 0) === 0
-                        && (! $i->issue_date || $tx->posted_on->gte($i->issue_date->copy()->subDays(3))));
-                    if ($invoice) {
+                    $candidates = $openInvoices->filter(fn ($i) => $i->total_minor === $tx->amount_pence && ($received[$i->id]['paid'] ?? 0) === 0
+                        && (! $i->issue_date || $tx->posted_on->gte($i->issue_date->copy()->subDays(3))))->values();
+                    if ($invoice = $candidates->first()) {
                         $lines = AllocationWriter::lines($tx->amount_pence, 'business_income', $turnover, $invoice->work_job_id);
                         $lines[0]['invoice_id'] = $invoice->id;
-                        $made += (int) $this->writer->decide($tx, $lines, 'matcher', false, "Matches invoice {$invoice->number} for ".Money::format($invoice->total_minor));
+                        // Its score is how many unpaid invoices were for this amount; the others are its runner-ups.
+                        $why = new Provenance('suggest.invoice', ['inv:'.$invoice->id, $invoice->work_job_id ? 'job:'.$invoice->work_job_id : null], $candidates->count(),
+                            $candidates->slice(1)->map(fn ($i) => ['ref' => 'inv:'.$i->id, 'score' => null]));
+                        $made += (int) $this->writer->decide($tx, $lines, 'matcher', false, "Matches invoice {$invoice->number} for ".Money::format($invoice->total_minor), null, $why);
 
                         continue;
                     }
@@ -105,23 +111,24 @@ final class Suggester
 
                 if (($rule = $rules->get($tx->merchant_key)) && RuleLearner::appliesTo($rule, $tx->amount_pence)) {
                     $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, $rule->work_job_id, $rule->business_pct);
-                    $made += (int) $this->writer->decide($tx, $lines, 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}", $rule->id);
+                    $made += (int) $this->writer->decide($tx, $lines, 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}", $rule->id,
+                        new Provenance($ruleMethods[$rule->id] ??= Methods::forRule($rule), ['rule:'.$rule->id]));
 
                     continue;
                 }
                 if (! $own) {
                     $found = null;
                     if ($tx->amount_pence < 0 && preg_match(self::HMRC_PATTERN, $text)) {
-                        $found = [AllocationWriter::lines($tx->amount_pence, 'tax_payment'), 'Looks like a payment to HMRC (personal tax, not a business expense)'];
+                        $found = [AllocationWriter::lines($tx->amount_pence, 'tax_payment'), 'Looks like a payment to HMRC (personal tax, not a business expense)', new Provenance('suggest.hmrc')];
                     } elseif ($tx->amount_pence < 0 && $penalty && preg_match(self::PENALTY_PATTERN, $text)) {
-                        $found = [AllocationWriter::lines($tx->amount_pence, 'business_expense', $penalty), 'Looks like a fine or penalty charge, which is never allowable'];
+                        $found = [AllocationWriter::lines($tx->amount_pence, 'business_expense', $penalty), 'Looks like a fine or penalty charge, which is never allowable', new Provenance('suggest.penalty')];
                     } elseif ($tx->amount_pence < 0 && $carHire && preg_match(self::CAR_HIRE_PATTERN, $text)) {
-                        $found = [AllocationWriter::lines($tx->amount_pence, 'business_expense', $carHire), 'Looks like car hire, usually a business expense. Check it was for work, and link the job'];
+                        $found = [AllocationWriter::lines($tx->amount_pence, 'business_expense', $carHire), 'Looks like car hire, usually a business expense. Check it was for work, and link the job', new Provenance('suggest.car_hire')];
                     } elseif ($tx->amount_pence < 0 && ($travel = $this->travelSuggestion($tx, $text))) {
-                        $found = [$travel['lines'], $travel['reason']];
+                        $found = [$travel['lines'], $travel['reason'], new Provenance('suggest.travel', $travel['evidence'])];
                     }
                     if ($found) {
-                        $made += (int) $this->writer->decide($tx, $found[0], 'matcher', false, $found[1]);
+                        $made += (int) $this->writer->decide($tx, $found[0], 'matcher', false, $found[1], null, $found[2]);
 
                         continue;
                     }
@@ -163,7 +170,7 @@ final class Suggester
         $when = $date->format('D j M Y');
 
         if ($day['verdict'] === 'personal') {
-            return ['lines' => AllocationWriter::lines($tx->amount_pence, 'personal'), 'reason' => "{$what} on {$when}: personal, {$day['reason']}"];
+            return ['lines' => AllocationWriter::lines($tx->amount_pence, 'personal'), 'reason' => "{$what} on {$when}: personal, {$day['reason']}", 'evidence' => []];
         }
         $category = Category::query()->where('code', $code)->value('id');
         $check = $day['verdict'] === 'review' ? 'Check: ' : '';
@@ -172,6 +179,7 @@ final class Suggester
         return [
             'lines' => AllocationWriter::lines($tx->amount_pence, 'business_expense', $category, $day['job']?->id),
             'reason' => "{$check}{$what} on {$when}, {$day['reason']}{$extra}",
+            'evidence' => $day['job'] ? ['job:'.$day['job']->id] : [],
         ];
     }
 }

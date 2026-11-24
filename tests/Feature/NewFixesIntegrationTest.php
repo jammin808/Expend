@@ -210,10 +210,16 @@ class NewFixesIntegrationTest extends TestCase
     {
         $first = $this->tx($this->starling, '2025-06-02', -3000, 'GRIP AND GAFFER');
         app(AllocationWriter::class)->decide($first, AllocationWriter::lines(-3000, 'business_expense', $this->cat('materials')), 'matcher', false, 'Matching');
+        $second = $this->tx($this->starling, '2025-06-04', -2500, 'GRIP AND GAFFER');
+        app(AllocationWriter::class)->decide($second, AllocationWriter::lines(-2500, 'business_expense', $this->cat('materials')), 'matcher', false, 'Matching');
         $waiting = $this->tx($this->starling, '2025-06-09', -2000, 'GRIP AND GAFFER');
 
-        // Accepting from the to-do list (or Telegram) teaches like deciding: the other waiting payment follows.
+        // Accepting from the to-do list (or Telegram) teaches like deciding, at half the weight of a decision of your
+        // own (a suggestion you're shown tends to be accepted): one acceptance alone teaches nothing, two do.
         $message = app(TodoActions::class)->run('tx_accept', (string) $first->id);
+        $this->assertStringNotContainsString('Updated the suggestion', $message);
+        $this->assertSame(0, $waiting->fresh()->allocations()->count());
+        $message = app(TodoActions::class)->run('tx_accept', (string) $second->id);
         $this->assertStringContainsString('Updated the suggestion for 1 other waiting payment', $message);
         $a = $waiting->fresh()->allocations()->sole();
         $this->assertSame(['business_expense', Categoriser::MARKER], [$a->kind, $a->matcher]);
@@ -226,7 +232,11 @@ class NewFixesIntegrationTest extends TestCase
 
     public function test_the_rule_offer_counts_accepted_suggestions_and_a_split_typed_by_amounts(): void
     {
-        foreach (['2025-06-02', '2025-07-02'] as $i => $date) {
+        // A decision of yours counts 1 and an accepted suggestion half: yours and one accepted aren't yet the two needed.
+        foreach (['2025-06-02', '2025-07-02', '2025-08-02'] as $i => $date) {
+            if ($i === 2) {
+                $this->assertNull(app(RuleLearner::class)->offer('PHONECO'), 'One decision and one accepted suggestion count one and a half');
+            }
             $tx = $this->tx($this->starling, $date, -10000, 'PHONECO');
             $lines = [['kind' => 'business_expense', 'category_id' => $this->cat('phone_internet'), 'amount_pence' => -6000, 'business_use_pct' => null],
                 ['kind' => 'personal', 'amount_pence' => -4000]];
@@ -239,8 +249,8 @@ class NewFixesIntegrationTest extends TestCase
         }
 
         $offer = app(RuleLearner::class)->offer('PHONECO');
-        $this->assertNotNull($offer, 'An accepted suggestion counts as your choice');
-        $this->assertSame([2, 60], [$offer['count'], $offer['business_pct']], 'The share comes from the amounts');
+        $this->assertNotNull($offer, 'Accepted suggestions count as your choice, at half weight');
+        $this->assertSame([3, 60], [$offer['count'], $offer['business_pct']], 'The share comes from the amounts');
     }
 
     public function test_revolut_fees_are_suggested_as_a_bank_charge(): void

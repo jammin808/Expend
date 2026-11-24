@@ -26,6 +26,7 @@ use App\Http\Controllers\TodoController;
 use App\Http\Controllers\TransactionController;
 use App\Http\Controllers\TravelController;
 use App\Http\Controllers\VerificationController;
+use App\Http\Controllers\WhyController;
 use App\Http\Middleware\HandleInertiaRequests;
 use App\Models\User;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
@@ -62,6 +63,8 @@ Route::middleware(['auth'])->group(function () {
 
     Route::get('transactions', [TransactionController::class, 'index'])->name('transactions.index');
     Route::get('items/{source}/{id}', [TransactionController::class, 'show'])->whereIn('source', ['bank', 'manual'])->name('items.show');
+    // Why a line or an automatic link is as it is (read only).
+    Route::get('why', [WhyController::class, 'show'])->name('why');
     Route::post('items/{source}/{id}/decide', [DecisionController::class, 'decide'])->whereIn('source', ['bank', 'manual'])->name('items.decide');
     Route::post('items/{source}/{id}/confirm', [DecisionController::class, 'confirm'])->whereIn('source', ['bank', 'manual'])->name('items.confirm');
     Route::post('items/{source}/{id}/clear', [DecisionController::class, 'clear'])->whereIn('source', ['bank', 'manual'])->name('items.clear');

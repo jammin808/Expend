@@ -5,7 +5,11 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
 
-/** Append-only. Rows are never updated or deleted; each row's hash covers the previous row's hash. */
+/**
+ * Append-only. Rows are never updated or deleted; each row's hash covers the previous row's hash (AuditLog::hashFor).
+ * channel, correlation and run_id say where the event came from (AuditContext), once recording them is turned on
+ * (AuditLog::recordsContext()); when any is set, the hash covers them.
+ */
 class AuditEvent extends Model
 {
     public $timestamps = false;

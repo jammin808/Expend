@@ -79,15 +79,26 @@ size="$(du -sh "$WORK/out/private" 2>/dev/null | cut -f1)"
 # The audit trail in the loaded copy, checked as AuditLog::verify() does (keep the two in step): every event's hash is
 # the SHA-256 of its fields as AuditLog::hashFor() joins them, each event names the one before it, and the chain's head
 # points at the last event. Times are read in the live database's time zone, as the app wrote them.
+# An event with a channel, correlation or run id (written since those columns were added) is hashed the second way
+# (v2): "v2|", those three joined by "|", then "|" and its fields as before. Its before and after are stored in the
+# canonical form PHP hashes them in, so the stored text is hashed as it is. A backup from before the columns existed
+# has only the first way.
 check_audit_chain() {
-    local tz="${RESTORE_DB_TZ:-+00:00}" result total broken head good
+    local tz="${RESTORE_DB_TZ:-+00:00}" result total broken head good v2 prefix
+    v2="$(q "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'audit_events'
+        AND column_name IN ('channel', 'correlation', 'run_id')")" || { bad "couldn't read the audit trail's columns (see the error above)"; return; }
+    prefix="''"
+    if [ "$v2" = "3" ]; then
+        prefix="CASE WHEN channel IS NULL AND correlation IS NULL AND run_id IS NULL THEN ''
+            ELSE CONCAT('v2|', COALESCE(channel, ''), '|', COALESCE(correlation, ''), '|', COALESCE(run_id, ''), '|') END"
+    fi
     result="$(q "SET time_zone = '${tz//\'/}';
         SELECT COUNT(*), COALESCE(MIN(CASE WHEN ok = 1 THEN NULL ELSE id END), 0),
             (SELECT COUNT(*) FROM audit_heads h WHERE h.id = 1
                 AND NOT (h.hash <=> (SELECT e.hash FROM audit_events e ORDER BY e.id DESC LIMIT 1)))
-        FROM (SELECT id, (prev_hash <=> LAG(hash) OVER (ORDER BY id)) AND hash = SHA2(CONCAT_WS('|',
+        FROM (SELECT id, (prev_hash <=> LAG(hash) OVER (ORDER BY id)) AND hash = SHA2(CONCAT(${prefix}, CONCAT_WS('|',
                 COALESCE(prev_hash, ''), DATE_FORMAT(occurred_at, '%Y-%m-%d %H:%i:%s'), actor, action, subject_type,
-                COALESCE(subject_id, ''), COALESCE(\`before\`, 'null'), COALESCE(\`after\`, 'null'), COALESCE(reason, '')), 256) AS ok
+                COALESCE(subject_id, ''), COALESCE(\`before\`, 'null'), COALESCE(\`after\`, 'null'), COALESCE(reason, ''))), 256) AS ok
             FROM audit_events) checked")" || { bad "couldn't check the audit trail's chain (see the error above)"; return; }
     read -r total broken head <<< "$result"
     if [ "$broken" != "0" ]; then
