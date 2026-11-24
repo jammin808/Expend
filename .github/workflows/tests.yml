@@ -104,6 +104,14 @@ jobs:
       - name: Install the MariaDB client
         run: sudo apt-get update && sudo apt-get install -y mariadb-client
 
+      # Newer MariaDB clients (11.4+, as on Ubuntu 26.04) insist on TLS by default, and the MariaDB 10.11 test server
+      # offers none. Set in the system-wide file because the backup test runs the scripts with its own HOME.
+      - name: Connect to the test database without TLS
+        run: |
+          printf '[client]\nskip-ssl\n' | sudo tee -a /etc/my.cnf
+          mysql --version
+          HOME=/tmp MYSQL_PWD=password mysql -h 127.0.0.1 -P 3306 -u root -N -e 'SELECT VERSION()'
+
       - name: Install Dependencies
         run: composer install --no-interaction --prefer-dist --optimize-autoloader
 

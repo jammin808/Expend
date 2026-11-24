@@ -1,1 +1,3 @@
 resources/js/components/ui/*
+# Research data written by scripts, not hand-formatted code
+resources/tax/*.json
