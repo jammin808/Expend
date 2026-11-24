@@ -13,6 +13,12 @@ interface YearCard {
     status: string;
     /** The return's deadline, or for a filed return being amended, the last day to amend it. */
     deadline: string;
+    /** HMRC sent no notice to file: deadline is then the last day to tell them you need to file (5 October). */
+    no_notice?: boolean;
+    /** No notice yet, but you told HMRC by 5 October. */
+    told_hmrc?: boolean;
+    /** estimate: worked out from the notice's date; assumed: rests on a notice assumed sent by 31 July. */
+    deadline_basis?: 'estimate' | 'assumed' | null;
     overdue: boolean;
     /** Filed, and unlocked to amend. */
     amending?: boolean;
@@ -131,10 +137,23 @@ export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo }: 
                                                     ? 'Filed'
                                                     : y.amending
                                                       ? `Amend by ${day(y.deadline)} · ${left} days`
-                                                      : y.overdue
-                                                        ? `Overdue since ${day(y.deadline)}`
-                                                        : `Due ${day(y.deadline)} · ${left} days`}
+                                                      : y.no_notice
+                                                        ? y.told_hmrc
+                                                            ? 'No notice to file yet · you told HMRC'
+                                                            : left >= 0
+                                                              ? `No notice to file · if you need to file, tell HMRC by ${day(y.deadline)}`
+                                                              : 'No notice to file from HMRC'
+                                                        : y.overdue
+                                                          ? `Overdue since ${day(y.deadline)}${y.deadline_basis === 'estimate' ? ' (estimated)' : ''}`
+                                                          : `Due ${day(y.deadline)}${y.deadline_basis === 'estimate' ? ' (estimated)' : ''} · ${left} days`}
                                             </p>
+                                            {!done(y) && !y.amending && y.deadline_basis && (
+                                                <p className="text-muted-foreground text-xs">
+                                                    {y.deadline_basis === 'estimate'
+                                                        ? 'Estimated from your notice date; the date on HMRC’s notice counts'
+                                                        : 'Assumes HMRC sent a notice to file'}
+                                                </p>
+                                            )}
                                         </div>
                                         <StatusPill status={y.status} />
                                     </div>

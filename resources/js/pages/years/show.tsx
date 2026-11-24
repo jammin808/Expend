@@ -32,7 +32,9 @@ interface Props {
         locked: boolean;
         starts_on: string;
         ends_on: string;
-        deadline: string;
+        /** From HMRC's notice to file; null when they sent none (tell them by notify_by instead). */
+        deadline: string | null;
+        notify_by: string;
         overdue: boolean;
         payments_on_account_paid_pence: number;
     };
@@ -148,7 +150,11 @@ export default function YearShow({ year, progress, coverage, groups, summary, es
                         <p className="text-muted-foreground text-sm">
                             {day(year.starts_on)} to {day(year.ends_on)} ·{' '}
                             <span className={year.overdue ? 'font-medium text-rose-600' : ''}>
-                                {year.overdue ? `return overdue since ${day(year.deadline)}` : `return and payment due ${day(year.deadline)}`}
+                                {year.deadline === null
+                                    ? `no notice to file from HMRC (tell them by ${day(year.notify_by)} if you need to file)`
+                                    : year.overdue
+                                      ? `return overdue since ${day(year.deadline)}`
+                                      : `return due ${day(year.deadline)}`}
                             </span>
                         </p>
                     </div>
@@ -174,9 +180,16 @@ export default function YearShow({ year, progress, coverage, groups, summary, es
                     </div>
                 </div>
 
-                {penalties && (penalties.penalties.length > 0 || penalties.upcoming.length > 0 || penalties.unpaid_pence > 0) && (
-                    <PenaltyPanel p={penalties} locked={year.locked} />
-                )}
+                {penalties &&
+                    (penalties.penalties.length > 0 ||
+                        penalties.upcoming.length > 0 ||
+                        penalties.unpaid_pence > 0 ||
+                        penalties.at_risk.length > 0 ||
+                        penalties.plan !== null ||
+                        penalties.amendment !== null ||
+                        penalties.submissions.length > 0 ||
+                        penalties.return_needed ||
+                        penalties.chargeable) && <PenaltyPanel p={penalties} locked={year.locked} />}
 
                 <div className="rounded-xl border p-5">
                     <div className="flex flex-wrap items-baseline justify-between gap-2">

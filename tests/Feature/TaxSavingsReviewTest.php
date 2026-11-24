@@ -444,16 +444,23 @@ class TaxSavingsReviewTest extends TestCase
         $this->undecided('2021-08-10', -1_000);
         TaxYear::track('2021-22', 'ready_to_file');
 
-        foreach (['2023-24' => '2 payments in 2023-24 are', '2021-22' => '1 payment in 2021-22 is'] as $label => $undecided) {
-            $review = TaxSavings::review($label);
-            $missed = $this->item($review, 'missed-claims-deadlines');
-            $this->assertSame('action', $missed['status'], $label);
-            $this->assertSame($undecided.' still undecided. Any that are business costs reduce your tax: include them in the return when you file it.', $missed['finding'], $label);
-            $this->assertStringNotContainsString('amend', $missed['finding']);
-            $this->assertStringNotContainsString('overpaid', $missed['finding']);
-            // The same review says the return is late, so the two agree.
-            $this->assertStringContainsString('File the return', $this->item($review, 'penalties-and-interest')['finding'], $label);
-        }
+        $review = TaxSavings::review('2023-24');
+        $missed = $this->item($review, 'missed-claims-deadlines');
+        $this->assertSame('action', $missed['status']);
+        $this->assertSame('2 payments in 2023-24 are still undecided. Any that are business costs reduce your tax: include them in the return when you file it.', $missed['finding']);
+        $this->assertStringNotContainsString('amend', $missed['finding']);
+        $this->assertStringNotContainsString('overpaid', $missed['finding']);
+        // The same review says the return is late, so the two agree.
+        $this->assertStringContainsString('File the return', $this->item($review, 'penalties-and-interest')['finding']);
+
+        // 2021-22 is past the time limit for filing your own return (5 April 2026, TMA s34A): neither part says to file it.
+        $review = TaxSavings::review('2021-22');
+        $missed = $this->item($review, 'missed-claims-deadlines');
+        $this->assertSame('info', $missed['status']);
+        $this->assertSame('1 payment in 2021-22 is still undecided. Any that are business costs would have reduced your tax, but the time limit for filing your own return for 2021-22 ended on 5 April 2026. Get advice from an accountant before you contact HMRC.', $missed['finding']);
+        $fines = $this->item($review, 'penalties-and-interest')['finding'];
+        $this->assertStringContainsString('ended on 5 April 2026, so it can no longer be filed in the usual way', $fines);
+        $this->assertStringNotContainsString('File the return', $fines);
     }
 
     // ---- The headline (TS-9, EA-1) ----

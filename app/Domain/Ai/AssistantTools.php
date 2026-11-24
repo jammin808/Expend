@@ -8,8 +8,10 @@ use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\OwnAccounts;
 use App\Domain\Tax\BillPreview;
 use App\Domain\Tax\Explainer;
+use App\Domain\Tax\FilingDates;
 use App\Domain\Tax\MileageCalculator;
 use App\Domain\Tax\PenaltyEstimator;
+use App\Domain\Tax\PenaltyRegime;
 use App\Domain\Tax\ReturnSummary;
 use App\Domain\Tax\TaxEstimator;
 use App\Domain\Tax\TaxGuide;
@@ -24,6 +26,7 @@ use App\Models\Category;
 use App\Models\Document;
 use App\Models\DocumentFact;
 use App\Models\Invoice;
+use App\Models\Setting;
 use App\Models\TaxYear;
 use App\Models\TravelItem;
 use App\Models\WorkJob;
@@ -67,7 +70,7 @@ final class AssistantTools
                 'inputSchema' => $obj(['document_id' => $int, 'max_chars' => $int], ['document_id'])],
             ['name' => 'invoices', 'description' => 'Invoices with totals, amounts paid, due dates and whether they are overdue.',
                 'inputSchema' => $obj(['status' => ['type' => 'string', 'enum' => ['draft', 'issued', 'paid', 'void']]])],
-            ['name' => 'deadlines', 'description' => 'What is coming up or overdue: tax return and payment deadlines, overdue invoices, Making Tax Digital and VAT thresholds, jobs in the next 14 days.',
+            ['name' => 'deadlines', 'description' => 'What is coming up or overdue: tax return and payment deadlines, Making Tax Digital quarterly updates not recorded as sent (with what being late costs in points), overdue invoices, Making Tax Digital and VAT thresholds, jobs in the next 14 days.',
                 'inputSchema' => $obj([])],
             ['name' => 'merchant_breakdown', 'description' => 'Spending or income grouped by merchant for a tax year, with how much is decided.',
                 'inputSchema' => $obj(['tax_year' => $str, 'direction' => ['type' => 'string', 'enum' => ['in', 'out']]], ['tax_year'])],
@@ -76,9 +79,9 @@ final class AssistantTools
             ['name' => 'tax_guide', 'description' => 'The UK tax guide (GOV.UK and HMRC manuals, with source links): what an expense category is and whether it is allowable, rules on topics such as travel, mileage, use of home, capital allowances, payments on account, pensions and VAT, and legal ways to reduce tax. Use it for any tax rule; cite its sources.',
                 'inputSchema' => $obj(['category_code' => $str + ['description' => 'e.g. travel_accommodation, equipment, use_of_home'], 'topic' => ['type' => 'string', 'enum' => array_keys(TaxGuide::topicTitles())],
                     'query' => $str + ['description' => 'Words to search the guide for'], 'ways_to_reduce_tax' => ['type' => 'boolean']])],
-            ['name' => 'penalties', 'description' => 'Fines and interest HMRC charges or will charge: late filing penalties (£100, daily £10, 6- and 12-month), late payment penalties, and late payment interest, per tax year, from the filing dates and HMRC payments in the records. Each item has its date, amount, status (due, accruing, upcoming), the rule and a source link. Answers "what if" questions: pass file_on and/or pay_all_on (YYYY-MM-DD) to see the effect of filing or paying on a date, plan_from for a payment plan. It is an estimate: say so, and that HMRC\'s statement is the final word.',
+            ['name' => 'penalties', 'description' => 'Fines and interest HMRC charges or will charge, per tax year, from what the owner has told Expend about HMRC\'s letters (notice to file and its date, how the return was filed) and the HMRC payments in the records: late filing penalties (£100, daily £10, 6- and 12-month; or, under the new rules, late submission points: late_submission_points says how many the owner has of the threshold (4 in Making Tax Digital, 2 otherwise), when each goes, when they would all go if everything is sent on time, the £200 penalties (£200 at the threshold and for each later late submission, at most one a month for each kind of submission), the next submission and what being late would cost; points are what the owner is liable to and HMRC give them by notice, and quarterly updates with no sent date are taken as not sent: say so; submissions lists the return and quarterly updates with their due and sent dates), the penalty for not telling HMRC by 5 October where no notice to file was sent (a range: say so), late payment penalties (on the year\'s tax less what was paid towards it, so unpaid payments on account count; extra tax from an amended return from its own later date), and late payment interest (each run of days at one balance and rate divided by 365, or 366 in a leap year, and rounded down to the penny, as in HMRC\'s published example: interest_method; an estimate). Each item has its date, amount, status (due, accruing, upcoming), the rule and a source link; estimate=true items rest on the assumption given (say it), on_filing is added when the return is filed, and time_limit says when a penalty only stands if HMRC charged it in time. notice_to_file says whether a notice is known or assumed. rules says which penalty rules apply; announced_new_rules, where present, are rules announced but NOT law: never present them as law. payment_plan says what the owner\'s payment plan does: the date they ASKED HMRC is what counts, and only if HMRC agree and it\'s kept; held_off are penalties it is holding off, at_risk_if_hmrc_charge_them are ones a broken plan held off that HMRC can now charge by notice (not yet charged: say so). HMRC won\'t agree a plan while the return is overdue. Answers "what if" questions: pass file_on and/or pay_all_on (YYYY-MM-DD) to see the effect of filing or paying on a date, plan_from for a payment plan asked for on that date (and agreed and kept). It is an estimate: say so, and that HMRC\'s statement is the final word.',
                 'inputSchema' => $obj(['tax_year' => $str + ['description' => 'e.g. 2024-25; omit for every year'], 'file_on' => $str + ['description' => 'what if the return is filed on this date (YYYY-MM-DD)'],
-                    'pay_all_on' => $str + ['description' => 'what if everything owed is paid on this date'], 'plan_from' => $str + ['description' => 'what if a payment plan is agreed from this date']])],
+                    'pay_all_on' => $str + ['description' => 'what if everything owed is paid on this date'], 'plan_from' => $str + ['description' => 'what if a payment plan is asked for on this date, HMRC agree it and it is kept']])],
             ['name' => 'tax_law', 'description' => 'The checked library of UK tax law for a sole trader: leading cases (what each decided and why it matters to a freelance technician), the legislation, HMRC manual pages, and recent or coming changes (not_law_yet when only announced). Each item has its official link to cite; never cite a case marked do_not_cite. Search by words, optionally by kind; or pass id for one item, including an id from tax_savings (that gives the idea\'s conditions, risks and the law behind it). Use it before stating a legal rule or naming a case.',
                 'inputSchema' => $obj(['query' => $str + ['description' => 'e.g. "hotel meals away overnight", "travel to temporary workplace", "late filing reasonable excuse"'],
                     'kind' => ['type' => 'string', 'enum' => ['case', 'legislation', 'guidance', 'development']], 'id' => $str + ['description' => 'An item id from an earlier result'], 'limit' => $int])],
@@ -227,7 +230,8 @@ final class AssistantTools
         return [
             'tax_year' => $label,
             'status' => $record?->status ?? 'not tracked',
-            'filing_deadline' => UkTaxYear::fromLabel($label)->filingDeadline()->format('Y-m-d'),
+            // From HMRC's notice to file where known; null when HMRC sent none (tell them by 5 October instead).
+            'filing_deadline' => FilingDates::deadline($label, $record)?->format('Y-m-d'),
             'figures_from_confirmed_records' => [
                 'turnover' => self::money($summary['turnover_pence']),
                 'other_income' => self::money($summary['other_income_pence']),
@@ -398,26 +402,66 @@ final class AssistantTools
     private function deadlines(): array
     {
         $today = CarbonImmutable::today();
-        // A return being amended has been filed: it isn't overdue, and the amendment is due a year after the filing
-        // deadline. One whose amendment window has closed is left out, like a filed one.
+        // A return being amended has been filed: it isn't overdue, and the amendment is due 12 months after its filing
+        // date (TMA 1970 s9ZA). One whose amendment window has closed is left out, like a filed one.
+        // Filing dates follow HMRC's notice to file (FilingDates); with no notice, the duty is to tell HMRC by 5 October.
         $years = TaxYear::query()->where('status', '!=', 'filed')->get()
-            ->reject(fn (TaxYear $y) => $y->status === 'amending' && $today->gt($y->period()->filingDeadline()->addYear()))
-            ->map(fn (TaxYear $y) => $y->status === 'amending' ? [
-                'tax_year' => $y->label, 'status' => $y->status, 'filed' => true, 'amend_by' => $y->period()->filingDeadline()->addYear()->format('Y-m-d'), 'overdue' => false,
-            ] : [
-                'tax_year' => $y->label, 'status' => $y->status, 'return_and_payment_due' => $y->period()->filingDeadline()->format('Y-m-d'),
-                'overdue' => $today->gt($y->period()->filingDeadline()),
-            ])->values()->all();
+            ->reject(fn (TaxYear $y) => $y->status === 'amending' && $today->gt(FilingDates::amendBy($y->label, $y)))
+            ->map(function (TaxYear $y) use ($today) {
+                if ($y->status === 'amending') {
+                    return ['tax_year' => $y->label, 'status' => $y->status, 'filed' => true, 'amend_by' => FilingDates::amendBy($y->label, $y)->format('Y-m-d'), 'overdue' => false];
+                }
+                $d = FilingDates::for($y->label, $y);
+                if ($d['filing_date'] === null) {
+                    return array_filter(['tax_year' => $y->label, 'status' => $y->status, 'no_notice_to_file' => true,
+                        'tell_hmrc_by' => $d['missed_notify'] || $d['told_by_5_october'] !== true ? $d['notify_by']->format('Y-m-d') : null,
+                        'told_hmrc_in_time' => $d['told_by_5_october'] === true ?: null,
+                        'tax_due' => $d['balancing_due']->format('Y-m-d'), 'tax_due_estimated' => $d['balancing_basis'] === 'estimate' ?: null], fn ($v) => $v !== null);
+                }
+                $tooLate = $today->gt($d['own_return_last']);
+
+                return array_filter([
+                    'tax_year' => $y->label, 'status' => $y->status, 'return_due' => $d['filing_date']->format('Y-m-d'),
+                    // An estimate from the notice's date, or resting on an assumed notice: the date on HMRC's notice counts.
+                    'return_due_basis' => match (true) {
+                        $d['filing_basis'] === 'estimate' => 'estimated from the notice date (plus 3 months and 7 days); the date printed on HMRC’s notice counts',
+                        $d['notice'] === 'assumed' => 'assumes HMRC sent a notice to file by 31 July after the year',
+                        default => null,
+                    },
+                    'tax_due' => $d['balancing_due']->format('Y-m-d'), 'overdue' => $today->gt($d['filing_date']),
+                    // The last day you can file it yourself (s34A), or replace HMRC's determination with it (s28C(5)).
+                    'own_return_last' => $d['own_return_last']->format('Y-m-d'), 'too_late_to_file' => $tooLate,
+                    'too_late_note' => $tooLate ? ($d['own_return_basis'] === 'determination'
+                        ? 'The time to replace HMRC’s determination with a return has ended: the determination stands. Only special relief can change it; get advice.'
+                        : 'The time limit for filing your own return has ended: it can no longer be filed in the usual way. HMRC can still assess the tax; get advice.') : null,
+                ], fn ($v) => $v !== null);
+            })->values()->all();
 
         return [
             'today' => $today->format('Y-m-d'),
             'tax_returns' => $years,
             'overdue_invoices' => array_values(array_filter($this->invoices('issued')['invoices'], fn ($i) => $i['overdue'])),
             'jobs_next_14_days' => $this->calendar(['date_from' => $today->format('Y-m-d'), 'date_to' => $today->addDays(14)->format('Y-m-d')])['jobs'],
-            'making_tax_digital' => collect(config('tax.mtd_thresholds'))->map(fn ($t) => [
-                'starts' => $t['starts'], 'based_on' => $t['based_on'], 'threshold' => self::money($t['turnover_over']),
-                'your_turnover_confirmed' => self::money($turn = ReturnSummary::for($t['based_on'])['turnover_pence']), 'applies' => $turn > $t['turnover_over'],
-            ])->all(),
+            // Making Tax Digital quarterly updates with no "sent on" date recorded (taken as not sent), and what being
+            // late costs in late submission points.
+            'quarterly_updates_not_recorded_as_sent' => rescue(fn () => collect(PenaltyEstimator::all()['years'])->flatMap(fn ($y) => collect($y['submissions'] ?? [])
+                ->filter(fn ($s) => $s['kind'] === 'quarterly' && $s['submitted_on'] === null)
+                ->map(fn ($s) => ['tax_year' => $y['tax_year'], 'what' => $s['what'], 'due' => $s['due_on'], 'overdue' => $s['status'] === 'not_sent', 'effect' => $s['effect']]))->values()->all(), [], false),
+            // Whether you're in it each year, as the penalties work it out: income, an exemption (from its year) and
+            // volunteering all count.
+            'making_tax_digital' => Setting::remembering(function () {
+                $summaries = [];
+                $summary = function (string $label) use (&$summaries) {
+                    return $summaries[$label] ??= ReturnSummary::for($label);
+                };
+
+                return collect(config('tax.mtd_thresholds'))->map(fn ($t) => [
+                    'starts' => $t['starts'], 'based_on' => $t['based_on'], 'threshold' => self::money($t['turnover_over']),
+                    'your_turnover_confirmed' => self::money($summary($t['based_on'])['turnover_pence']),
+                    'applies' => PenaltyRegime::mandated(UkTaxYear::fromDate($t['starts'])->label(), $summary),
+                ])->all();
+            }),
+            'making_tax_digital_exemption' => PenaltyRegime::exemptionText(),
         ];
     }
 
@@ -478,20 +522,96 @@ final class AssistantTools
         $all = PenaltyEstimator::all(null, $whatIf);
         $years = $label ? array_values(array_filter($all['years'], fn ($y) => $y['tax_year'] === $label)) : $all['years'];
         $money = fn (int $p) => self::money($p);
+        // Assumptions every year shares go once, at the top, so the answer stays well inside what the model is sent; so
+        // do the interest method and the points' assumptions, which are given at the top anyway.
+        $shared = count($years) > 1 ? array_values(array_intersect(...array_map(fn ($y) => $y['assumptions'], $years))) : [];
+        $atTop = array_merge($shared, [PenaltyEstimator::interestNote()], $all['points']['law']['assumptions'] ?? [], $all['points']['announced']['assumptions'] ?? []);
+        // Asked about every year, a year with nothing owed, coming or to do is just listed.
+        $quiet = fn (array $y) => ! $label && $y['penalties'] === [] && $y['upcoming'] === [] && $y['at_risk'] === [] && $y['unpaid_pence'] === 0
+            && $y['interest_pence'] === 0 && $y['actions'] === [] && ! $y['notify_hmrc'] && ! ($y['announced']['penalties'] ?? []) && ! ($y['announced']['upcoming'] ?? []);
 
         return [
             'as_of' => $all['as_of'], 'what_if' => $whatIf ?: null, 'estimate' => true,
             'interest_rate_now_pct' => PenaltyEstimator::currentRate(),
+            // How interest is worked out (a convention, not law, so the figure is an estimate).
+            'interest_method' => PenaltyEstimator::interestNote(),
             'totals' => array_map($money, $all['totals']),
-            'years' => array_map(fn ($y) => [
-                'tax_year' => $y['tax_year'], 'rules' => $y['regime_text'], 'return_due' => $y['deadline'], 'filed' => $y['filed'], 'filed_on' => $y['filed_on'],
-                'tax_for_year' => $money($y['liability_pence']), 'tax_based_on' => $y['basis'], 'unpaid' => $money($y['unpaid_pence']),
-                'already_due' => array_map(fn ($p) => ['date' => $p['date'], 'what' => $p['label'], 'amount' => $money($p['amount_pence']), 'status' => $p['status'], 'why' => $p['why'], 'source' => $p['source']], $y['penalties']),
-                'coming_if_nothing_changes' => array_map(fn ($p) => ['date' => $p['date'], 'what' => $p['label'], 'amount' => $money($p['amount_pence']), 'why' => $p['why'], 'source' => $p['source']], $y['upcoming']),
-                'interest_so_far' => $money($y['interest_pence']), 'interest_per_day' => $money($y['per_day_pence']),
-                'what_to_do' => $y['actions'], 'assumptions' => $y['assumptions'],
-            ], $years),
+            'assumptions_for_every_year' => $shared ?: null,
+            // Late submission points are counted across years: once here, for the rules that are law and the announced ones.
+            'late_submission_points' => array_filter(['law' => self::points($all['points']['law'] ?? null, $money), 'announced' => self::points($all['points']['announced'] ?? null, $money)]) ?: null,
             'help' => PenaltyEstimator::rules()['mitigation'],
+            'note' => $label ? null : 'Every year, oldest first. Ask with tax_year for one year on its own.',
+            'years' => array_map(fn ($y) => $quiet($y) ? [
+                'tax_year' => $y['tax_year'], 'nothing_owed_or_coming' => true, 'filed' => $y['filed'], 'return_due' => $y['deadline'], 'tax_due' => $y['balancing_due'],
+            ] : [
+                'tax_year' => $y['tax_year'], 'rules' => $y['regime_text'], 'regime' => $y['regime'],
+                'notice_to_file' => $y['notice']['assumed'] ? 'not known: assumed sent by 31 July after the year' : ($y['notice']['notice_to_file'] === 'not_given' ? 'none sent' : 'sent'.($y['notice']['notice_date'] ? ' on '.$y['notice']['notice_date'] : '')),
+                'return_due' => $y['deadline'], 'return_due_basis' => $y['deadline_basis'], 'tax_due' => $y['balancing_due'],
+                'filed' => $y['filed'], 'filed_on' => $y['filed_on'], 'own_return_last_date' => $y['own_return_last_date'], 'too_late_to_file' => $y['too_late_to_file'],
+                'must_tell_hmrc' => $y['notify_hmrc'] ? 'by '.$y['notify_by'] : null,
+                'tax_for_year' => $y['estimable'] ? $money($y['liability_pence']) : 'not worked out ('.($y['unestimable'] === 'scottish' ? 'Scottish income tax' : 'no rates loaded for the year').')',
+                'tax_based_on' => $y['basis'], 'unpaid' => $money($y['unpaid_pence']),
+                'already_due' => array_map(fn ($p) => self::penaltyItem($p, $money) + ['status' => $p['status']], $y['penalties']),
+                'coming_if_nothing_changes' => array_map(fn ($p) => self::penaltyItem($p, $money), $y['upcoming']),
+                'added_when_filed' => $y['on_filing_pence'] ? $money($y['on_filing_pence']) : null,
+                'at_risk_if_hmrc_charge_them' => array_map(fn ($p) => self::penaltyItem($p, $money), $y['at_risk']),
+                'payment_plan' => $y['plan'] ? array_filter([
+                    'asked_hmrc_on' => $y['plan']['requested_on'], 'counts_from' => $y['plan']['counts_from'],
+                    'agreed' => match ($y['plan']['agreed']) {
+                        true => 'yes', false => 'no, HMRC refused it', default => 'not yet, or not known'
+                    },
+                    'ends_on' => $y['plan']['ends_on'], 'broken_on' => $y['plan']['broken_on'],
+                    'covers' => $y['plan']['amount_pence'] !== null ? $money($y['plan']['amount_pence']) : 'everything owed for the year',
+                    'held_off' => $y['plan']['state'] === 'protected' ? $money($y['plan']['protected_pence']) : null,
+                    'cancelled_if_agreed' => $y['plan']['state'] === 'pending' ? $money($y['plan']['pending_pence']) : null,
+                    'what_if' => $y['plan']['what_if'] ?: null, 'notes' => $y['plan']['notes'],
+                ], fn ($v) => $v !== null) : null,
+                'amendment' => $y['amendment'] ? array_filter([
+                    'hmrc_got_it_on' => $y['amendment']['amended_on'] ?? 'not sent yet (assumed today)',
+                    'tax_on_original_return' => $y['amendment']['original_liability_pence'] !== null ? $money($y['amendment']['original_liability_pence']) : 'not given',
+                    'extra_tax' => $y['amendment']['increase_pence'] ? $money($y['amendment']['increase_pence']) : null,
+                    'extra_tax_due' => $y['amendment']['increase_due'],
+                ], fn ($v) => $v !== null) : null,
+                'announced_new_rules' => $y['announced'] ? array_filter(['status' => 'announced, not law: an estimate only, not in the totals', 'what' => $y['announced']['regime_text'],
+                    'would_be_due' => array_map(fn ($p) => self::penaltyItem($p, $money), $y['announced']['penalties']),
+                    'would_be_coming' => array_map(fn ($p) => self::penaltyItem($p, $money), $y['announced']['upcoming']),
+                    'late_submission_points' => ($y['announced']['points'] ?? null) ? 'see late_submission_points.announced at the top' : null], fn ($v) => $v !== null) : null,
+                'late_submission_points' => ($y['points'] ?? null) ? 'see late_submission_points.law at the top' : null,
+                'submissions' => array_map(fn ($s) => array_filter([
+                    'what' => $s['what'], 'due' => $s['due_on'], 'sent' => $s['submitted_on'] ?? ($s['made'] ? 'filed, date not recorded' : 'not recorded: taken as not sent'),
+                    'status' => $s['status'], 'excused' => $s['excused'] ?: null, 'effect' => $s['effect'], 'note' => $s['note'],
+                    'under_announced_rules' => $s['announced'] ?: null,
+                ], fn ($v) => $v !== null), $y['submissions'] ?? []) ?: null,
+                'interest_so_far' => $money($y['interest_pence']), 'interest_per_day' => $money($y['per_day_pence']),
+                'what_to_do' => $y['actions'], 'assumptions' => array_values(array_diff($y['assumptions'], $atTop)),
+            ], $years),
         ];
+    }
+
+    /** Late submission points for the assistant: an estimate, resting on the assumptions listed. */
+    private static function points(?array $p, \Closure $money): ?array
+    {
+        return $p === null ? null : [
+            'summary' => $p['text'], 'points' => $p['held'], 'threshold' => $p['threshold'], 'at_threshold' => $p['at_threshold'],
+            'each_point' => array_map(fn ($x) => array_filter(['for' => $x['what'], 'failed_on' => $x['failure_on'], 'expires_end_of' => $x['stays'] ? null : $x['expires_on'],
+                'stays_until_all_go' => $x['stays'] ?: null, 'goes_on' => $x['goes_on'], 'added_on_joining_mtd' => $x['added'] ?: null], fn ($v) => $v !== null), $p['points']),
+            'all_go_on_if_everything_sent_on_time' => $p['reset_on'], 'send_first' => $p['reset_needs'] ?: null,
+            'penalties_200' => array_map(fn ($f) => ['on' => $f['on'], 'for' => $f['what'], 'amount' => $money($f['pence']), 'status' => $f['projected'] ? 'if nothing changes' : 'due'], $p['penalties']),
+            'next_submission' => $p['next'], 'estimate' => true, 'assumptions' => $p['assumptions'],
+        ];
+    }
+
+    /** One penalty for the assistant: what it is and why, with its estimate, assumption and time-limit notes. */
+    private static function penaltyItem(array $p, \Closure $money): array
+    {
+        return array_filter([
+            'date' => $p['date'], 'what' => $p['label'], 'amount' => $money($p['amount_pence']),
+            'range' => $p['range'] ? ['min' => $money($p['range']['min_pence']), 'max' => $money($p['range']['max_pence'])] : null,
+            'amount_not_worked_out' => ! empty($p['amount_unknown']) ?: null,
+            'not_charged_until_return_filed' => ! empty($p['awaits_return']) ?: null,
+            'on_filing' => $p['on_filing_pence'] ? $money($p['on_filing_pence']) : null,
+            'estimate' => $p['estimate'] ?: null, 'assumption' => $p['assumption'], 'time_limit' => $p['time_limit'],
+            'why' => $p['why'], 'source' => $p['source'],
+        ], fn ($v) => $v !== null);
     }
 }

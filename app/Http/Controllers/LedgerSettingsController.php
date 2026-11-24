@@ -6,10 +6,12 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Calendar\CalendarSync;
 use App\Domain\Matching\OwnAccounts;
 use App\Domain\Matching\TransferPairer;
+use App\Domain\Tax\TaxEstimator;
 use App\Models\Allocation;
 use App\Models\CalendarEvent;
 use App\Models\MerchantRule;
 use App\Models\Setting;
+use App\Support\UkTaxYear;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -24,6 +26,8 @@ class LedgerSettingsController extends Controller
             'settings' => Setting::publicAll(),
             'own' => ['names' => OwnAccounts::names(), 'saved_names' => (array) Setting::get('own_names'), 'other_accounts' => (array) Setting::get('own_other_accounts')],
             'calendar' => ['events' => CalendarEvent::query()->count(), 'synced' => Setting::get('calendar_synced_at')],
+            // The years Class 2 National Insurance was compulsory, for the weeks you were self-employed in each.
+            'class2_years' => TaxEstimator::class2Years(),
         ]);
     }
 
@@ -41,7 +45,52 @@ class LedgerSettingsController extends Controller
             'clear_calendar' => 'boolean',
             'own_names' => 'nullable|string|max:1000',
             'own_other_accounts' => 'nullable|string|max:2000',
+            // Making Tax Digital: the year HMRC accepted you as a volunteer for the new penalties from (2024-25 at the
+            // earliest, SI 2024/440), the year an exemption runs from, and whether HMRC treat the earlier requirements as
+            // never imposed (TMA 1970 Sch A1 para 14(1A) or 15(3)). They decide which penalties apply.
+            'mtd_volunteer_from' => ['nullable', 'string', 'regex:/^20\d{2}-\d{2}$/'],
+            'mtd_exempt_from' => ['nullable', 'string', 'regex:/^20\d{2}-\d{2}$/'],
+            'mtd_exempt_never_required' => 'boolean',
+            // Weeks of self-employment in each year with compulsory Class 2; empty means a full year (52).
+            'class2_weeks' => 'nullable|array',
+            'class2_weeks.*' => 'nullable|integer|min:0|max:'.TaxEstimator::MAX_CLASS2_WEEKS,
+        ], [
+            'mtd_volunteer_from.regex' => 'Choose a tax year like 2024-25.',
+            'mtd_exempt_from.regex' => 'Choose a tax year like 2026-27.',
+            'class2_weeks.*.integer' => 'Enter the weeks as a whole number.',
+            'class2_weeks.*.min' => 'The weeks can’t be negative.',
+            'class2_weeks.*.max' => 'A tax year has at most '.TaxEstimator::MAX_CLASS2_WEEKS.' weeks.',
         ]);
+        if (! empty($data['mtd_volunteer_from'])) {
+            try {
+                $data['mtd_volunteer_from'] = UkTaxYear::fromLabel($data['mtd_volunteer_from'])->label();
+            } catch (\InvalidArgumentException $e) {
+                return back()->withErrors(['mtd_volunteer_from' => $e->getMessage()]);
+            }
+            if ($data['mtd_volunteer_from'] < '2024-25') {
+                return back()->withErrors(['mtd_volunteer_from' => 'Volunteering for the new penalties started with 2024-25.']);
+            }
+        }
+        if (! empty($data['mtd_exempt_from'])) {
+            try {
+                $data['mtd_exempt_from'] = UkTaxYear::fromLabel($data['mtd_exempt_from'])->label();
+            } catch (\InvalidArgumentException $e) {
+                return back()->withErrors(['mtd_exempt_from' => $e->getMessage()]);
+            }
+        }
+        if ($request->has('mtd_exempt_from')) {
+            // The year replaces the old tick, which had none; "never required" only means something with a year.
+            $data['mtd_exempt_never_required'] = ! empty($data['mtd_exempt_from']) && ! empty($data['mtd_exempt_never_required']);
+            Setting::put('mtd_exempt', false);
+        }
+        // Only the years with compulsory Class 2 are kept; an empty box goes back to a full year. Left alone if the
+        // form didn't send it.
+        if ($request->has('class2_weeks')) {
+            $years = TaxEstimator::class2Years();
+            Setting::put('class2_weeks', collect($data['class2_weeks'] ?? [])
+                ->filter(fn ($w, $label) => in_array($label, $years, true) && $w !== null && $w !== '')
+                ->map(fn ($w) => (int) $w)->sortKeys()->all());
+        }
         $lines = fn (?string $text) => array_values(array_unique(array_filter(array_map(fn ($l) => mb_substr(trim($l), 0, 80), preg_split('/\r?\n|,/', (string) $text) ?: []))));
         $own = ['own_names' => $lines($data['own_names'] ?? null), 'own_other_accounts' => $lines($data['own_other_accounts'] ?? null)];
         $ownChanged = $own['own_names'] !== (array) Setting::get('own_names') || $own['own_other_accounts'] !== (array) Setting::get('own_other_accounts');
@@ -50,8 +99,12 @@ class LedgerSettingsController extends Controller
         }
         unset($data['own_names'], $data['own_other_accounts']);
 
-        foreach (['home_postcode', 'scottish_taxpayer', 'overnight_near_miles', 'overnight_far_miles', 'early_start', 'late_finish', 'mileage_threshold_scope'] as $key) {
+        foreach (['home_postcode', 'scottish_taxpayer', 'overnight_near_miles', 'overnight_far_miles', 'early_start', 'late_finish', 'mileage_threshold_scope', 'mtd_volunteer_from'] as $key) {
             Setting::put($key, $key === 'home_postcode' && $data[$key] ? strtoupper(trim($data[$key])) : $data[$key] ?? null);
+        }
+        if ($request->has('mtd_exempt_from')) {
+            Setting::put('mtd_exempt_from', $data['mtd_exempt_from'] ?: null);
+            Setting::put('mtd_exempt_never_required', $data['mtd_exempt_never_required']);
         }
         if (! empty($data['calendar_ics_url'])) {
             Setting::put('calendar_ics_url', $data['calendar_ics_url']);

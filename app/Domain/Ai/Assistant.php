@@ -21,6 +21,42 @@ use RuntimeException;
  */
 final class Assistant
 {
+    /** The most of one tool's answer sent to the model, in characters. */
+    public const TOOL_RESULT_MAX = 60_000;
+
+    /**
+     * A tool's answer as sent to the model: whole if it fits; otherwise with whole entries left out of its longest list
+     * (the oldest tax years first) and a note saying so, so the model always gets valid JSON, never one cut mid-way.
+     */
+    public static function fit(mixed $output, ?string $json = null, int $max = self::TOOL_RESULT_MAX): string
+    {
+        $flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+        $json ??= (string) json_encode($output, $flags);
+        if (mb_strlen($json) <= $max) {
+            return $json;
+        }
+        if (is_array($output)) {
+            $lists = array_filter($output, fn ($v) => is_array($v) && array_is_list($v) && count($v) > 1);
+            if ($lists !== []) {
+                // Tax years run oldest first and the newest matter most; any other list keeps its first entries.
+                $key = isset($lists['years']) ? 'years' : array_search(max(array_map('count', $lists)), array_map('count', $lists), true);
+                $left = 0;
+                while (count($output[$key]) > 1 && mb_strlen($json) > $max) {
+                    $key === 'years' ? array_shift($output[$key]) : array_pop($output[$key]);
+                    $left++;
+                    $output['truncated'] = 'Too long to send in full: '.$left.' of the '.$key.' left out'.($key === 'years' ? ' (the oldest)' : '').'. Ask for less, for example one tax_year.';
+                    $json = (string) json_encode($output, $flags);
+                }
+                if (mb_strlen($json) <= $max) {
+                    return $json;
+                }
+            }
+        }
+
+        return (string) json_encode(['truncated' => 'Too long to send in full; ask for less, for example one tax_year.',
+            'partial' => mb_substr($json, 0, intdiv($max, 2))], $flags);
+    }
+
     private const MAX_ROUNDS = 12;
 
     /** Tools that return the owner's own records. A "Team A v Team B" from these is a job or a booking, not a court case. */
@@ -142,7 +178,7 @@ final class Assistant
                     $recordOutputs[] = $json;
                 }
                 $calls[] = ['tool' => $use['name'], 'input' => $use['input']];
-                $results[] = ['type' => 'tool_result', 'toolUseID' => $use['id'], 'content' => mb_substr($json, 0, 60_000)];
+                $results[] = ['type' => 'tool_result', 'toolUseID' => $use['id'], 'content' => self::fit($output, $json)];
             }
             $messages[] = ['role' => 'assistant', 'content' => $result->assistantContent];
             $messages[] = ['role' => 'user', 'content' => $results];

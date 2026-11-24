@@ -3105,7 +3105,7 @@
    "citation": "NIC (Reduction in Rates) Act 2023 (c. 57), s3 (amending SSCBA 1992 s11); Royal Assent 18 December 2023",
    "url": "https://www.legislation.gov.uk/ukpga/2023/57/section/3/enacted",
    "what_it_does": "From 6 April 2024 self-employed people no longer have to pay Class 2. If profits are at or above the small profits threshold they are treated as having paid it for benefit purposes; if below, they may pay voluntary Class 2 (SSCBA s11(5A)-(6)).",
-   "relevance": "No Class 2 is due from 2024-25, and a qualifying year still accrues if profits are at least the threshold: £6,725 (2024-25), £6,845 (2025-26), £7,105 (2026-27). In a low-profit year, voluntary Class 2 at £3.45/£3.50/£3.65 a week is a very cheap, legal way to protect state pension compared with Class 3 at £17.45/£17.75/£18.40. In 2023-24 Class 2 was still compulsory at £3.45 a week above £6,725.",
+   "relevance": "No Class 2 is due from 2024-25, and a qualifying year still accrues if profits are at least the threshold: £6,725 (2024-25), £6,845 (2025-26), £7,105 (2026-27). In a low-profit year, voluntary Class 2 at £3.45/£3.50/£3.65 a week is a very cheap, legal way to protect state pension compared with Class 3 at £17.45/£17.75/£18.40. In 2023-24 Class 2 was still compulsory at £3.45 a week, but only where profits were over £12,570; from £6,725 up to that it was treated as paid (SSCBA s11(2), (5A)-(5B)).",
    "topics": [
     "nic",
     "class-2",
@@ -4069,7 +4069,7 @@
    "conditions": "Applies every year. The online return is due 31 January after the tax year. The balancing payment and first payment on account are due 31 January, the second payment on account 31 July. If MTD-mandated, quarterly updates are due 7 August, 7 November, 7 February and 7 May.",
    "data_needed": "payments on account, profit",
    "how_to_estimate": "Old regime (Sch 55/56: 2023-24 to 2025-26, and 2026-27 if not MTD-mandated). Late return: £100 on day 1; from 3 months, £10 a day up to £900; at 6 months, the greater of 5% of tax due or £300; at 12 months, the same again (up to 70% or 100% if information was deliberately withheld). A return 12 months late with little tax due costs £1,600. Late balancing payment: 5% of tax unpaid 30 days after the due date, plus 5% more at 5 months and at 11 months after that penalty date. New regime (MTD-mandated from 2026-27; all SA filers from 2027-28 if commenced): 1 point per late submission, with £200 at 4 points (quarterly) or 2 points (annual) and £200 for each further miss. Late payment: 3% of tax unpaid at day 15, 3% more at day 30, then 10% a year accruing daily from day 31 (2026-27; 4%/4% announced for 2027-28). Interest on all late tax, including payments on account: Bank Rate + 4%, charged daily at the rate in force each day (7.75% from 9 January 2026; 8.00% from 24 November 2026). Always label results as estimates.",
-   "risks": "A reasonable excuse must be evidenced (perrin-v-hmrc) and acted on promptly once it ends. Lack of funds is not an excuse. Agreeing time to pay before day 30 avoids Sch 56 penalties but not interest. Penalties and interest are never deductible. Appeal within 30 days."
+   "risks": "A reasonable excuse must be evidenced (perrin-v-hmrc) and acted on promptly once it ends. Lack of funds is not an excuse. Asking HMRC for a payment plan by day 30, and keeping to the plan they agree, avoids all three Sch 56 penalties (asking later avoids the later ones); interest still runs. Penalties and interest are never deductible. Appeal within 30 days."
   },
   {
    "id": "disclosure-and-records",

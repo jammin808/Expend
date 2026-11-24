@@ -1,27 +1,42 @@
 {
-  "researched_on": "2026-11-23",
-  "status": "Swept from legislation.gov.uk, GOV.UK and HMRC manuals; independent checks of each rule were still running when this file was written. Figures marked verified=false are from the sweep only.",
+  "researched_on": "2026-11-24",
+  "status": "Checked on 24 November 2026 against the settled, source-checked rules (legislation.gov.uk, GOV.UK, HMRC manuals). A section is verified=true only where every value in it is settled; verified=false sections say in verified_note what is still announced or unresolved. All figures are estimates of what HMRC will charge; HMRC's own statement or notice is the final word.",
   "regimes": {
-    "note": "Late filing and late payment penalties depend on the tax year and on whether you are in Making Tax Digital for Income Tax (MTD). Sch 55 (filing) and Sch 56 (payment) apply to 2022-23 to 2025-26 for everyone, and to 2026-27 for anyone not in MTD from 6 April 2026. The points regime (FA 2021 Sch 24) and new late payment penalties (FA 2021 Sch 26) apply from 2026-27 for people in MTD from 6 April 2026, and from 2027-28 for everyone (announced). Accepted MTD volunteers moved earlier (from 2024-25).",
+    "note": "Which late filing and late payment penalties apply depends on the tax year the return or payment is for (not when it is filed or paid) and on the person. FA 2009 Sch 55 (late filing) and Sch 56 (late payment) apply to every individual for 2022-23 and 2023-24. For 2024-25 and 2025-26 they apply to everyone except accepted MTD eligible volunteers, from the tax year their election takes effect (the later of the named year and the year HMRC accepts it in writing; SI 2024/440). For 2026-27 they apply to everyone except digitally obligated persons (people required to send MTD for Income Tax quarterly updates in 2026-27: broadly qualifying income over £50,000 in 2024-25 with no exemption; SI 2026/370) and accepted volunteers. Those two groups are under FA 2021 Sch 24 (late submission points), Sch 25 (deliberate withholding) and Sch 26 (late payment) for those years and every later year: this is law. For everyone else, including people joining MTD from 6 April 2027 (over £30,000 in 2025-26), the move to Sch 24-26 from the 2027-28 return is ANNOUNCED, NOT YET LAW: no appointed-day regulations existed at 24 November 2026, so Sch 55/56 remain the legal position until they are made. Someone who becomes exempt from MTD during 2026-27 goes back to Sch 55/56. Partnership, trust/estate and non-resident company returns stay on Sch 55/56.",
     "new_regime_from": { "mtd": "2026-27", "everyone": "2027-28" },
+    "volunteers_from_earliest": "2024-25",
     "everyone_announced_only": true,
+    "everyone_status": "Announced, not law. Show as an estimate, with the Sch 55/56 figures as the currently legal alternative, until an appointed-day SI is made.",
+    "mtd_test": "Digitally obligated person (SI 2026/370 reg 2): subject in 2026-27 to the MTD quarterly-update requirement (TMA Sch A1 para 7 regulations), i.e. carrying on a trade or property business immediately before 6 April 2026, required to deliver a 2024-25 return covering it, 2024-25 qualifying income (gross trading plus property income, before expenses) over £50,000, and no exemption or deferral; excludes anyone within Sch A1 para 14(1A) or 15(3). Applies for 2026-27 and every later year even if they later fall below the threshold.",
     "sources": [
       "https://www.legislation.gov.uk/uksi/2026/370/made",
       "https://www.legislation.gov.uk/uksi/2024/440/made",
-      "https://www.gov.uk/guidance/penalties-for-making-tax-digital-for-income-tax"
+      "https://www.legislation.gov.uk/ukpga/2021/26/schedule/27/paragraph/39",
+      "https://www.gov.uk/guidance/penalties-for-making-tax-digital-for-income-tax",
+      "https://www.gov.uk/guidance/penalties-for-income-tax-self-assessment-volunteers",
+      "https://www.gov.uk/government/publications/budget-2025-overview-of-tax-legislation-and-rates-ootlar/budget-2025-overview-of-tax-legislation-and-rates-ootlar"
     ],
-    "verified": false
+    "verified": false,
+    "verified_note": "Unresolved: the 2027-28 start for everyone who is not a digitally obligated person or accepted volunteer is announced only (Budget 2025 OOTLAR 2.46; GOV.UK updated 19 November 2026). No SI exists at 24 November 2026, and whether it will key on returns for 2027-28 (assumed) or on failures from 6 April 2027 is unknown. Everything else in this section is law."
   },
   "due_dates": {
-    "online_filing": "31 January after the end of the tax year",
-    "paper_filing": "31 October after the end of the tax year",
-    "balancing_payment": "31 January after the end of the tax year",
-    "poa1": "31 January in the tax year",
-    "poa2": "31 July after the end of the tax year",
-    "notify_by": "5 October after the end of the tax year",
-    "own_return_last_date": "4 years after the end of the tax year (TMA s34A)",
-    "sources": ["https://www.legislation.gov.uk/ukpga/1970/9/section/59B", "https://www.legislation.gov.uk/ukpga/1970/9/section/8", "https://www.legislation.gov.uk/ukpga/1970/9/section/34A"],
-    "verified": false
+    "online_filing": "31 January after the end of the tax year (11:59pm, date HMRC receives it; no weekend or bank-holiday rollover), where HMRC gave the notice to file by 31 July. Notice given 1 August to 31 October: still 31 January (statute), but HMRC's system uses the later of 31 January and notice date + 3 months + 7 days. Notice given after 31 October: HMRC's system uses notice date + 3 months + 7 days (statute: the 3 months beginning with the notice date). Late-notice dates are estimates; a date printed on HMRC's notice overrides. No notice to file means no filing date and no late filing penalty: failure to notify applies instead.",
+    "paper_filing": "31 October after the end of the tax year, where the notice was given by 31 July; for a later notice, notice date + 3 months + 7 days (HMRC system). Applies only if the return is actually delivered on paper; an unfiled return is measured against the online date.",
+    "balancing_payment": "31 January after the end of the tax year (TMA s59B(4)). Exception (s59B(3)): if chargeability was notified by 5 October but the notice to file was given after 31 October, the last day of the 3 months beginning with the notice date. Filing late never moves it.",
+    "poa1": "31 January in the tax year (TMA s59A(2)(a))",
+    "poa2": "31 July after the end of the tax year (TMA s59A(2)(b))",
+    "notify_by": "5 October after the end of each tax year in which you are chargeable and have not been sent a notice to file (TMA s7(1C)(a))",
+    "own_return_last_date": "If HMRC have made no determination: 5 April four years after the end of the tax year (TMA s34A(1)), or 3 months from a notice to file received within those 4 years. If HMRC have made a s28C determination: the later of the last day of 3 years beginning with the filing date and the last day of 12 months beginning with the determination date (TMA s28C(5)); for 2022-23 that is 30 January 2027 unless the determination is dated after 31 January 2026.",
+    "sources": [
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/59B",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/59A",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/8",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/7",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/34A",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/28C",
+      "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam121025"
+    ],
+    "verified": true
   },
   "sch55": {
     "title": "Late filing (Finance Act 2009 Schedule 55)",
@@ -36,14 +51,25 @@
     "twelve_month_min_pence": 30000,
     "deliberate_pct": 70,
     "deliberate_concealed_pct": 100,
-    "base": "The tax that would have been shown on a complete, correct return filed on time (income tax, Class 4 and Class 2 NI and capital gains tax, after tax deducted at source). Payments made don't reduce it.",
-    "notes": "The £100 is due even if no tax is owed. Daily penalties need an HMRC notice, which HMRC normally sends; they run from the day after 3 months from the penalty date (1 May for a 31 January deadline), for up to 90 days. HMRC must assess each penalty; it is payable within 30 days of the notice.",
+    "deliberate_by_category_pct": { "1": { "deliberate": 70, "concealed": 100 }, "2": { "deliberate": 105, "concealed": 150 }, "3": { "deliberate": 140, "concealed": 200 } },
+    "deliberate_minimums_domestic_pct": { "70": { "prompted": 35, "unprompted": 20 }, "100": { "prompted": 50, "unprompted": 30 } },
+    "deliberate_minimums_offshore_pct": { "70": { "prompted": 45, "unprompted": 30 }, "100": { "prompted": 60, "unprompted": 40 }, "105": { "prompted": 62.5, "unprompted": 40 }, "140": { "prompted": 80, "unprompted": 50 }, "150": { "prompted": 85, "unprompted": 55 }, "200": { "prompted": 110, "unprompted": 70 } },
+    "aggregate_cap_pct": { "default": 100, "category_2_deliberate": 150, "category_3_deliberate": 200 },
+    "base": "L = the tax a complete and accurate return delivered on the filing date would have shown as due or payable (Sch 55 para 24): income tax (including the High Income Child Benefit Charge) + Class 4 NIC + capital gains tax + compulsory Class 2 NIC for 2022-23 and 2023-24 only (nil from 2024-25; voluntary Class 2 never) + any Self Assessment student or postgraduate loan repayment, minus tax deducted at source (PAYE, CIS, tax taken off interest), floored at 0. It is NOT reduced by payments on account, the balancing payment, 60-day CGT payments or any other payment. While the return is unfiled HMRC estimate L (in practice they raise £300, or 5% of a determination, first and top it up when the return is filed; never below £300).",
+    "notes": "Applies only where HMRC gave a notice to file for the year and has not withdrawn it. Penalty date = filing date + 1 day. £100 from the penalty date, even if no tax is owed or a repayment is due. Daily penalties: only if the return is still unfiled after the end of the 3 months beginning with the penalty date, HMRC decide to charge them and give notice of the start date (in practice in the £100 notice); £10 a day from 1 May (online; 1 February for a paper return actually delivered on paper) for up to 90 days (£900), counting up to and including the day HMRC receive the return. Six-month penalty if still unfiled at the end of the 6 months beginning with the penalty date (31 July online, so it arises 1 August); twelve-month penalty if still unfiled at the end of 12 months (arises 1 February a year later): each the greater of 5% of L and £300, or for the twelve-month penalty 70%/100% (more offshore) if information was deliberately withheld. The six- and twelve-month percentage amounts together may not exceed 100% of L (150%/200% for deliberately withheld category 2/3 information); the £100 and daily penalties are outside that cap. Each penalty is payable within 30 days beginning with the day the notice is issued (issue date + 29). Reasonable excuse removes them; withdrawal of the notice to file (TMA s8B) may cancel them.",
     "sources": [
       "https://www.legislation.gov.uk/ukpga/2009/10/schedule/55",
+      "https://www.legislation.gov.uk/ukpga/2009/10/schedule/55/paragraph/4",
+      "https://www.legislation.gov.uk/ukpga/2009/10/schedule/55/paragraph/17",
+      "https://www.legislation.gov.uk/ukpga/2009/10/schedule/55/paragraph/24",
       "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch62100",
-      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch62140"
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch62120",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch62140",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch63560",
+      "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam61230",
+      "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam61240"
     ],
-    "verified": false
+    "verified": true
   },
   "sch56": {
     "title": "Late payment (Finance Act 2009 Schedule 56)",
@@ -52,27 +78,42 @@
       { "label": "6 months late", "months_after_penalty_date": 5, "pct": 5 },
       { "label": "12 months late", "months_after_penalty_date": 11, "pct": 5 }
     ],
-    "base": "The balancing payment (and any amended or assessed amount) still unpaid at each date. Payments on account carry interest only, never these penalties.",
+    "timing": "T1 = due date + 30 days; penalty date PD = T1 + 1 (3 March, or 2 March when February has 29 days, for a 31 January due date). T2 = last day of the 5 months beginning with PD; T3 = last day of the 11 months beginning with PD (for a 31 January due date: 2 August and 2 February, or 1 August and 1 February after a 29-day February). Each 5% is charged on the amount still unpaid at the end of its trigger date and arises the next day. Use the corresponding-date rule, not overflowing add-months, for other due dates.",
+    "base": "For the balancing payment: the year's self-assessed income tax + Class 4 + CGT + SA student loan + compulsory Class 2 (2022-23 and 2023-24 only), minus payments on account actually MADE for the year and tax deducted at source (TMA s59B(1)). So any of the year's payments on account still unpaid at 31 January after the year are inside the penalised amount (SAM61390). Recompute at each trigger after all payments made towards the year by then. Payments on account are never penalised on their own, nor is next year's first payment on account due the same day. Extra tax from an amendment or HMRC assessment is penalised from its own due date (generally the later of the normal date and notice date + 30), not from 31 January.",
     "poa_excluded": true,
-    "time_to_pay": "A payment plan agreed before a penalty date stops that penalty and later ones while it's kept to. Interest still runs.",
+    "time_to_pay": "A Time to Pay request suspends the Sch 56 penalties on the amount covered, if HMRC then agree the plan (Sch 56 para 10). It protects penalties whose trigger date falls on or after the request and before the end of the agreed deferral: asking by the 30-day trigger (2 March for a 31 January due date) avoids all three; by the 6-month trigger avoids the second and third; by the 12-month trigger avoids the third. Penalties already incurred stand. If the plan is broken HMRC may by notice charge the suspended penalties as if there had been no plan. HMRC will not agree a Self Assessment plan while a return is overdue. Interest keeps running throughout.",
     "sources": [
       "https://www.legislation.gov.uk/ukpga/2009/10/schedule/56",
+      "https://www.legislation.gov.uk/ukpga/2009/10/schedule/56/paragraph/10",
       "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam61380",
-      "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam61250"
+      "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam61390",
+      "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam61250",
+      "https://www.gov.uk/hmrc-internal-manuals/debt-management-and-banking/dmbm803610"
     ],
-    "verified": false
+    "verified": true
   },
   "points": {
     "title": "Late submission points (Finance Act 2021 Schedule 24)",
     "per_late_submission": 1,
     "threshold_annual": 2,
     "threshold_quarterly": 4,
+    "threshold_volunteer": 2,
     "penalty_pence": 20000,
     "point_life_months": 24,
+    "point_life_from": "1st of the month after the month of the failure (failure date = due date + 1 day): a return due 31 January 2028 fails 1 February 2028 and its point expires at the end of 28 February 2030; a quarterly update due 7 August 2027 fails 8 August 2027 and expires at the end of 31 August 2029. A point does not expire while you are at the threshold.",
+    "reset_months": { "annual_group_1A": 24, "quarterly_group_1B": 12 },
     "quarterly_update_due": ["7 August", "7 November", "7 February", "7 May"],
-    "notes": "Each late return or quarterly update gives a point. At the threshold (4 for someone sending quarterly updates, 2 for annual returns only) a £200 penalty is charged, and another £200 for each further late submission while at the threshold.",
-    "sources": ["https://www.legislation.gov.uk/ukpga/2021/26/schedule/24", "https://www.gov.uk/guidance/penalties-for-making-tax-digital-for-income-tax"],
-    "verified": false
+    "first_year_quarterly_points": "None for late quarterly updates in your first mandated MTD year (April 2026 joiners: the 2026-27 updates, first possible point for 7 August 2027; April 2027 joiners: the 2027-28 updates). HMRC policy, not law. A late tax return earns a point from year 1. Volunteers get no quarterly-update points.",
+    "notes": "A late return (or, for people mandated into MTD, a late quarterly update) makes you liable to a point; HMRC award it by notice. At most one point per calendar month for each kind of submission (the annual return and the quarterly updates are counted separately), and none while you are already at the threshold. Threshold: 4 if you are mandated into MTD (return and quarterly updates share one count), 2 otherwise, including volunteers. Reaching the threshold costs £200, and each later failure while at the threshold costs £200, at most one £200 a month for each kind of submission; payable within 30 days beginning with the notice issue date. All points expire after 24 months (12 if mandated) with every submission on time, provided every return due in the previous 24 months has been made. Moving from mandated to not mandated takes 2 points off; the reverse adds 2. No £100, daily, 5% or £300 penalties apply under this regime.",
+    "sources": [
+      "https://www.legislation.gov.uk/ukpga/2021/26/schedule/24",
+      "https://www.legislation.gov.uk/ukpga/2021/26/schedule/24/paragraph/15",
+      "https://www.legislation.gov.uk/ukpga/2021/26/schedule/24/paragraph/8",
+      "https://www.gov.uk/guidance/penalties-for-making-tax-digital-for-income-tax",
+      "https://www.gov.uk/guidance/penalties-for-income-tax-self-assessment-volunteers",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch192210"
+    ],
+    "verified": true
   },
   "sch26": {
     "title": "New late payment penalties (Finance Act 2021 Schedule 26)",
@@ -85,14 +126,26 @@
       "2027-28": { "first_pct": 4, "second_pct": 4, "annual_pct": 10, "announced": true }
     },
     "first_year_window_days": 30,
-    "notes": "No penalty if paid in full (or a payment plan is asked for) within 15 days of the due date; in your first year under the new rules, within 30 days. Otherwise a percentage of what's unpaid at day 15 and day 30, then a yearly rate charged daily from day 31 until paid. Payments on account aren't penalised.",
-    "sources": ["https://www.legislation.gov.uk/ukpga/2021/26/schedule/26", "https://www.legislation.gov.uk/uksi/2025/589/made", "https://www.gov.uk/guidance/penalties-for-income-tax-self-assessment-volunteers"],
-    "verified": false
+    "first_year_once_only": true,
+    "second_penalty_divisor": 365,
+    "second_penalty_cap": "Accrual runs from day 31 to the day of full payment inclusive, on each day's opening balance, but no later than the day before a time-to-pay proposal day (if a plan was then agreed) and no later than Date A (the last day of 2 years beginning with the due date, e.g. 30 January 2030 for 31 January 2028): HMRC may assess from 7 days before Date A (SI 2024/1153).",
+    "notes": "Day n = due date + n. No penalty if the tax is paid in full by the end of day 15, or if proposals made by the end of day 15 lead to an agreed payment plan. Otherwise: the first rate on what is unpaid at the end of day 15, plus the second rate on what is unpaid at the end of day 30 (not charged if paid in full in days 16-30, or if proposals made in days 16-30 lead to an agreed plan), plus the yearly rate charged daily from day 31 until paid in full (stopping from the day proposals that lead to an agreed plan were made). In your first year under these rules HMRC charge nothing if, within 30 days, you pay in full or contact them and a plan is agreed and kept (HMRC policy, given once per person; a volunteer later mandated keeps 15 days). If a plan is broken HMRC may by notice charge the penalties as if there had been no plan. Payments on account are never penalised; the penalised base is the year's tax minus payments on account actually made. Interest runs as normal.",
+    "sources": [
+      "https://www.legislation.gov.uk/ukpga/2021/26/schedule/26",
+      "https://www.legislation.gov.uk/uksi/2025/589/made",
+      "https://www.legislation.gov.uk/uksi/2024/1153/made",
+      "https://www.gov.uk/guidance/penalties-for-making-tax-digital-for-income-tax",
+      "https://www.gov.uk/guidance/penalties-for-income-tax-self-assessment-volunteers",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch193140"
+    ],
+    "verified": false,
+    "verified_note": "Unresolved: the 2027-28 rates of 4% / 4% (10% a year) are announced only (Budget 2025 OOTLAR 2.46; GOV.UK); no SI or draft exists at 24 November 2026, and whether the increase will key on the tax year (assumed) or on the due date is unknown. The 2024-25, 2025-26 and 2026-27 rates are law (SI 2025/589). The 365-day divisor follows HMRC's worked example; the statute sets none."
   },
   "interest": {
     "title": "Late payment interest",
-    "method": "Simple interest for each day an amount is unpaid, from its due date to the day it's paid, at the rate in force that day, divided by 365 (366 for days in a leap year). It runs on payments on account, balancing payments and penalties alike, can't be appealed, and isn't a business expense.",
+    "method": "Simple interest under FA 2009 s101 (not TMA s86) on each amount from its due date (even if that is a weekend or bank holiday) until the day it is paid: interest days are each day after the due date up to and including the payment day, so days = payment date - due date. Each day uses the rate in force that day; a part payment reduces the balance from the next day. Group consecutive days with the same balance, rate and year length into segments (splitting at rate changes, part payments, and only those 1 Januaries where the year length changes: 2024, 2025, 2028, 2029); segment interest = balance x rate x days / 365 (366 for days in 2024 or 2028), truncated down to the penny; add the segments. No interest on interest. It runs on payments on account, balancing payments, amended or assessed tax (from the original due date), and on penalties not paid by their due date. It continues during a payment plan, cannot be appealed (only objected to in writing once the tax is paid) and is not a business expense. Divisor and rounding chosen: no statute fixes either, and HMRC's own material differs (DMBM404010 describes a flat /366 for every day; the GOV.UK VAT example rounds to the nearest penny). This uses 365/366 by calendar year with each segment truncated, because it is the only method that reproduces HMRC's published worked example (£1,000 due 31 Jan 2017, paid 31 Mar 2020 = £96.89; GOV.UK Interest rate review para 2.14; see unit_test_vector). Results are therefore estimates (about 1p per segment); HMRC's statement is definitive.",
     "late_payment_rates": [
+      { "from": "2020-03-30", "pct": "2.75" },
       { "from": "2020-04-07", "pct": "2.60" },
       { "from": "2022-01-07", "pct": "2.75" },
       { "from": "2022-02-21", "pct": "3.00" },
@@ -117,73 +170,166 @@
       { "from": "2026-01-09", "pct": "7.75" },
       { "from": "2026-11-24", "pct": "8.00" }
     ],
-    "formula": "Bank of England Bank Rate + 4% from 6 April 2025 (+2.5% before)",
+    "repayment_rates": [
+      { "from": "2020-04-07", "pct": "0.50" },
+      { "from": "2022-01-07", "pct": "0.50" },
+      { "from": "2022-02-21", "pct": "0.50" },
+      { "from": "2022-04-05", "pct": "0.50" },
+      { "from": "2022-05-24", "pct": "0.50" },
+      { "from": "2022-07-05", "pct": "0.50" },
+      { "from": "2022-08-23", "pct": "0.75" },
+      { "from": "2022-10-11", "pct": "1.25" },
+      { "from": "2022-11-22", "pct": "2.00" },
+      { "from": "2023-01-06", "pct": "2.50" },
+      { "from": "2023-02-21", "pct": "3.00" },
+      { "from": "2023-04-13", "pct": "3.25" },
+      { "from": "2023-05-31", "pct": "3.50" },
+      { "from": "2023-07-11", "pct": "4.00" },
+      { "from": "2023-08-22", "pct": "4.25" },
+      { "from": "2024-08-20", "pct": "4.00" },
+      { "from": "2024-11-26", "pct": "3.75" },
+      { "from": "2025-02-25", "pct": "3.50" },
+      { "from": "2025-04-06", "pct": "3.50" },
+      { "from": "2025-05-28", "pct": "3.25" },
+      { "from": "2025-08-27", "pct": "3.00" },
+      { "from": "2026-01-09", "pct": "2.75" },
+      { "from": "2026-11-24", "pct": "3.00" }
+    ],
+    "rates_known_to": "2026-11-24 (rates for later days are not yet published; treat any later period as an estimate)",
+    "formula": "Late payment: Bank of England Bank Rate + 4 percentage points from 6 April 2025 (+2.5 up to 5 April 2025), no floor. Repayment: the higher of 0.5% and Bank Rate - 1. A new rate applies from the 13th working day after the MPC decision (England and Wales calendar), including to interest already running; the published GOV.UK table governs (SI 2011/2446 regs 2-4 and 6, as amended by SI 2025/386).",
     "penalty_interest_from_days_after_notice": 30,
+    "penalty_interest_note": "A penalty must be paid before the end of the 30 days beginning with the day its notice is issued (last day = issue date + 29); HMRC's system charges interest from issue date + 30. Daily late filing penalties are usually assessed on form SA370 at day 90 or when the return is filed, not on 1 May.",
+    "poa_interest_base": "Each payment on account carries interest from its own due date on the amount charged less what has been paid towards it. Once the year's return is filed, interest is worked out as if each payment on account were the lower of the amount charged and half of the year's income tax and Class 4 less tax deducted at source (Sch 53 paras 1-2; SAM1020); before then it runs on the amount charged.",
+    "unit_test_vector": {
+      "source": "GOV.UK Interest rate review (3 December 2020) para 2.14",
+      "amount_pence": 100000,
+      "due": "2017-01-31",
+      "paid": "2020-03-31",
+      "days": 1155,
+      "segments": [
+        { "from": "2017-02-01", "to": "2017-11-20", "days": 293, "pct": "2.75", "divisor": 365, "pence": 2207 },
+        { "from": "2017-11-21", "to": "2018-08-20", "days": 273, "pct": "3.00", "divisor": 365, "pence": 2243 },
+        { "from": "2018-08-21", "to": "2019-12-31", "days": 498, "pct": "3.25", "divisor": 365, "pence": 4434 },
+        { "from": "2020-01-01", "to": "2020-03-29", "days": 89, "pct": "3.25", "divisor": 366, "pence": 790 },
+        { "from": "2020-03-30", "to": "2020-03-31", "days": 2, "pct": "2.75", "divisor": 366, "pence": 15 }
+      ],
+      "expected_pence": 9689
+    },
     "sources": [
       "https://www.gov.uk/government/publications/rates-and-allowances-hmrc-interest-rates-for-late-and-early-payments/rates-and-allowances-hmrc-interest-rates",
-      "https://www.gov.uk/government/news/hmrc-interest-rates-update--2",
+      "https://www.legislation.gov.uk/ukpga/2009/10/section/101",
+      "https://www.legislation.gov.uk/ukpga/2009/10/schedule/53",
+      "https://www.legislation.gov.uk/uksi/2011/701/made",
       "https://www.legislation.gov.uk/uksi/2011/2446",
-      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch141120"
+      "https://www.gov.uk/government/publications/interest-rate-review/interest-rate-review",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch140220",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch141120",
+      "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam61250"
     ],
-    "verified": false
+    "verified": true,
+    "verified_note": "The day-count and rounding follow HMRC's published worked example (the only method that gives its £96.89). DMBM404010 describes a flat /366; results are labelled estimates (tolerance about 1p per segment)."
   },
   "failure_to_notify": {
     "title": "Not telling HMRC you need to file (Finance Act 2008 Schedule 41)",
-    "deadline": "5 October after the end of the tax year you started",
+    "deadline": "5 October after the end of each tax year for which you are chargeable to income tax or CGT and have not been sent a notice to file (TMA s7). The failure happens on 6 October. If a notice to file was withdrawn, the later of 5 October and 30 days beginning with the day after the withdrawal. No duty for a year in which you received a notice to file: late filing penalties apply instead. Self-employment makes you chargeable only if gross trading (plus miscellaneous) receipts exceed the £1,000 trading allowance or you elect out of it.",
     "max_pct": 30,
     "min_unprompted_within_12_months_pct": 0,
     "min_prompted_within_12_months_pct": 10,
     "min_unprompted_after_12_months_pct": 10,
     "min_prompted_after_12_months_pct": 20,
-    "base": "Tax still unpaid on 31 January after the tax year because of the failure: if the tax is paid by then, the penalty is nil.",
-    "sources": ["https://www.legislation.gov.uk/ukpga/2008/9/schedule/41", "https://www.gov.uk/register-for-self-assessment"],
-    "verified": false
+    "within_12_months_means": "Case A: HMRC become aware of the failure less than 12 months after the tax first became unpaid because of it (taken as 1 February after the tax year, so by 31 January of the following year). Applies only to the non-deliberate row.",
+    "deliberate": { "max_pct": 70, "min_prompted_pct": 35, "min_unprompted_pct": 20 },
+    "concealed": { "max_pct": 100, "min_prompted_pct": 50, "min_unprompted_pct": 30 },
+    "formula": "Quality of disclosure Q = telling (up to 30%) + helping (up to 40%) + giving access (up to 30%); penalty % = max - (max - min - R) x Q, where R = 10 for a deliberate failure disclosed more than 3 years after it occurred, otherwise 0; penalty = PLR x penalty %.",
+    "base": "Potential lost revenue: income tax (including HICBC), Class 4 NIC, compulsory Class 2 NIC (2022-23 and 2023-24 only) and CGT for the year still unpaid on 31 January after the tax year because of the failure. Payments made by then reduce it; if it is all paid by then, the penalty is nil. Reasonable excuse removes a non-deliberate penalty.",
+    "sources": [
+      "https://www.legislation.gov.uk/ukpga/2008/9/schedule/41",
+      "https://www.legislation.gov.uk/ukpga/2008/9/schedule/41/paragraph/13",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/7",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch72700",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch73360",
+      "https://www.gov.uk/register-for-self-assessment"
+    ],
+    "verified": true,
+    "verified_note": "Case A's start date for income tax (1 February after the tax year) is inferred from HMRC's VAT example (CH73180); dates on the edge of the 12-month window are estimates."
   },
   "inaccuracy": {
     "title": "Mistakes on a return (Finance Act 2007 Schedule 24)",
     "careless": { "max_pct": 30, "min_prompted_pct": 15, "min_unprompted_pct": 0 },
     "deliberate": { "max_pct": 70, "min_prompted_pct": 35, "min_unprompted_pct": 20 },
     "concealed": { "max_pct": 100, "min_prompted_pct": 50, "min_unprompted_pct": 30 },
-    "notes": "No penalty if you took reasonable care. Telling HMRC before they find it (unprompted) brings a careless penalty down to as little as 0%. A careless penalty can be suspended for up to 2 years.",
-    "sources": ["https://www.legislation.gov.uk/ukpga/2007/11/schedule/24", "https://www.gov.uk/guidance/tell-hmrc-about-underpaid-tax-from-previous-years"],
-    "verified": false
+    "late_disclosure_restriction_points": 10,
+    "notes": "No penalty if you took reasonable care (but an innocent error you later find and don't tell HMRC about counts as careless). Penalty % = max - (max - min - R) x quality of disclosure (telling 30%, helping 40%, giving access 30%), where R = 10 if you start to disclose more than 3 years after the inaccurate document was sent (HMRC practice for disclosures after 5 September 2016). Telling HMRC before they find it (unprompted) brings a careless penalty down to as little as 0%. A careless penalty can be suspended for up to 2 years. It is reduced by other penalties on the same tax (such as the extra Sch 55 5% penalties on a late return), but not by Sch 56 late payment penalties. These rates are for UK (category 1) matters; offshore matters are higher.",
+    "sources": [
+      "https://www.legislation.gov.uk/ukpga/2007/11/schedule/24",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch82465",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch404450",
+      "https://www.gov.uk/guidance/tell-hmrc-about-underpaid-tax-from-previous-years"
+    ],
+    "verified": true
   },
   "records": {
     "title": "Not keeping records",
     "max_pence": 300000,
-    "keep_until": "5 years after the 31 January filing deadline",
-    "sources": ["https://www.gov.uk/self-employed-records/how-long-to-keep-your-records"],
-    "verified": false
+    "max_per": "tax year (TMA s12B(5)); never added to the MTD digital-records penalty for the same year",
+    "keep_until": "For a trade or letting business, the later of 31 January five years after the 31 January filing deadline (e.g. 31 January 2029 for 2022-23) and the end of any HMRC enquiry, or of the window for opening one: 12 months after an on-time return, or the quarter day (31 January, 30 April, 31 July, 31 October) after the first anniversary of a late return or amendment.",
+    "sources": [
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/12B",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/9A",
+      "https://www.gov.uk/self-employed-records/how-long-to-keep-your-records",
+      "https://www.gov.uk/hmrc-internal-manuals/enquiry-manual/em4650"
+    ],
+    "verified": true
   },
   "assessment_time_limits": {
     "ordinary_years": 4,
     "careless_years": 6,
+    "offshore_years": 12,
     "deliberate_or_unnotified_years": 20,
-    "sources": ["https://www.legislation.gov.uk/ukpga/1970/9/section/34", "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch56100"],
-    "verified": false
+    "notes": "Each limit ends on 5 April that many years after the end of the tax year. 12 years for non-deliberate loss of tax involving an offshore matter or transfer (2013-14 onwards if careless, 2015-16 onwards otherwise). 20 years for deliberate loss, loss attributable to failing to notify chargeability under TMA s7 (unless you had a reasonable excuse and put it right without unreasonable delay), or avoidance-scheme notification failures. These limit HMRC's assessments, not your own return (see own_return_last_date).",
+    "sources": [
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/34",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/36",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/36A",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/118",
+      "https://www.gov.uk/hmrc-internal-manuals/compliance-handbook/ch56100"
+    ],
+    "verified": true
   },
   "mitigation": {
-    "reasonable_excuse": "No penalty if you had a reasonable excuse (such as a serious illness, a bereavement, an HMRC system failure, or a fire or flood) and put things right without unreasonable delay once it ended. Lack of money only counts if caused by events outside your control. Tribunals apply the four-stage test in Perrin v HMRC [2018] UKUT 156 (TCC).",
+    "reasonable_excuse": "No penalty if HMRC (or a tribunal) accept you had a reasonable excuse for the failure (such as a serious illness, a bereavement shortly before the deadline, an HMRC system failure, or a fire or flood) and you put things right without unreasonable delay once it ended (HMRC's guide is 14 days). Lack of money only counts if caused by events outside your control; relying on someone else only counts if you took reasonable care. Under the points system an accepted excuse also stops the point. It never removes interest. Tribunals apply the four-stage test in Perrin v HMRC [2018] UKUT 156 (TCC).",
     "appeal_days": 30,
-    "time_to_pay": "If you owe £30,000 or less, are up to date with returns and have no other plan, you can set up a payment plan online. It stops further late payment penalties while kept to; interest still runs at Bank Rate + 4%.",
-    "special_reduction": "HMRC can reduce a penalty for special circumstances (not ability to pay).",
-    "disclosure": "Underpaid tax from past years can be told to HMRC through the Digital Disclosure Service; telling them first gives the lowest penalties.",
+    "appeal": "Appeal in writing to HMRC, with your grounds, within 30 days after the date the penalty notice was issued (HMRC accept 37 days for Self Assessment late filing and late payment penalties). HMRC will not deal with a late filing appeal until the return is filed. You don't have to pay the penalty while the appeal is open, but interest runs from its original due date if it is upheld. A late appeal goes ahead if HMRC agree (they must if you had a reasonable excuse and asked without unreasonable delay) or the tribunal gives permission.",
+    "time_to_pay": "You can set up a Self Assessment payment plan online if you are up to date with your returns (including the one for this debt), owe £30,000 or less, have no other tax debts or HMRC payment plans, can set up the Direct Debit yourself from a UK account in your name, and can pay within 12 months; otherwise call HMRC on 0300 123 1813. Asking before a late payment penalty date, and keeping to the plan, stops the penalties that would arise after you asked; ones already charged stand. Interest still runs at HMRC's late payment rate (Bank Rate + 4%).",
+    "special_reduction": "HMRC can reduce a penalty for special circumstances (never for inability to pay or because the penalty is large compared with the tax). There is no special reduction for points-system (FA 2021 Sch 24) penalties.",
+    "disclosure": "Underpaid tax from past years can be told to HMRC through the Digital Disclosure Service for years up to 2024-25 (at 24 November 2026); 2025-26, 2026-27 and any year with a tax return HMRC asked for that is still outstanding go on tax returns instead. Telling HMRC before they find it gives the lowest penalties; starting more than 3 years after the error raises the minimum.",
     "sources": [
       "https://www.gov.uk/tax-appeals/reasonable-excuses",
       "https://www.gov.uk/tax-appeals/penalty",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/31A",
+      "https://www.legislation.gov.uk/ukpga/1970/9/section/49",
       "https://www.gov.uk/difficulties-paying-hmrc",
+      "https://www.tax.service.gov.uk/pay-what-you-owe-in-instalments",
       "https://www.gov.uk/tax-and-chancery-tribunal-decisions/christine-perrin-v-the-commissioners-for-hm-revenue-and-customs-2018-ukut-0156-tcc",
-      "https://www.gov.uk/guidance/tell-hmrc-about-underpaid-tax-from-previous-years"
+      "https://www.gov.uk/hmrc-internal-manuals/self-assessment-manual/sam10090",
+      "https://www.gov.uk/government/publications/hmrc-your-guide-to-making-a-disclosure/your-guide-to-making-a-disclosure"
     ],
-    "verified": false
+    "verified": true
   },
   "vat": {
     "title": "VAT (only if registered)",
     "registration_threshold_pence": 9000000,
-    "points": "Late VAT returns earn points: 4 for quarterly returns triggers £200, and £200 for each later late return.",
-    "late_payment": "No penalty if paid within 15 days; then 3% of what's unpaid at day 15, another 3% at day 30, and 10% a year from day 31.",
-    "sources": ["https://www.gov.uk/guidance/penalty-points-and-penalties-if-you-submit-your-vat-return-late", "https://www.gov.uk/guidance/vat-penalties-and-interest-if-you-pay-late"],
-    "verified": false
+    "registration_threshold_note": "Register if taxable turnover for the 12 months to the end of any month is more than £90,000 (month-ends from 1 April 2024; £85,000 before), or is expected to be in the next 30 days alone. Late registration: Sch 41 penalty of up to 30% of the net VAT due from the registration date.",
+    "points": "Late VAT returns (for periods starting on or after 1 January 2023) earn points: £200 at 4 points for quarterly returns (2 for annual, 5 for monthly), and £200 for each later late return while at the threshold; at most one point a month.",
+    "late_payment": "No penalty if paid (or a payment plan agreed from proposals made) within 15 days; then 3% of what's unpaid at day 15, another 3% of what's unpaid at day 30, and 10% a year from day 31, where the due date is on or after 31 May 2025 for a period starting on or after 1 April 2025; 2%, 2% and 4% a year otherwise. Interest at HMRC's late payment rate as well.",
+    "sources": [
+      "https://www.gov.uk/guidance/penalty-points-and-penalties-if-you-submit-your-vat-return-late",
+      "https://www.gov.uk/guidance/how-late-payment-penalties-work-if-you-pay-vat-late",
+      "https://www.legislation.gov.uk/uksi/2025/589/made",
+      "https://www.legislation.gov.uk/ukpga/1994/23/schedule/1",
+      "https://www.gov.uk/register-for-vat"
+    ],
+    "verified": true
   },
   "company": {
     "title": "If you trade through a limited company",
@@ -194,8 +340,15 @@
       { "late_up_to": "more than 6 months", "pence": 150000 }
     ],
     "companies_house_doubled_if_last_year_late": true,
-    "ct_late_filing_from_2026": "£200 within 3 months of the deadline, £400 after; £1,000 and £2,000 for a third late return in a row; plus 10% of unpaid tax at 18 months and 20% at 24 months.",
-    "sources": ["https://www.legislation.gov.uk/uksi/2008/497/made", "https://www.gov.uk/company-tax-returns/penalties-for-late-filing"],
-    "verified": false
+    "companies_house_note": "Accounts are due 9 months after the end of the accounting period (21 months from incorporation for a long first period); a deadline at a month-end runs to the month-end. Doubled if the previous year's accounts were also late or are still not delivered (never for a company's first financial year). No allowance for weekends or bank holidays.",
+    "ct_late_filing_from_2026": "Only where HMRC served a notice to deliver a Company Tax Return, and for returns whose filing date is on or after 1 April 2026: £200 if up to 3 months late, £400 in total after that; £1,000 and £2,000 for a third late return in a row (£100/£200 and £500/£1,000 for earlier filing dates). No flat-rate penalty if the return is delivered by the Companies House accounts deadline. Plus 10% of the tax unpaid when the return is still not delivered 18 months after the end of the period (or the filing date, if later), or 20% in total if it is delivered more than 2 years after the period ends.",
+    "sources": [
+      "https://www.legislation.gov.uk/uksi/2008/497/regulation/4/made",
+      "https://www.legislation.gov.uk/ukpga/2006/46/section/442",
+      "https://www.legislation.gov.uk/ukpga/1998/36/schedule/18/paragraph/17",
+      "https://www.legislation.gov.uk/ukpga/2026/11/section/265",
+      "https://www.gov.uk/company-tax-returns/penalties-for-late-filing"
+    ],
+    "verified": true
   }
 }
