@@ -83,6 +83,11 @@ step "Migrating"
 "$PHP" artisan migrate --force --no-interaction
 step "Caching config, routes, events and views"
 "$PHP" artisan optimize --no-interaction
+# Safe to repeat: they only suggest (never decide) and skip what's already done.
+step "Finding transfers, suggesting what waiting payments are, and recording findings"
+"$PHP" artisan ledger:transfers --no-interaction || echo "  (transfers step failed; it runs again tonight)"
+"$PHP" artisan ledger:categorise --no-interaction || echo "  (suggestions step failed; it runs again tonight)"
+"$PHP" artisan ledger:findings --no-interaction || echo "  (findings step failed; it runs again tonight)"
 
 # Keep a copy of this script (still web-denied) at the same public path in the new release, so the
 # cron job's later runs just print this log until it is removed.
