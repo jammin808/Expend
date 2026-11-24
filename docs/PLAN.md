@@ -20,8 +20,11 @@ are built (§6.2, §6.5, §6.6 in simplified form): one `travel_items` table cov
 separate `stays` and `journeys` tables; schema.org booking data is read first and AI with quote checks second;
 nights follow the distance and start/finish-time rules; payments are matched and client-booked stays proposed;
 statement-only TfL, taxi, rail and parking charges follow the same job days. Not built from those sections yet:
-searching again automatically when a job is added, per-sender parsers, the Calendar API, refund tracking for
-cancellations, and meals during stays.
+per-sender parsers, the Calendar API, refund tracking for cancellations, and meals during stays.
+
+**Update (24 Nov 2026):** Gmail is searched for a job's emails and POs when the job is added, and again when its PO
+number, dates, client or venue change, leaving out your Sent mail (docs/mail-and-calendar.md, batch 1). The Gmail
+connection asks for `gmail.modify`, so it can read and add Expend's own labels; it never sends, moves or deletes.
 
 ---
 
@@ -31,7 +34,7 @@ cancellations, and meals during stays.
 |---|---|---|---|
 | Tax compliance | "Exportable records for an accountant or HMRC-compatible software" | Making Tax Digital for Income Tax (MTD ITSA) is a first-class requirement: HMRC categories, quarterly periods, quarter close, digital-link export | MTD ITSA has been live since 6 Apr 2026 for qualifying income over £50k; £30k from Apr 2027; £20k from Apr 2028 |
 | Data model | Originals kept separately | Three layers (immutable source, allocations, disposable projections); integer pence; splits must sum exactly; hash-chained audit log; period locks | Makes wrong figures structurally hard to produce |
-| Email | Gmail API | Gmail API, read-only, with narrow searches (bookings, receipts) and an access log. Forwarding mailbox as the privacy-first alternative | Hotel-stay checks need on-demand searches around job dates. Access stays read-only and narrow, and the OAuth token-expiry trap is avoided |
+| Email | Gmail API | Gmail API (`gmail.modify` since 24 Nov 2026: read, plus Expend's own labels; it never sends, moves or deletes), with narrow searches (bookings, receipts) and an access log. Forwarding mailbox as the privacy-first alternative | Hotel-stay checks need on-demand searches around job dates. Searches stay narrow, writes are limited to Expend's own labels by Expend's own rule, and the OAuth token-expiry trap is avoided |
 | Calendar | Calendar API | Default: Google Calendar's secret iCal feed (read-only). API optional | No OAuth to maintain |
 | Hotel stays | Not covered | Each stay is assembled from Gmail bookings, calendar and bank payments, then classified night by night against job dates and venue distance. Never auto-confirmed | Hotels are the classic mixed business/personal expense |
 | Travel journeys | Not covered | Uber, Bolt, taxis, Trainline and train operators, TfL, coaches, parking, tolls and fuel are matched to each job's travel window, grouped into one trip per job and confirmed per trip | Travel is mixed business/personal too, and a job with no recorded travel often means a missed claim |
@@ -132,7 +135,7 @@ stable choice on shared hosting.
 | PDF output | dompdf | Pure PHP |
 | PDF input (phase 9) | smalot/pdfparser | Pure PHP |
 | Calendar | sabre/vobject | ICS, including recurring events |
-| Email | Gmail API via google/apiclient; PHP imap extension for the forwarding-mailbox alternative | Read-only |
+| Email | Gmail API via google/apiclient; PHP imap extension for the forwarding-mailbox alternative | Reads, and adds Expend's own labels (`gmail.modify`); never sends |
 | Geocoding | postcodes.io, or a local copy of the ONS Postcode Directory | UK postcodes to coordinates, for hotel/venue/home distances |
 | AI (opt-in) | Claude via the official PHP SDK (`anthropic-ai/sdk`) | Queued jobs only; structured outputs; Message Batches for overnight runs (§6.8) |
 | Passkeys | A maintained WebAuthn package (or Laravel's own, if available at build time) | |
@@ -446,10 +449,14 @@ the columns once, check a preview, save the profile.
 
 - **Phone camera capture (PWA):** a "+" button opens the camera. The photo is compressed, uploaded and
   linked to a transaction straight away, or matched later by date and amount.
-- **Gmail API, read-only (recommended).** Hotel-stay checks (§6.5) need to search Gmail on demand around
+- **Gmail API (recommended).** Hotel-stay checks (§6.5) need to search Gmail on demand around
   job dates, which justifies a direct connection. The same connection also finds receipts and invoices from
   known senders.
-  - Request the `gmail.readonly` scope only. Google classes it as "restricted".
+  - Since 24 Nov 2026 the connection asks for `gmail.modify` (it was `gmail.readonly`), so Expend can add its own
+    labels ("✓ Invoiced" and the like; docs/mail-and-calendar.md, the owner's access decision). Google classes it as
+    "restricted", like `gmail.readonly`. Google's permission would also allow drafts, sending, moving and deleting:
+    Expend's own rule, not Google's, is what stops that. Expend writes only its own labels (and, later, its own
+    drafts), and sending anything to a client always needs your press.
   - For a personal app, keep the OAuth client to yourself and set the consent screen to **In production**,
     accepting the "unverified app" warning once. In **Testing** status, refresh tokens expire after 7 days,
     which would silently break sync.
@@ -458,7 +465,8 @@ the columns once, check a preview, save the profile.
 - **Forwarding mailbox (privacy-first alternative).** A Gmail filter using the same searches auto-forwards
   matching emails to a dedicated `receipts@` mailbox on Hostinger, which the app polls over IMAP every
   5–15 minutes. History is loaded once from a Google Takeout export of that filter's label. The server
-  never holds Gmail access, but the app can't search Gmail when a new job is added.
+  never holds Gmail access, so with this alternative alone Gmail can't be searched when a job is added (with the
+  Gmail connection it is: see the update at the top).
 
 ### 6.3 Calendar
 
@@ -847,11 +855,14 @@ the API account).
    - Encrypt backups to a public key whose private key is *not* on the server.
 4. **Data loss** (host failure, mistakes, ransomware): off-site, append-only backups.
 5. **Lost phone:** passkey, short sessions, remote session revoke.
-6. **Gmail access token stolen.** `gmail.readonly` technically allows reading the whole mailbox, even
-   though the app only searches for bookings and receipts. That makes the refresh token the most sensitive
-   secret in the app. Mitigations:
+6. **Gmail access token stolen.** `gmail.modify` technically allows reading the whole mailbox, and also
+   changing it, drafting and sending as you, even though the app only searches for bookings and receipts and
+   adds its own labels. That makes the refresh token the most sensitive secret in the app, more so than under
+   the old `gmail.readonly`. Mitigations:
    - Encrypt the token and never log it.
-   - Request no other Gmail scope.
+   - Request no Gmail scope beyond `gmail.modify` (no `gmail.send`, no full mail.google.com access); in the app,
+     only label calls write, and nothing is sent to a client without your press.
+   - If label writing is ever switched off, go back to `gmail.readonly` and reconnect.
    - Use a dedicated Google Cloud project.
    - Offer a one-click disconnect that revokes the token at Google.
 
@@ -1063,7 +1074,7 @@ new invoice.
 | 1. Catch-up returns (figures ready by mid-January 2027) | Login (passkey + TOTP); audit log; accounts; CSV import for Starling, Amex and Capital One with dedupe, balance or statement checks and automatic card-bill transfer pairing; Inbox and Review all with filters and bulk edit, including "decide for all transactions from this merchant"; HMRC categories; business, personal and transfer types; calendar context on each item (read-only iCal feed showing what was on that day); catch-up mode with coverage grid and big-groups-first review; HMRC payments recorded per tax year; return summary, tax estimate, bill preview and pre-filing checks per tax year; spreadsheet export. Stretch goal if time allows (otherwise phase 5): AI suggestions for category and business/personal | Any outstanding year's figures can be typed into HMRC online straight from the app, starting with 2024-25 and 2025-26 |
 | 2. Ledger depth | Per-item history; splits and business-use %; rules (auto-confirm off by default); duplicates UI; period close and lock; quarterly MTD summary and export; column-mapping wizard for new accounts; OFX/XLSX; camera receipts; documents | A whole quarter closes at 100% reconciliation, ready for MTD if it applies from April 2027 |
 | 3. Jobs | Clients; jobs; calendar sync; manual job allocation (from an item, the review table or the job page); job-matching suggestions; mileage and vehicles; job P&L | Expenses are suggested to jobs, with reasons |
-| 4. Travel | Read-only Gmail connection; booking and travel email extraction for your providers; hotel stays night by night; journeys; client-booked flight itineraries; rechargeable items and claim packs; TfL charges matched by day (journey-history import optional); trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
+| 4. Travel | Gmail connection (read-only when built; `gmail.modify` for Expend's own labels since 24 Nov 2026); booking and travel email extraction for your providers; hotel stays night by night; journeys; client-booked flight itineraries; rechargeable items and claim packs; TfL charges matched by day (journey-history import optional); trip view and per-trip confirmation; gap checks | Every hotel and travel payment is linked to a job's trip or proposed as personal, with reasons |
 | 5. AI assistance (opt-in) | AI suggestions for items rules and matching can't settle; AI extraction for receipts, booking emails and PDFs; request log, spending cap, acceptance tracking and test set | AI suggestions appear with reasons, never auto-confirm, and their acceptance rate is visible |
 | 6. Invoicing | Numbering; templates; PDF; recharges as invoice lines; credit notes; payment matching including partial payments; ageing; reminders | Payments reconcile against invoices automatically |
 | 7. Tax and reports | Full SA103 mapping; trading-allowance comparison; use of home; set-aside for tax; VAT-threshold monitor; P&L; records pack (Excel/CSV/PDF plus receipts zip) | Every figure on a return can be traced back to its transactions and receipts |
@@ -1096,7 +1107,7 @@ all can be changed later in Settings.
 | Setting | Default until you change it |
 |---|---|
 | Amex and Capital One: business or mixed-use cards | Mixed use: each transaction decided individually; interest and fees go to review |
-| Gmail connection | Read-only Gmail API (forwarding mailbox available instead) |
+| Gmail connection | Gmail API: reads, and adds Expend's own labels (`gmail.modify`); forwarding mailbox available instead |
 | Scottish taxpayer | No |
 | Vehicles and mileage method | Added in setup; simplified mileage unless you choose actual costs |
 | Home postcode | Entered in setup (stored in settings only) |

@@ -5,6 +5,7 @@ use App\Domain\Ai\AiUsage;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Banks\StarlingSync;
 use App\Domain\Calendar\CalendarSync;
+use App\Domain\Calendar\EmptyFeed;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Intel\AuditContext;
@@ -23,7 +24,6 @@ use App\Domain\Telegram\Telegram;
 use App\Domain\Todo\Dismissals;
 use App\Domain\Todo\FindingsRegistry;
 use App\Domain\Verification\Verifier;
-use App\Jobs\FindJobs;
 use App\Jobs\ScanGmail;
 use App\Jobs\SyncGmailLabels;
 use App\Models\CycleRun;
@@ -61,13 +61,20 @@ Artisan::command('ledger:sync-calendar', function (CalendarSync $sync) {
 
         return 0;
     }
-    $count = $sync->sync();
+    try {
+        // Then the job finder looks at what's new (CalendarSync::sync queues it).
+        $count = $sync->sync();
+    } catch (EmptyFeed $e) {
+        // Kept, and not counted as a refresh: if it keeps happening, the to-do list says the calendar isn't updating.
+        $this->warn($e->getMessage());
+
+        return 0;
+    }
     Setting::put('calendar_synced_at', now()->format('Y-m-d H:i'));
     $this->info("Synced {$count} calendar events.");
-    FindJobs::dispatch();
 
     return 0;
-})->purpose('Refresh calendar events from the private iCal feed');
+})->purpose('Refresh calendar events from the private iCal feed, then look for jobs in them');
 
 Artisan::command('ledger:find-jobs {year? : A tax year such as 2024-25; default the last 30 months and the next year} {--no-ai : Rules only}', function (JobFinder $finder, Verifier $verifier) {
     // One run of the job finder at a time (shared with the queued FindJobs and the nightly cycle's relate.jobs).
@@ -360,6 +367,9 @@ Schedule::call(function () {
 // What needs you, on Telegram every Monday morning; overdue invoices each weekday.
 Schedule::command('ledger:telegram-digest')->weeklyOn(1, '08:47')->timezone('Europe/London');
 Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('Europe/London');
+// The morning after a job with no invoice finishes, after the night's work and the morning report: "Acme Awards
+// finished yesterday. Invoice it?", once per job (app/Console/Commands/JobFinishedNudges.php).
+Schedule::command('ledger:job-finished')->dailyAt('08:37')->timezone('Europe/London')->withoutOverlapping();
 // The job finder and the double-check of AI findings, every night; scans get a few second reads a night.
 Schedule::command('ledger:transfers')->dailyAt('04:07')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
 Schedule::command('ledger:categorise')->dailyAt('04:12')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);

@@ -7,6 +7,8 @@ use App\Domain\Import\CsvReader;
 use App\Domain\Import\Importer;
 use App\Domain\Import\NormalizedRow;
 use App\Domain\Import\ProfileDetector;
+use App\Domain\Tax\TaxPot;
+use App\Domain\Telegram\Telegram;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\ImportBatch;
@@ -24,11 +26,15 @@ use Throwable;
  * Rows from an import you undid stay undone: they're left out rather than brought back as new, undecided copies, so
  * restoring that import still brings them back with your decisions on them. Linking a Starling account to another of
  * your accounts never counts a day in both (see relink()).
- * The token is stored encrypted and can only read; nothing is ever paid or changed at Starling.
+ * The token is stored encrypted and can only read; nothing is ever paid or changed at Starling. After each sync, the
+ * tax pot's Space is read and new business income is told on Telegram with about how much to put aside (afterSync()).
  */
 final class StarlingSync
 {
     public const API = 'https://api.starlingbank.com/api/v2/';
+
+    /** @var list<int> the imports this sync made (not held), for the tax pot's message */
+    private array $imported = [];
 
     public static function connected(): bool
     {
@@ -80,6 +86,7 @@ final class StarlingSync
         $map = (array) Setting::get('starling_accounts');
         $end = CarbonImmutable::yesterday('Europe/London');
         $results = [];
+        $this->imported = [];
         foreach ($map as $uid => $info) {
             $account = Account::query()->find($info['account_id']);
             if (! $account) {
@@ -116,8 +123,30 @@ final class StarlingSync
         }
         Setting::put('starling_accounts', $map);
         Setting::put('starling_last_result', ['at' => now()->toIso8601String(), 'results' => $results]);
+        $this->afterSync();
 
         return $results;
+    }
+
+    /**
+     * The tax pot (TaxPot): read the chosen Space's balance, and when business money came in, say on Telegram about
+     * how much to put aside ("Acme Events paid £1,380: put about £330 aside (estimate)."). Only reads and tells:
+     * nothing is ever moved. Never stops an import: anything that goes wrong here is reported and left.
+     */
+    private function afterSync(): void
+    {
+        try {
+            app(StarlingSpaces::class)->refresh();
+        } catch (Throwable $e) {
+            report($e);
+        }
+        try {
+            if ($this->imported !== [] && ($text = app(TaxPot::class)->importMessage($this->imported))) {
+                Telegram::notify($text);
+            }
+        } catch (Throwable $e) {
+            report($e);
+        }
     }
 
     /**
@@ -242,6 +271,7 @@ final class StarlingSync
                 }
                 if ($batch->status !== 'quarantined') {
                     $importer->afterImport($batch);
+                    $this->imported[] = $batch->id;
                 }
             }
         } finally {

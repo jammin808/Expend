@@ -30,6 +30,8 @@ interface Props {
         accounts: { uid: string; name: string; account_id: number; synced_to: string | null }[];
         last: { at: string; results: { account: string; result: string; ok: boolean }[] } | null;
         app_accounts: { id: number; name: string }[];
+        /** Older servers don't send it. */
+        tax_pot?: TaxPotSettings;
     };
     mail: {
         method: string;
@@ -56,6 +58,73 @@ interface Props {
         label_status: { at: string; labelled_jobs: number; missing: string[] } | null;
         labelled: number;
     };
+}
+
+interface TaxPotSettings {
+    chosen: { account_uid: string; kind: string; uid: string; name: string } | null;
+    last: { ok: boolean; pence?: number; currency?: string; name?: string; at: string; error?: string } | null;
+    /** Your Spaces, only when you asked to choose one (?spaces=1). */
+    spaces: { key: string; name: string; kind: string; pence: number; currency: string }[] | null;
+    error: 'scope' | 'failed' | null;
+    scopes: string;
+}
+
+const pounds = (pence: number) => '£' + Math.round(pence / 100).toLocaleString('en-GB');
+
+/** Which Starling Space holds money for tax: read only, to show it against what's due by 31 January. */
+function TaxPotChooser({ pot }: { pot: TaxPotSettings }) {
+    const key = pot.chosen ? `${pot.chosen.account_uid}|${pot.chosen.kind}|${pot.chosen.uid}` : '';
+    const scope = pot.error === 'scope' || (pot.last && !pot.last.ok && pot.last.error === 'scope');
+    return (
+        <div className="space-y-2 rounded-lg border p-3">
+            <p className="font-medium">Tax pot</p>
+            <p className="text-muted-foreground">
+                Choose the Space you keep tax money in, and the dashboard shows it against what’s due by 31 January. Expend only reads its balance: it
+                never moves money.
+            </p>
+            {pot.chosen && (
+                <p>
+                    Using “{pot.chosen.name}”
+                    {pot.last?.ok && pot.last.pence !== undefined
+                        ? `: ${pounds(pot.last.pence)}, read ${new Date(pot.last.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}.`
+                        : '.'}
+                    {pot.last && !pot.last.ok && pot.last.error === 'missing' && ' Starling no longer has that Space: choose another.'}
+                </p>
+            )}
+            {scope && (
+                <p className="text-amber-700 dark:text-amber-400">
+                    Starling’s token can’t read your Spaces. To show the tax pot, make a new token with {pot.scopes} ticked as well and connect it
+                    again. Everything else carries on without it.
+                </p>
+            )}
+            {pot.error === 'failed' && <p className="text-rose-600">Starling couldn’t list your Spaces just now. Try again later.</p>}
+            {pot.spaces ? (
+                <NativeSelect
+                    className="h-8 w-72"
+                    value={key}
+                    aria-label="Space used as the tax pot"
+                    onChange={(e) => router.put('/settings/starling/tax-pot', { tax_pot: e.target.value }, { preserveScroll: true })}
+                >
+                    <option value="">No tax pot</option>
+                    {pot.spaces.map((sp) => (
+                        <option key={sp.key} value={sp.key}>
+                            {sp.name} · {pounds(sp.pence)}
+                        </option>
+                    ))}
+                </NativeSelect>
+            ) : (
+                <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                        router.get('/settings/integrations', { spaces: 1 }, { preserveScroll: true, preserveState: true, only: ['starling'] })
+                    }
+                >
+                    {pot.chosen ? 'Choose another Space…' : 'Choose a Space…'}
+                </Button>
+            )}
+        </div>
+    );
 }
 
 export default function Integrations({ ai, business, email, telegram, gmail, mail: out, starling }: Props) {
@@ -348,6 +417,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                         </li>
                                     ))}
                                 </ul>
+                                {starling.tax_pot && <TaxPotChooser pot={starling.tax_pot} />}
                                 {starling.last && (
                                     <div className="text-muted-foreground text-xs">
                                         Last import {new Date(starling.last.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}:
@@ -389,6 +459,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                     </li>
                                     <li>
                                         Tick only the read permissions for accounts, account lists and CSV statements (nothing that pays or changes).
+                                        For the tax pot on the dashboard, tick space:read and balance:read too.
                                     </li>
                                     <li>Paste the token here. It’s stored encrypted.</li>
                                 </ol>
@@ -410,7 +481,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                     <section id="gmail" className="space-y-4">
                         <HeadingSmall
                             title="Gmail"
-                            description="Lets the app search your Gmail for hotel bookings, travel receipts and POs, using narrow searches you can edit, and put a green “✓ Invoiced” label on a PO email once you’ve invoiced the job. It only ever reads, and adds or removes that one label: it never sends, moves or deletes anything. Every email it fetches is listed under Stays & travel."
+                            description="Lets the app search your Gmail for hotel bookings, travel receipts and POs, using narrow searches you can edit, and put a green “✓ Invoiced” label on a PO email once you’ve invoiced the job. It can read your email and add its own labels (it adds or removes only those): it never sends, moves or deletes anything. Every email it fetches is listed under Stays & travel."
                         />
                         {gmail.last_result && (
                             <p className={gmail.last_result.ok ? 'text-sm text-emerald-700' : 'text-sm text-rose-600'}>{gmail.last_result.message}</p>
@@ -418,7 +489,10 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                         {gmail.connected ? (
                             <div className="space-y-2 text-sm">
                                 <div className="flex flex-wrap items-center gap-3">
-                                    <p className="font-medium text-emerald-700">Connected as {gmail.account}.</p>
+                                    <p className="font-medium text-emerald-700">
+                                        Connected as {gmail.account}
+                                        {gmail.can_label ? ': it can read your email and add its own labels.' : ': it can only read.'}
+                                    </p>
                                     <Button variant="ghost" onClick={() => router.delete('/settings/gmail', { preserveScroll: true })}>
                                         Disconnect
                                     </Button>
@@ -444,7 +518,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                 ) : (
                                     <p className="text-amber-700 dark:text-amber-400">
                                         This connection can only read. To get the {gmail.label} label in Gmail, press Connect Gmail again and allow
-                                        the app to change your email (it only adds or removes that label).
+                                        the app to change your email (it only adds or removes its own labels).
                                     </p>
                                 )}
                                 {!!gmail.label_status?.missing.length && (

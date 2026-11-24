@@ -146,7 +146,8 @@ class JobFinderController extends Controller
         $job = WorkJob::query()->findOrFail($request->validate(['work_job_id' => 'required|integer|exists:work_jobs,id'])['work_job_id']);
         $finder->merge($candidate, $job, $links);
 
-        return back()->with('success', "Added to {$job->title} and linked ".self::linked($links).'. Only its blank details were filled in.');
+        return back()->with('success', "Added to {$job->title} and linked ".self::linked($links).'. Only its blank details were filled in'
+            .($job->status === 'cancelled' ? '.' : '. Looking again for what belongs to the job.'));
     }
 
     public function dismiss(Request $request, JobCandidate $candidate, JobFinder $finder): RedirectResponse

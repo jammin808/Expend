@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Gmail\GmailClient;
 use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobGatherer;
@@ -10,6 +11,7 @@ use App\Domain\Jobs\PoStatus;
 use App\Domain\Matching\OwnAccounts;
 use App\Domain\Tax\MileageCalculator;
 use App\Http\Presenters\Present;
+use App\Jobs\GatherForJob;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Client;
@@ -235,11 +237,29 @@ class JobController extends Controller
         return back()->with('success', "Added {$job->title}.");
     }
 
+    /** What a job's search for its POs, emails and payments goes by: a change to one searches again (Gmail too). */
+    public const SEARCHED_BY = ['po_number', 'starts_on', 'ends_on', 'client_id', 'location', 'postcode'];
+
     public function update(Request $request, WorkJob $job): RedirectResponse
     {
         $before = $job->toArray();
         $job->update($this->validated($request));
         AuditLog::record('job.updated', $job, $before, $job->fresh()->toArray());
+
+        // A new PO number, dates, client or venue: look again for what belongs to it, once (the queued search is
+        // unique per job, so saving twice in a row doesn't search twice). Other edits (the fee, notes, times) don't.
+        if ($job->wasChanged(self::SEARCHED_BY) && $job->status !== 'cancelled') {
+            GatherForJob::dispatch($job->id)->afterCommit();
+            // Gmail is only searched when the job has something to search it by (JobGatherer::gmailQuery): a client,
+            // a PO number, a venue that isn't just "London", or a title long enough to find.
+            $gmail = match (true) {
+                ! GmailClient::connected() => '.',
+                JobGatherer::gmailQuery($job->fresh('client')) !== null => ', Gmail included.',
+                default => '. Gmail isn’t searched yet: add the client, the PO number or the venue to search it by.',
+            };
+
+            return back()->with('success', 'Saved. Looking again for what belongs to it'.$gmail);
+        }
 
         return back()->with('success', 'Saved.');
     }

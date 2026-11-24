@@ -21,9 +21,14 @@ class Invoice extends Model
     protected static function booted(): void
     {
         static::updating(function (Invoice $invoice) {
+            // Its email's Message-ID is fixed once given, so re-sends and reminders all point to the same one.
+            if ($invoice->getOriginal('message_id') !== null && $invoice->isDirty('message_id')) {
+                throw new LogicException('An invoice’s Message-ID never changes once it has been given.');
+            }
             if (in_array($invoice->getOriginal('status'), ['issued', 'paid', 'void'], true)) {
-                // Only its status and when it was emailed or chased can change; the invoice itself can't.
-                $allowed = ['status', 'void_reason', 'updated_at', 'sent_at', 'sent_to', 'reminded_at', 'reminder_count', 'overdue_nudged_at'];
+                // Only its status and when it was emailed or chased can change (and its email's Message-ID, set once
+                // when it's first emailed or chased); the invoice itself can't.
+                $allowed = ['status', 'void_reason', 'updated_at', 'sent_at', 'sent_to', 'reminded_at', 'reminder_count', 'overdue_nudged_at', 'message_id'];
                 foreach (array_keys($invoice->getDirty()) as $field) {
                     if (! in_array($field, $allowed, true)) {
                         throw new LogicException("Issued invoices can't be edited ({$field}). Void it and issue a new one.");

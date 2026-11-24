@@ -10,7 +10,10 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Throwable;
 
-/** Search Gmail for one job's emails and POs, keep what's found, then match it to the job again. */
+/**
+ * Search Gmail for one job's emails and POs, keep what's found, then match it to the job again. Your Sent mail is left
+ * out (-in:sent): an email you sent isn't the client's PO or booking, and your own invoices would match every job.
+ */
 class GatherFromGmail implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
@@ -29,7 +32,7 @@ class GatherFromGmail implements ShouldBeUnique, ShouldQueue
     public function handle(GmailScanner $scanner, JobGatherer $gatherer): void
     {
         $job = WorkJob::query()->with('client')->find($this->jobId);
-        $query = $job ? JobGatherer::gmailQuery($job) : null;
+        $query = $job ? self::query($job) : null;
         if (! $job || ! $query) {
             return;
         }
@@ -43,5 +46,19 @@ class GatherFromGmail implements ShouldBeUnique, ShouldQueue
         $gatherer->gather($job, false);
         $job->refresh();
         $job->forceFill(['gather_state' => $state + (array) $job->gather_state])->save();
+    }
+
+    /**
+     * The job's Gmail search (JobGatherer::gmailQuery), leaving out your Sent mail. gmailQuery leaves it out itself (so
+     * the job page shows the search as run); this makes sure of it for a search made some other way.
+     */
+    public static function query(WorkJob $job): ?string
+    {
+        $query = JobGatherer::gmailQuery($job);
+        if ($query === null) {
+            return null;
+        }
+
+        return preg_match('/(^|\s)-in:sent(\s|$)/', $query) ? $query : $query.' -in:sent';
     }
 }

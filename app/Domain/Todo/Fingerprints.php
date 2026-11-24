@@ -4,6 +4,7 @@ namespace App\Domain\Todo;
 
 use App\Domain\Intel\DetectorLevels;
 use App\Domain\Intel\Detectors\TravelUnclaimed;
+use App\Domain\Jobs\CandidateText;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\TransferPairer;
 use App\Models\Allocation;
@@ -100,6 +101,7 @@ final class Fingerprints
             'tx_tax' => ($l = $lines())->isNotEmpty() && $l->every(fn (Allocation $a) => $a->kind === 'tax_payment' && $a->confirmed_at !== null),
             'rule_make' => ($key = BankTransaction::query()->whereKey($int)->value('merchant_key')) !== null && MerchantRule::query()->where('merchant_key', $key)->exists(),
             'cand_add', 'cand_dismiss' => JobCandidate::query()->whereKey($int)->where('status', '!=', 'open')->exists(),
+            'cand_merge' => preg_match('/^(\d+):\d+$/', $id, $m) && JobCandidate::query()->whereKey((int) $m[1])->where('status', '!=', 'open')->exists(),
             'job_no_po' => (bool) WorkJob::query()->whereKey($int)->value('po_not_required'),
             'stay_accept', 'stay_personal' => TravelItem::query()->whereKey($int)->whereNotNull('decided_at')->exists(),
             'doc_approve' => Document::query()->whereKey($int)->where('status', '!=', 'held')->exists(),
@@ -120,6 +122,7 @@ final class Fingerprints
             'tx_accept', 'tx_personal', 'tx_tax' => self::tx($int),
             'rule_make', 'rule_no' => self::ruleOffer($int),
             'cand_add', 'cand_dismiss' => JobCandidate::query()->find($int)?->only(self::CANDIDATE),
+            'cand_merge' => self::merge($id),
             'job_invoice' => ($job = WorkJob::query()->find($int)) ? $job->only(['status', 'title', 'fee_pence', 'po_number', 'client_id'])
                 + ['invoices' => Invoice::query()->where('work_job_id', $int)->orderBy('id')->get(['id', 'status'])->map(fn ($i) => [$i->id, $i->status])->all()] : null,
             'job_no_po' => WorkJob::query()->find($int)?->only(['po_number', 'po_not_required', 'status']),
@@ -150,6 +153,24 @@ final class Fingerprints
 
     /** What a possible job shows, and what adding it as a job would make it from. */
     private const CANDIDATE = ['status', 'title', 'client_name', 'starts_on', 'ends_on', 'start_time', 'end_time', 'location', 'postcode', 'po_number'];
+
+    /**
+     * "Part of <job>" (id "<possible job>:<job>"): the possible job as shown, the job it would be added to (whose blank
+     * details it would fill), and what you've said about its sources (CandidateText::refused), so a press made before
+     * you said "Not this job" or "Not a job" is refused.
+     */
+    private static function merge(string $id): ?array
+    {
+        if (! preg_match('/^(\d+):(\d+)$/', $id, $m) || ! ($c = JobCandidate::query()->find((int) $m[1]))) {
+            return null;
+        }
+
+        return [
+            'candidate' => $c->only(self::CANDIDATE),
+            'job' => WorkJob::query()->find((int) $m[2])?->only(['status', 'title', 'client_id', 'starts_on', 'ends_on', 'location', 'postcode', 'po_number', 'start_time', 'end_time']),
+            'refused' => CandidateText::refused($c),
+        ];
+    }
 
     /** A payment's decision as it stands: what each line is, by whom, and whether it's confirmed. */
     private static function tx(int $id): ?array

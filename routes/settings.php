@@ -26,6 +26,7 @@ Route::middleware('auth')->group(function () {
     Route::put('settings/integrations/gmail', [IntegrationSettingsController::class, 'updateGmail'])->name('integrations.gmail');
     Route::post('settings/starling', [IntegrationSettingsController::class, 'connectStarling'])->middleware('throttle:10,1')->name('starling.connect');
     Route::patch('settings/starling', [IntegrationSettingsController::class, 'linkStarling'])->name('starling.link');
+    Route::put('settings/starling/tax-pot', [IntegrationSettingsController::class, 'chooseTaxPot'])->middleware('throttle:10,1')->name('starling.tax_pot');
     Route::post('settings/starling/sync', [IntegrationSettingsController::class, 'syncStarling'])->middleware('throttle:10,1')->name('starling.sync');
     Route::delete('settings/starling', [IntegrationSettingsController::class, 'disconnectStarling'])->name('starling.disconnect');
     Route::post('settings/gmail/connect', [IntegrationSettingsController::class, 'connectGmail'])->name('gmail.connect');

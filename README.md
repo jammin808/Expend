@@ -77,12 +77,15 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   decided to recharge to the client, and the same amount charged twice in a day. Any item can be snoozed for a week or
   marked not relevant (with undo). The top items show on the Overview. The same list comes to **Telegram every Monday** with buttons that act in the
   chat (only from your paired chat); send `/todo` any time. Overdue invoices get a Telegram nudge with a "Send a
-  reminder" button.
+  reminder" button. The morning after a job with no invoice finishes, Telegram asks once: "Acme Awards finished
+  yesterday. Invoice it?", with a button that opens the job (not when you've snoozed or set aside its to-do item).
 - **Learns from your decisions**: once you've decided a merchant the same way twice, it offers "Always do this". The
   rule then applies automatically to what's waiting and to new statements, as a decision by your rule, and can be
   undone in one go (Settings › Rules). The job is never part of a rule.
 - **Invoices by email**: email an issued invoice (PDF attached) to the client, and send reminders when it's overdue,
-  from your own mailbox if set up (replies go to your business email). The invoice records when it was sent.
+  from your own mailbox if set up (replies go to your business email). The invoice records when it was sent. Each
+  invoice's email has one fixed Message-ID (the same if it's sent again), and each reminder points back to it
+  (In-Reply-To and References), so mail programs can keep them together.
 - **Mileage from jobs**: one click per year adds a return trip from home to each venue you drove to (estimated from
   the postcodes, straight line × 1.25, clearly marked so you can correct it); a trip each day for multi-day jobs without
   a stay; jobs reached by train, plane or coach are left out.
@@ -90,6 +93,14 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   CSV statement is downloaded every morning for the days since the last import (a week's overlap) and imported exactly
   like an upload: balance-checked, held if it doesn't add up, never duplicated. "Import from a date" catches up. Amex and
   Capital One still need their CSVs (they'd need an open-banking provider).
+- **Tax pot** (an estimate, on the Overview): how much to put aside from each business payment (the share of your
+  expected profit that goes in income tax and National Insurance, times the share of your income that's profit, so a
+  steady year puts aside about that year's tax) and what's due next: the 31 July payment on account from February to
+  July, and the next 31 January (that year's balance plus the first payment on account). It counts money in suggested
+  as business income but not yet confirmed, and says when money in still to decide could make it more. When a Starling
+  import brings business income in, Telegram says "Acme Events paid £1,380: put about £210 aside (estimate)". Choose
+  the Starling Space you keep it in (Settings › Integrations; the token needs space:read and balance:read) to see it
+  against what's due. Expend never moves money.
 - **Gmail auto-forwarding** (Settings › Integrations › Forward by email): step-by-step Gmail filters, with the searches
   ready to copy, that forward POs, call sheets and bookings to your forwarding mailbox, so documents keep arriving without
   Google's 7-day reconnect.
@@ -124,8 +135,9 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   recovery codes, strict security headers and content security policy, locked tax years, encrypted
   calendar feed address, encrypted backups the server itself can't read.
 
-Not built yet (see the plan): Gmail searches triggered automatically when a job is added, the Calendar API
-(the iCal feed is used), recharge invoicing, Making Tax Digital quarterly export, passkeys.
+Gmail is searched for a job's emails and POs when the job is added, and again when its PO number, dates, client or
+venue change (your Sent mail is left out). Not built yet (see the plan): the Calendar API (the iCal feed is used),
+recharge invoicing, Making Tax Digital quarterly export, passkeys.
 
 ## Run it on your computer
 
@@ -218,8 +230,9 @@ One-time setup:
    OAuth client of type Web application with the redirect URI shown. Keep the consent screen in Testing and add
    the Gmail address you'll connect as a test user (Google blocks Gmail access for published apps that haven't had its
    paid security review). In Testing, Google ends the access after 7 days: the app says so on Telegram and you press
-   Connect Gmail again. Then Connect Gmail. The gmail.modify scope is requested so the app can add its ✓ Invoiced label; the
-   code only ever reads, and adds or removes that one label (it never sends, moves or deletes). Then use
+   Connect Gmail again. Then Connect Gmail. The gmail.modify scope is requested so the app can read your email and add
+   its own labels (the ✓ Invoiced label); it adds or removes only its own labels, and never sends, moves or deletes
+   anything. Then use
    **Stays & travel › Search Gmail** for each tax year. Add your home postcode (Settings › Ledger) and postcodes on
    your jobs so distances can be used.
 10. **First visit.** Open `https://expenses.rohleder.tech/register?code=<SETUP_CODE>`, create your account

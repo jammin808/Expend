@@ -7,7 +7,7 @@ import { datesBetween, londonToday } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { Head, Link, router } from '@inertiajs/react';
 import { Briefcase, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 interface Entry {
     key: string;
@@ -46,6 +46,7 @@ export default function JobCalendar({
     events,
     jobs,
     clients,
+    open: opening = null,
 }: {
     month: string;
     prev: string;
@@ -53,8 +54,20 @@ export default function JobCalendar({
     events: Entry[];
     jobs: JobOption[];
     clients: { id: number; name: string }[];
+    /** An entry to open on arrival (from a possible job on the to-do list), and a job it may be part of. */
+    open?: { key: string; job_id: number | null } | null;
 }) {
-    const [open, setOpen] = useState<Entry | null>(null);
+    const [open, setOpen] = useState<Entry | null>(() => (opening ? (events.find((e) => e.key === opening.key) ?? null) : null));
+    // Opened once per arrival: the address loses ?entry= and &job= straight away, so an action in the entry that comes
+    // back to this page (Not a job, Not part of this job) doesn't open the same entry again.
+    useEffect(() => {
+        if (!opening) return;
+        const url = new URL(window.location.href);
+        url.searchParams.delete('entry');
+        url.searchParams.delete('job');
+        router.replace({ url: url.pathname + url.search, props: (props) => ({ ...props, open: null }), preserveState: true, preserveScroll: true });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     const [workOnly, setWorkOnly] = useState(false);
     // Worked out on every render, in UK time: the page can stay open past midnight.
     const today = londonToday();
@@ -158,7 +171,15 @@ export default function JobCalendar({
             <Dialog open={!!open} onOpenChange={(o) => !o && setOpen(null)}>
                 <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
                     {open && (
-                        <EntryPanel key={open.key + open.date} e={open} jobs={jobs} clients={clients} today={today} onDone={() => setOpen(null)} />
+                        <EntryPanel
+                            key={open.key + open.date}
+                            e={open}
+                            jobs={jobs}
+                            clients={clients}
+                            today={today}
+                            partOf={opening?.key === open.key && jobs.some((j) => j.id === opening.job_id) ? opening.job_id : null}
+                            onDone={() => setOpen(null)}
+                        />
                     )}
                 </DialogContent>
             </Dialog>
@@ -189,19 +210,22 @@ function EntryPanel({
     jobs,
     clients,
     today,
+    partOf = null,
     onDone,
 }: {
     e: Entry;
     jobs: JobOption[];
     clients: { id: number; name: string }[];
     today: string;
+    /** A job it looks part of (same client or place, within a few days): opens on "Part of a job I have" with it chosen. */
+    partOf?: number | null;
     onDone: () => void;
 }) {
-    const [mode, setMode] = useState<'new' | 'existing'>('new');
+    const [mode, setMode] = useState<'new' | 'existing'>(partOf ? 'existing' : 'new');
     const near = [...jobs].sort(
         (a, b) => Math.abs(Date.parse(a.starts_on) - Date.parse(e.date)) - Math.abs(Date.parse(b.starts_on) - Date.parse(e.date)),
     );
-    const [jobId, setJobId] = useState<string>(near[0] ? String(near[0].id) : '');
+    const [jobId, setJobId] = useState<string>(partOf ? String(partOf) : near[0] ? String(near[0].id) : '');
     const chosen = jobs.find((j) => String(j.id) === jobId);
     // The entry's dates that aren't one of the job's days yet: linking adds them. Without the job's own days, only
     // its first and last are known, and a day in between may or may not be one of them.

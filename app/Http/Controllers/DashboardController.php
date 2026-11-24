@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Domain\Tax\FilingDates;
 use App\Domain\Tax\PenaltyRegime;
 use App\Domain\Tax\ReturnSummary;
+use App\Domain\Tax\TaxPot;
 use App\Domain\Todo\TodoList;
 use App\Models\Account;
 use App\Models\BankTransaction;
@@ -94,6 +95,9 @@ class DashboardController extends Controller
                 return ['total' => $list['total'], 'items' => array_slice($list['items'], 0, 6)];
             })(),
             'overnight' => self::overnight(),
+            // The tax pot (an estimate): what to put aside from each payment, what's due by 31 January, and the
+            // Starling Space you keep it in as last read. Never stops the page.
+            'taxPot' => rescue(fn () => (new TaxPot($summary))->card(), null),
         ]);
     }
 

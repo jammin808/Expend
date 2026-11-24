@@ -29,6 +29,162 @@ interface YearCard {
     net_profit_pence: number;
 }
 
+interface TaxPotPayment {
+    due_on: string;
+    pence: number;
+    label: string;
+}
+
+interface TaxPotCard {
+    /** The share of the expected profit that goes in income tax and NI, as a percentage; null where it can't be estimated (Scottish rates). */
+    rate_pct: number | null;
+    per_thousand_pence: number | null;
+    basis: string | null;
+    /** The expected profit the rate rests on (null when none is recorded yet). */
+    basis_profit_pence?: number | null;
+    /** No profit recorded in either year: the basic rate plus Class 4 on all of it. */
+    fallback?: boolean;
+    need: {
+        /** The next payment: 31 July's from February to July, otherwise 31 January's. */
+        due_on: string;
+        pence: number;
+        label: string;
+        balancing_pence: number;
+        payment_on_account_pence: number;
+        year: string;
+        next_year: string;
+        january?: TaxPotPayment;
+        july?: TaxPotPayment | null;
+        /** How that year's profit was found: filed, records (confirmed plus suggested) or expected (the year is still running). */
+        basis?: 'filed' | 'records' | 'expected';
+        profit_pence?: number;
+        /** Money in suggested as business income, not confirmed yet, that's counted. */
+        suggested_pence?: number;
+        /** Money in still to decide, not counted: the figure may be more. */
+        undecided_pence?: number;
+        at_least?: boolean;
+    } | null;
+    pot: { pence: number; currency: string; name: string; at: string | null } | null;
+    /** ok, none (no Space chosen), scope (the token can't read Spaces), missing, failed, not_connected */
+    pot_status: string;
+}
+
+const pounds = (pence: number) => '£' + Math.round(pence / 100).toLocaleString('en-GB');
+
+/** How much to put aside for tax, and how much is due by 31 January. Expend only reads: it never moves money. */
+function TaxPotSection({ pot }: { pot: TaxPotCard }) {
+    const need = pot.need;
+    const have = pot.pot?.pence ?? null;
+    const pct = need && need.pence > 0 && have !== null ? Math.min(100, Math.round((have / need.pence) * 100)) : null;
+    return (
+        <section className="space-y-3 rounded-xl border p-4">
+            <div className="flex items-center justify-between gap-2">
+                <h2 className="font-semibold">
+                    Tax pot <span className="text-muted-foreground text-sm font-normal">(estimate)</span>
+                </h2>
+                <Link href="/settings/integrations#starling" className="text-sm underline underline-offset-2">
+                    {pot.pot_status === 'none' ? 'Choose your Tax Space' : 'Settings'}
+                </Link>
+            </div>
+            {pot.rate_pct !== null && pot.per_thousand_pence !== null ? (
+                <p className="text-sm">
+                    {pot.per_thousand_pence > 0 ? (
+                        <>
+                            From each £1,000 of business money you receive, put about <strong>{pounds(pot.per_thousand_pence)}</strong> aside.
+                        </>
+                    ) : (
+                        <>At the profit expected, there’s no income tax or Class 4 to put aside yet.</>
+                    )}
+                    <span className="text-muted-foreground">
+                        {' '}
+                        {pot.fallback
+                            ? 'No profit is recorded yet, so this is the basic rate plus Class 4 on all of it.'
+                            : `About ${pot.rate_pct}% of the profit goes in income tax and National Insurance, from ${pot.basis}${
+                                  pot.basis_profit_pence ? ` (about ${pounds(pot.basis_profit_pence)})` : ''
+                              }.`}
+                    </span>
+                </p>
+            ) : (
+                <p className="text-muted-foreground text-sm">Expend can’t estimate this for Scottish income tax rates.</p>
+            )}
+            {need && (
+                <div className="space-y-1.5 text-sm">
+                    {need.july && need.january ? (
+                        <p>
+                            {need.at_least ? 'At least' : 'About'} <strong>{pounds(need.july.pence)}</strong> is due by {day(need.july.due_on)}
+                            <span className="text-muted-foreground">: the {need.july.label.replace(/^2nd/, 'second')}.</span>
+                            {need.january.pence > 0 && (
+                                <>
+                                    {' '}
+                                    Then {need.at_least ? 'at least' : 'about'} <strong>{pounds(need.january.pence)}</strong> by{' '}
+                                    {day(need.january.due_on)}
+                                    <span className="text-muted-foreground">
+                                        : the {need.year} balance
+                                        {need.payment_on_account_pence > 0 ? ` plus the first payment on account for ${need.next_year}` : ''}.
+                                    </span>
+                                </>
+                            )}
+                        </p>
+                    ) : need.pence > 0 || !need.at_least ? (
+                        <p>
+                            {need.at_least ? 'At least' : 'About'} <strong>{pounds(need.pence)}</strong> is due by {day(need.due_on)}
+                            <span className="text-muted-foreground">
+                                : the {need.year} balance
+                                {need.payment_on_account_pence > 0 ? ` plus the first payment on account for ${need.next_year}` : ''}.
+                            </span>
+                        </p>
+                    ) : (
+                        <p>Nothing is due by {day(need.due_on)} from what’s decided so far, but that can change: see below.</p>
+                    )}
+                    <p className="text-muted-foreground text-xs">
+                        {need.basis === 'filed'
+                            ? `From the profit you filed for ${need.year}.`
+                            : need.basis === 'expected'
+                              ? `${need.year} hasn’t ended yet, so this is on the profit expected for the whole year${
+                                    need.profit_pence ? ` (about ${pounds(need.profit_pence)})` : ''
+                                }.`
+                              : `From your ${need.year} records so far.`}
+                        {need.basis !== 'filed' && (need.suggested_pence ?? 0) > 0
+                            ? ` It counts ${pounds(need.suggested_pence ?? 0)} of money in suggested as business income that you haven’t confirmed yet.`
+                            : ''}
+                        {need.at_least
+                            ? ` ${pounds(need.undecided_pence ?? 0)} of money in for ${need.year} is still to decide and isn’t counted, so it may be more.`
+                            : ''}
+                    </p>
+                    {pot.pot && pct !== null && (
+                        <>
+                            <div className="flex justify-between">
+                                <span>
+                                    {pot.pot.name}: {pounds(pot.pot.pence)} of {need.at_least ? 'at least' : 'about'} {pounds(need.pence)}
+                                </span>
+                                <span className={pct < 100 ? 'font-medium text-amber-700' : 'text-emerald-700'}>
+                                    {pct < 100 ? `about ${pounds(need.pence - pot.pot.pence)} to go` : 'enough'}
+                                </span>
+                            </div>
+                            <Progress value={pct} tone={pct < 100 ? 'amber' : 'emerald'} />
+                        </>
+                    )}
+                </div>
+            )}
+            {pot.pot_status === 'scope' && (
+                <p className="text-muted-foreground text-xs">
+                    To show your Tax Space here, Starling’s token needs space:read and balance:read: make a new token with them ticked in Starling’s
+                    developer portal and connect it in Settings › Integrations.
+                </p>
+            )}
+            {pot.pot_status === 'missing' && (
+                <p className="text-muted-foreground text-xs">
+                    Starling no longer has the Space you chose: choose another in Settings › Integrations.
+                </p>
+            )}
+            {pot.pot_status === 'failed' && (
+                <p className="text-muted-foreground text-xs">Your Tax Space’s balance couldn’t be read at the last Starling import.</p>
+            )}
+            <p className="text-muted-foreground text-xs">Expend never moves money: putting it aside is up to you.</p>
+        </section>
+    );
+}
+
 interface Props {
     years: YearCard[];
     currentYear: string;
@@ -37,6 +193,8 @@ interface Props {
     counts: { accounts: number; transactions: number; to_review: number; jobs_without_po: number };
     todo: { total: number; items: { key: string; title: string; detail: string | null; href: string | null; priority: number }[] };
     twoFactor: boolean;
+    /** The tax pot, an estimate (older servers don't send it; null if it couldn't be worked out). */
+    taxPot?: TaxPotCard | null;
     /** The first lines of the latest morning report (null until there's one from the last two days). */
     overnight?: {
         line: string;
@@ -46,7 +204,7 @@ interface Props {
     } | null;
 }
 
-export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo, overnight }: Props) {
+export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo, overnight, taxPot }: Props) {
     // A return filed is done; one being amended is still to finish until the last day to amend it.
     const done = (y: YearCard) => y.status === 'filed' || (!!y.amending && !y.amend_open);
     const outstanding = years.filter((y) => !done(y));
@@ -151,6 +309,8 @@ export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo, ov
                         </ul>
                     </section>
                 )}
+
+                {taxPot && <TaxPotSection pot={taxPot} />}
 
                 <section className="space-y-3">
                     <h2 className="text-muted-foreground text-sm font-medium tracking-wide uppercase">

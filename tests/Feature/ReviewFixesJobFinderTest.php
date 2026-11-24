@@ -233,7 +233,8 @@ class ReviewFixesJobFinderTest extends TestCase
         app(CalendarSync::class)->load($this->ics($this->vevent('gone-1', 'DTSTART:20250902T080000Z', 'DTEND:20250902T180000Z', 'Install: Expo build', 'NEC Birmingham')));
         $this->finder()->run('2025-26', false);
         $candidate = JobCandidate::query()->sole();
-        app(CalendarSync::class)->load($this->ics());
+        // The entry leaves the feed (a feed with no entries at all keeps what's stored, so another entry stays in it).
+        app(CalendarSync::class)->load($this->ics($this->vevent('other-1', 'DTSTART:20250910T080000Z', 'DTEND:20250910T090000Z', 'Dentist')));
 
         $this->actingAs(User::factory()->create())->post("/jobs/finder/{$candidate->id}/accept", ['title' => 'Expo build', 'starts_on' => '2025-09-02', 'ends_on' => '2025-09-02'])
             ->assertSessionHas('success', fn ($m) => str_contains($m, 'linked 0 sources (1 not linked, because it’s no longer there or you’ve linked it to another job: “Install: Expo build”)'));

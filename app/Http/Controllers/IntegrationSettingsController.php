@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Domain\Ai\AiUsage;
 use App\Domain\Audit\AuditLog;
+use App\Domain\Banks\StarlingScopeMissing;
+use App\Domain\Banks\StarlingSpaces;
 use App\Domain\Banks\StarlingSync;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Gmail\GmailClient;
@@ -11,6 +13,7 @@ use App\Domain\Gmail\GmailLabeller;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Mail\OutgoingMail;
+use App\Domain\Tax\TaxPot;
 use App\Domain\Telegram\Telegram;
 use App\Jobs\SyncGmailLabels;
 use App\Mail\TestEmail;
@@ -67,6 +70,8 @@ class IntegrationSettingsController extends Controller
                 'accounts' => collect((array) Setting::get('starling_accounts'))->map(fn ($a, $uid) => $a + ['uid' => $uid])->values(),
                 'last' => Setting::get('starling_last_result'),
                 'app_accounts' => Account::query()->orderBy('name')->get(['id', 'name']),
+                // The tax pot: the Space chosen, as last read, and (only when you ask to choose one) your Spaces.
+                'tax_pot' => self::taxPot(request()->boolean('spaces')),
             ],
             'telegram' => [
                 'token_set' => Telegram::token() !== null, 'paired' => Setting::get('telegram_chat_id') !== null,
@@ -106,6 +111,59 @@ class IntegrationSettingsController extends Controller
         $text = collect($results)->map(fn ($r) => $r['account'].': '.$r['result'])->implode(' ');
 
         return back()->with(collect($results)->every('ok') ? 'success' : 'error', $text ?: 'Nothing to import.');
+    }
+
+    /**
+     * Choose the Starling Space that holds money for tax (or none), so the dashboard shows it against what's needed by
+     * 31 January. Only read: Expend never moves money into or out of it.
+     */
+    public function chooseTaxPot(Request $request): RedirectResponse
+    {
+        $key = trim((string) $request->validate(['tax_pot' => 'present|nullable|string|max:300'])['tax_pot']);
+        $before = Setting::get(TaxPot::SPACE, null);
+        if ($key === '') {
+            Setting::put(TaxPot::SPACE, null);
+            Setting::put(TaxPot::BALANCE, null);
+            AuditLog::record('settings.tax_pot', 'Settings', ['space' => $before], ['space' => null]);
+
+            return back()->with('success', 'No Space is used as the tax pot now. The dashboard still shows what to put aside.');
+        }
+        try {
+            $space = collect(app(StarlingSpaces::class)->all())->firstWhere('key', $key);
+        } catch (Throwable $e) {
+            return back()->with('error', $e->getMessage());
+        }
+        if (! $space) {
+            return back()->with('error', 'That Space wasn’t found at Starling. Choose it again from the list.');
+        }
+        $chosen = ['account_uid' => $space['account_uid'], 'kind' => $space['kind'], 'uid' => $space['uid'], 'name' => $space['name']];
+        Setting::put(TaxPot::SPACE, $chosen);
+        AuditLog::record('settings.tax_pot', 'Settings', ['space' => $before], ['space' => $chosen]);
+        app(StarlingSpaces::class)->refresh();
+
+        return back()->with('success', "“{$space['name']}” is your tax pot. Its balance is read at each Starling import; Expend never moves money.");
+    }
+
+    /**
+     * @return array{chosen: ?array, last: ?array, spaces: ?list<array>, error: ?string, scopes: string}
+     */
+    private static function taxPot(bool $list): array
+    {
+        $spaces = null;
+        $error = null;
+        if ($list && StarlingSync::connected()) {
+            try {
+                $spaces = array_map(fn ($s) => ['key' => $s['key'], 'name' => $s['name'], 'kind' => $s['kind'], 'pence' => $s['pence'], 'currency' => $s['currency']],
+                    app(StarlingSpaces::class)->all());
+            } catch (StarlingScopeMissing) {
+                $error = 'scope';
+            } catch (Throwable $e) {
+                report($e);
+                $error = 'failed';
+            }
+        }
+
+        return ['chosen' => Setting::get(TaxPot::SPACE, null), 'last' => Setting::get(TaxPot::BALANCE, null), 'spaces' => $spaces, 'error' => $error, 'scopes' => StarlingSpaces::SCOPES];
     }
 
     public function disconnectStarling(StarlingSync $starling): RedirectResponse
@@ -267,7 +325,9 @@ class IntegrationSettingsController extends Controller
                     : 'Google returned an error ('.preg_replace('/[^a-z_]/', '', strtolower(substr((string) $error, 0, 40))).').');
             }
             $account = GmailClient::complete((string) $request->query('code'), $verifier);
-            $result = ['ok' => true, 'message' => "Gmail connected (read-only) for {$account}."];
+            $result = ['ok' => true, 'message' => GmailClient::canModify()
+                ? "Gmail connected for {$account}: Expend can read your email and add its own labels. It never sends, moves or deletes anything."
+                : "Gmail connected for {$account}, to read only: Google didn’t allow adding labels, so the ✓ Invoiced label is off. Connect again and allow it to switch it on."];
         } catch (Throwable $e) {
             $result = ['ok' => false, 'message' => $e->getMessage()];
         }

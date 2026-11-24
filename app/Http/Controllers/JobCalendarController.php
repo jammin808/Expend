@@ -7,6 +7,7 @@ use App\Domain\Documents\Grounding;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\JobGatherer;
+use App\Jobs\GatherForJob;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
 use App\Models\Client;
@@ -41,6 +42,10 @@ class JobCalendarController extends Controller
         $clients = Client::query()->orderBy('name')->get(['id', 'name']);
 
         return Inertia::render('jobs/calendar', [
+            // A possible job on the to-do list opens its entry (CandidateText::href), with "Part of" on a job you have.
+            'open' => preg_match('/^[0-9a-f]{40}$/', (string) $request->query('entry'))
+                ? ['key' => (string) $request->query('entry'), 'job_id' => ctype_digit((string) $request->query('job')) ? (int) $request->query('job') : null]
+                : null,
             'month' => $month->format('Y-m'),
             'prev' => $month->subMonth()->format('Y-m'),
             'next' => $month->addMonth()->format('Y-m'),
@@ -92,7 +97,8 @@ class JobCalendarController extends Controller
             return back()->with('error', 'That’s more than four months from the job (or makes it longer than '.JobDays::MAX_DAYS.' days). Make it a separate job.');
         }
         JobDays::add($job, $date, $data['kind'], $data['start_time'] ?? null, $data['end_time'] ?? null, null, 'you', $data['note'] ?? null);
-        $result = $gatherer->gather($job->fresh(), false);
+        // Its days changed: looked again now, Gmail included (queued, once per job).
+        $result = $gatherer->gather($job->fresh());
 
         return back()->with('success', 'Added '.CarbonImmutable::parse($date)->format('D j M').'. '.$result['summary']);
     }
@@ -109,13 +115,16 @@ class JobCalendarController extends Controller
 
     public function removeDay(JobDay $day): RedirectResponse
     {
+        $jobId = $day->work_job_id;
         try {
             JobDays::remove($day);
         } catch (\InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
+        // Its days changed: look again for what belongs to it, once (queued, unique per job).
+        GatherForJob::dispatch($jobId)->afterCommit();
 
-        return back()->with('success', 'Removed that day.');
+        return back()->with('success', 'Removed that day. Looking again for what belongs to the job.');
     }
 
     /** "Search again" on a job: its documents, emails, payments, calendar days and fee. */

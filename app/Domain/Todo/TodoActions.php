@@ -10,6 +10,7 @@ use App\Domain\Intel\Detectors\TravelUnclaimed;
 use App\Domain\Intel\Vetoes;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Jobs\CandidateText;
 use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\Opportunities;
@@ -58,7 +59,7 @@ use InvalidArgumentException;
  */
 final class TodoActions
 {
-    public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'tx_tax', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
+    public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'tx_tax', 'cand_add', 'cand_merge', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
         'opp_add', 'opp_decline', 'opp_dismiss', 'fnd_snooze', 'fnd_dismiss', 'trips_add', 'det_raise', 'det_lower', 'veto_lift'];
 
     /** How long "Snooze a week" snoozes for. */
@@ -87,6 +88,7 @@ final class TodoActions
             'tx_personal' => $this->txPersonal((int) $id),
             'tx_tax' => $this->txTax((int) $id, $offeredAt),
             'cand_add' => $this->candidateAdd((int) $id),
+            'cand_merge' => $this->candidateMerge($id),
             'cand_dismiss' => $this->candidateDismiss((int) $id),
             'job_invoice' => $this->jobInvoice((int) $id),
             'job_no_po' => $this->noPoNeeded((int) $id),
@@ -370,6 +372,35 @@ final class TodoActions
         ]);
 
         return "Added {$job->title} and linked what it was found from.";
+    }
+
+    /**
+     * "Part of <job>": add what a possible job was found from to a job you have, as "Add to job" in the job finder does
+     * (JobFinder::merge: only the job's blank details are filled in, and the job is searched again). The id is
+     * "<possible job>:<job>", as the to-do list offered it (CandidateText::partOf). Nothing is merged when the job has
+     * been cancelled or deleted since, or when you've said since that the entry isn't a job, or isn't part of that job
+     * (CandidateText::refused): a press made before you said so never undoes it.
+     */
+    private function candidateMerge(string $id): string
+    {
+        if (! preg_match('/^(\d+):(\d+)$/', $id, $m)) {
+            throw new InvalidArgumentException('Unknown action.');
+        }
+        $c = JobCandidate::query()->where('status', 'open')->findOrFail((int) $m[1]);
+        $job = WorkJob::query()->find((int) $m[2]);
+        if (! $job || $job->status === 'cancelled') {
+            throw new InvalidArgumentException('That job has been cancelled or deleted since, so nothing was added to it. Open the possible job to decide: '.url(CandidateText::href($c)));
+        }
+        $refused = CandidateText::refused($c);
+        if ($refused['all'] || in_array($job->id, $refused['jobs'], true)) {
+            throw new InvalidArgumentException('You’ve said '.($refused['all'] ? 'its calendar entry isn’t a job' : 'it isn’t part of '.$job->title).', so nothing was added. '.url('/jobs/finder'));
+        }
+        $this->finder->merge($c, $job, $links);
+        $n = $links['linked'] ?? 0;
+        $missed = count($links['missed'] ?? []);
+
+        return "Added {$c->title} to {$job->title}: linked {$n} ".($n === 1 ? 'source' : 'sources')
+            .($missed ? " ({$missed} not linked: gone, or on another job)" : '').'. Only its blank details were filled in. '.url('/jobs/'.$job->id);
     }
 
     /**

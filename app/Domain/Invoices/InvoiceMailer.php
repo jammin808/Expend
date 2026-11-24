@@ -91,15 +91,37 @@ final class InvoiceMailer
             $before = $reminder
                 ? ['reminded_at' => $fresh->reminded_at?->format('Y-m-d H:i:s'), 'reminder_count' => (int) $fresh->reminder_count]
                 : ['sent_at' => $fresh->sent_at?->format('Y-m-d H:i:s'), 'sent_to' => $fresh->sent_to];
+            // The invoice's own Message-ID, given once and kept: the invoice goes with it every time, and each
+            // reminder points back to it.
+            $thread = $fresh->message_id ?: self::newMessageId($fresh);
             $reminder
-                ? $fresh->forceFill(['reminded_at' => $at, 'reminder_count' => $fresh->reminder_count + 1])->save()
-                : $fresh->forceFill(['sent_at' => $at, 'sent_to' => $to])->save();
-            AuditLog::record($reminder ? 'invoice.reminder_sent' : 'invoice.sent', $fresh, null, ['to' => $to, 'number' => $fresh->number]);
-            Mail::to($to)->queue(new InvoiceEmail($fresh, $reminder, $before, $at->format('Y-m-d H:i:s')));
+                ? $fresh->forceFill(['reminded_at' => $at, 'reminder_count' => $fresh->reminder_count + 1, 'message_id' => $thread])->save()
+                : $fresh->forceFill(['sent_at' => $at, 'sent_to' => $to, 'message_id' => $thread])->save();
+            AuditLog::record($reminder ? 'invoice.reminder_sent' : 'invoice.sent', $fresh, null, ['to' => $to, 'number' => $fresh->number, 'message_id' => $thread]);
+            Mail::to($to)->queue(new InvoiceEmail($fresh, $reminder, $before, $at->format('Y-m-d H:i:s'), $thread));
             $invoice->setRawAttributes($fresh->getAttributes(), true);
 
             return ($reminder ? 'Reminder for ' : 'Invoice ').$fresh->number.' is on its way to '.$to.'.';
         });
+    }
+
+    /**
+     * A Message-ID for an invoice's emails (without the angle brackets): unique, and on the domain the email is sent
+     * from (the From address's, else the site's), as mail programs expect. invoice-43.3f9c1a7b2d4e6f80@example.co.uk
+     */
+    public static function newMessageId(Invoice $invoice): string
+    {
+        $from = OutgoingMail::method() !== null ? OutgoingMail::from() : (string) config('mail.from.address');
+        $domain = strtolower(trim((string) substr((string) strrchr($from, '@'), 1)));
+        if (! preg_match('/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/', $domain)) {
+            $domain = strtolower((string) parse_url((string) config('app.url'), PHP_URL_HOST));
+        }
+        if (! preg_match('/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/', $domain)) {
+            $domain = 'localhost';
+        }
+        $number = trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower((string) $invoice->number)), '-') ?: (string) $invoice->id;
+
+        return mb_substr('invoice-'.$number, 0, 80).'.'.bin2hex(random_bytes(8)).'@'.$domain;
     }
 
     /**

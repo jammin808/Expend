@@ -137,7 +137,10 @@ class LedgerSettingsController extends Controller
             return back()->with('error', $e->getMessage());
         }
 
-        return back()->with('success', "Calendar synced: {$count} events.");
+        // The sync queues the job finder (CalendarSync::sync), which runs when it's set to look for jobs on its own.
+        return back()->with('success', "Calendar synced: {$count} ".($count === 1 ? 'entry.' : 'entries.').(Setting::get('job_finder_auto')
+            ? ' Looking for jobs in it now: possible jobs appear on the to-do list in a minute or two.'
+            : ' To look for jobs in it, press Find jobs now in the job finder.'));
     }
 
     public function rules(): Response

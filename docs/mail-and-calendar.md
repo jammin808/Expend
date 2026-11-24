@@ -20,6 +20,50 @@ to things it owns: its own Gmail labels, its own calendar and its own drafts (th
 
 Where section 2 or 5 says "every 2 minutes", read "hourly, or on Check now".
 
+**Batch 1 is built (24 November 2026).** Law 4 of docs/intelligence-cycle.md is amended as the owner chose (section
+5.1 there). As built:
+
+- **Wording.** The README and Settings › Integrations say what Gmail access allows: reading, and Expend's own labels;
+  never sending, moving or deleting.
+- **Calendar fixes.** Cancelled entries (STATUS:CANCELLED, or a cancelled occurrence) aren't stored, so they stop
+  counting. A feed that doesn't answer, isn't a calendar, comes back cut short or comes back empty never wipes the
+  stored entries, and says so in plain words. The hourly refresh and Sync now both queue the job finder (it keeps to
+  "find jobs automatically"; Sync now says which).
+- **Possible jobs** (`Jobs\CandidateText`, on the to-do list). One from your calendar reads "From your calendar: Thu
+  3 Dec, 08:00–18:00, Acme Arena", opens that entry on the calendar page, and offers **Part of <job>** when a job you
+  have is within 3 days with the same client or place (never one you said it isn't part of, nor any once you said it
+  isn't a job). Part of is one press (to-do action `cand_merge`, bound to what was shown, Telegram too) or opens the
+  entry with the job chosen. The next 14 days come first. One whose entry has left your calendar says "No longer in
+  your calendar" and opens the job finder.
+- **Searching again.** Changing a job's PO number, dates, client, venue or postcode, or its days, searches again for
+  what belongs to it, Gmail included (once per job; `JobController::SEARCHED_BY`); so does adding a possible job to a
+  job. The search never looks in Sent mail (`-in:sent`), and leaves out an email with a part you said isn't the job's.
+- **Invoice Message-IDs** (step 1 of 2D). Each invoice keeps one Message-ID (`invoices.message_id`, migration
+  `2026_12_17_000001_add_message_id_to_invoices.php`); the invoice goes with it each time it's sent, and each reminder
+  points back to it (In-Reply-To, References), by either mail route.
+- **"Finished yesterday"** (the first step of idea 1). `ledger:job-finished`, daily at 08:37 London: "Acme Awards
+  finished yesterday. Invoice it?" on Telegram with a link to the job, once per job (`settings.job_finished_told`), not
+  for a cancelled or invoiced job or one whose Invoice item you snoozed. No draft is prepared yet (batch 4).
+- **Tax pot, phase 1** (idea 2). The dashboard shows what to put aside at the average rate of income tax and Class 4
+  on the expected profit (about £210 of a £1,380 payment at a £36,000 profit), and what's needed by the next payment:
+  31 January (that year's balance plus the first payment on account), or from February the 31 July payment first.
+  Choose a Starling Space or savings goal as the pot in Settings › Integrations (`tax_pot_space`); its balance is read
+  at each Starling import (`tax_pot_balance`, needing the token's space and balance scopes), and new business income
+  is told on Telegram with about how much to put aside. Expend never moves money.
+
+Left from batch 1, for the owner or later:
+
+- The reconnect in "Personal" mode (section 4) is yours.
+- A reminder's subject is still "Reminder: invoice …". Gmail on the client's side groups messages only when subjects
+  match, so the new headers often won't thread a reminder with its invoice there; "Re: Invoice …" would, but it's a
+  change clients see, so it's your choice. Sending an invoice again reuses its Message-ID, and Gmail drops a second
+  copy with the same Message-ID in a mailbox that already has it, so a resend to the same address may not show again.
+- Tax pot: tax deducted at source isn't counted; payments towards the coming bill are counted only as the payments on
+  account you record on the tax year; money in still to decide isn't counted (the figure says "at least"). Starling
+  balance snapshots into `statement_balances` are M8.
+- A cancelled entry already linked to a job, and the days it made, are left as they are: flagging "cancelled, but the
+  job still has a hotel or costs" is M8's `calendar.job_changed`, with the entry history (`calendar_event_versions`).
+
 *For the owner, 24 November 2026. Code facts come from the repository at commit 3384b60. Google and legal facts were checked against official pages (section 6). "Unverified" marks anything nobody could confirm.*
 
 ## 1. Short answer
@@ -35,7 +79,7 @@ Effort: small = a day or less; medium = 2–4 days; large = a week or more. "M" 
 
 ### A. Continuous discovery of POs and job mail (M-1, M-2, B-2a, B-2b)
 
-- **Today:** Gmail is only searched: weekly (Sunday 05:23), by the "Search Gmail" button, and once per job when it's made or "Search again" is pressed. The forwarding mailbox is checked every 5 minutes. Under the default AI setting ("on demand"), emails are only scanned by rules for work offers: PO attachments aren't read, so they don't count as POs or wake the job finder. Editing a job never searches again, and conversations aren't fetched. The "not invoiced" to-do already stays until you bill.
+- **Today:** Gmail is only searched: weekly (Sunday 05:23), by the "Search Gmail" button, and once per job when it's made or "Search again" is pressed. The forwarding mailbox is checked every 5 minutes. Under the default AI setting ("on demand"), emails are only scanned by rules for work offers: PO attachments aren't read, so they don't count as POs or wake the job finder. Editing a job never searches again (fixed in batch 1), and conversations aren't fetched. The "not invoiced" to-do already stays until you bill.
 - **Verdict:** do it differently: poll first, push later.
 - **How:** (1) Every 2 minutes, ask Gmail's change log what is new. Read only sender and subject; keep emails that look like work (a client's domain, PO words, an attachment, a reply in a known thread) and skip the rest unstored. (2) Read kept job mail automatically, within the AI cap. (3) Search for a job's PO in passes: the exact PO number; "PO" or "purchase order" from the client's domains; then today's broad search, never your Sent mail. Re-run after edits, and on every check until a PO links or you press "No PO needed". (4) Fetch a linked email's conversation and offer the rest as possible finds. (5) Telegram: "PO 4471 found for Arena load-in [Draft the invoice]". (6) Gmail push through Pub/Sub (Google's relay service) is optional later: on Hostinger it saves about a minute, and it needs a paid billing account.
 - **Needs from you and access:** the reconnect; gmail.modify, which you already granted.
@@ -62,7 +106,7 @@ Effort: small = a day or less; medium = 2–4 days; large = a week or more. "M" 
 
 ### D. Invoices and chasers in the booking conversation (M-4, B-5c)
 
-- **Today:** invoices and one fixed reminder go by Hostinger mail or SMTP, each in a new thread. No Message-ID (an email's unique tag) is stored, so reminders don't even thread with the invoice. Replies go to your business email: if that is the forwarding mailbox they show as "Held" to-dos, otherwise Expend never sees them. Nothing looks for remittance advice.
+- **Today:** invoices and one fixed reminder go by Hostinger mail or SMTP, each in a new thread. No Message-ID (an email's unique tag) is stored, so reminders don't even thread with the invoice (batch 1 stores one; see the top). Replies go to your business email: if that is the forwarding mailbox they show as "Held" to-dos, otherwise Expend never sees them. Nothing looks for remittance advice.
 - **Verdict:** do it, in two steps.
 - **How:** (1) Whatever the route, give each invoice email a fixed Message-ID and thread reminders onto it. (2) Expend writes the invoice or reminder as its own Gmail draft in the booking conversation, subject "Re: <their subject>" (Gmail splits threads when the subject changes), with the invoice and PO numbers in the first line. Telegram: "Invoice 43 is in your Gmail drafts, in the PO thread [Send it] [Open in Gmail]". To is the billing address, never reply-all; per client, choose the booking thread or a new email to accounts. The change check then watches unpaid invoices' threads and remittance emails; the bank stays the proof. The mailto PO request becomes a draft too. If Google is unreachable, fall back to today's route.
 - **Needs from you:** decide whether invoices go from Gmail, and from which address (your Gmail, or your business address as a "Send mail as" alias).
@@ -72,7 +116,7 @@ Effort: small = a day or less; medium = 2–4 days; large = a week or more. "M" 
 
 ### E. The calendar as a source of possible jobs (C-1, B-1, B-5a, B-5b)
 
-- **Today:** largely built. Hourly, the job finder scores unlinked calendar entries; 3 or more becomes a "Possible job". Links survive moves, and the job and calendar pages show each other. Gaps: only title and place are kept, though the feed carries organiser, guests, notes, attachments and status. With AI off, score-2 entries only turn amber on the calendar page and score-1 shows nothing. The to-do item opens the Connections map and doesn't say "from your calendar". Telegram buttons aren't tied to what was shown. Entries moved over 7 days away drop off the job page. Nothing checks tomorrow. Two bugs: cancelled entries are stored as live, and an empty feed wipes all entries until the next sync. Invitation files in emails are never read as calendar data.
+- **Today:** largely built. Hourly, the job finder scores unlinked calendar entries; 3 or more becomes a "Possible job". Links survive moves, and the job and calendar pages show each other. Gaps: only title and place are kept, though the feed carries organiser, guests, notes, attachments and status. With AI off, score-2 entries only turn amber on the calendar page and score-1 shows nothing. The to-do item opens the Connections map and doesn't say "from your calendar" (both done in batch 1). Telegram buttons aren't tied to what was shown. Entries moved over 7 days away drop off the job page. Nothing checks tomorrow. Two bugs, fixed in batch 1: cancelled entries are stored as live, and an empty feed wipes all entries until the next sync. Invitation files in emails are never read as calendar data.
 - **Verdict:** do it: finish it.
 - **How:** (1) Fix the bugs. The item says "From your calendar: Tue 3 Dec, 08:00–18:00, <venue>", opens the entry and offers "Part of <job>"; the next 14 days come first. (2) Read through the Calendar API every 5 minutes, changes only: explicit cancellations, organiser and guest domains, your own reply, attachments, and Google's "from Gmail" hotel entries to skip. Keep each entry's history (M8); the feed stays as fallback. (3) Fetch call sheets attached to entries from Drive; unshared files become "forward it" prompts. (4) Read invitation files exactly, linking entry, booking thread and PO. (5) Each evening: "Tomorrow: Arena rig, 07:00, has no job [It's a job] [Not a job]" or "…has no PO [Ask for it]". (6) "A PO for 12 Mar arrived; your calendar has 'Acme rig' that day [Link them] [Not this]".
 - **Access:** calendar.events, calendar.calendarlist.readonly, drive.readonly.
@@ -100,7 +144,7 @@ Effort: small = a day or less; medium = 2–4 days; large = a week or more. "M" 
 ## 3. My own ideas, best first
 
 1. **Close out the morning after a job.** *Today:* "Draft the invoice" exists, but a draft from a job copies only a whole-job fee, so a day-rate job gets an empty draft. Recharged hotels are only a reminder. *Idea:* the morning after, Expend prepares the draft (PO lines, or day rate × days, recharges as lines, each with its source), mileage and stays: "Arena wrapped. Invoice £1,380 ready [Check and issue] · 168 miles, about £92 [Add]". Issuing takes two presses. *Effort:* medium. *Value:* high. M4–M5.
-2. **Tax pot.** *Today:* no "set aside" figure; Starling sync reads no balances. *Idea:* "Arena paid £1,380: put about £330 aside (estimate)" and "Tax pot £3,100 of about £5,400 needed by 31 Jan", read from your chosen Starling Space. 31 January 2027 (68 days away) usually brings the 2025-26 balance plus the first 2026-27 payment on account: half of last year's income tax and Class 4, less tax taken at source. A "Move to Tax Space" button would move money, so it needs your press each time and M9; Starling's specification shows it needs no extra signing, but test with £1. *Effort:* small. *Value:* high.
+2. **Tax pot.** *Today:* no "set aside" figure; Starling sync reads no balances. *Idea:* "Arena paid £1,380: put about £210 aside (estimate)" (at a £36,000 profit, the average rate) and "Tax pot £3,100 of about £5,400 needed by 31 Jan", read from your chosen Starling Space; from February, the 31 July payment on account comes first. 31 January 2027 (68 days away) usually brings the 2025-26 balance plus the first 2026-27 payment on account: half of last year's income tax and Class 4, less tax taken at source. A "Move to Tax Space" button would move money, so it needs your press each time and M9; Starling's specification shows it needs no extra signing, but test with £1. *Effort:* small. *Value:* high.
 3. **Today's one thing.** *Today:* a weekly digest of 8 items and a total, and fixed-time nudges with sound. *Idea:* one silent message a day at your usual active hour, skipped on show days. It picks one item by money, urgency and minutes, with [Tomorrow] [Next], and never shows the backlog total. Other non-urgent prompts ride in it. *Effort:* medium. *Value:* high. M5.
 4. **A chase ladder in the PO thread.** *Today:* one reminder wording, repeated weekly; no late-payment interest. *Idea:* Gmail drafts at 3, 14 and 30 days late [Send it] [Not yet] [They've paid]. Statutory interest is shown, and added only if you tick it, for business clients without their own interest clause: 8% over the Bank Rate, fixed per debt (11.75% where interest starts in 2026; 12.00% for January–June 2027, provisional until 31 December), simple daily, plus a one-off £40, £70 or £100. Example: £1,350, 40 days late: £17.38 + £70. *Effort:* medium. *Value:* high.
 5. **A deadline ladder with "Done" buttons.** *Today:* warnings 60 days before the return and 14 before MTD updates; nothing before 31 July. *Idea:* each HMRC date gets stages at 30, 7 and 2 days and the day after, each saying something new: "when will you do it? [Sat] [Sun]", the next step, the cost of missing it. [Filed today] and [Paid £X today] record your word; the bank line confirms it later. *Effort:* medium. *Value:* high.
@@ -143,7 +187,7 @@ Smaller extras: a VAT watch on invoices rather than cash; weekly 10-minute year-
 **Decisions:**
 
 - [ ] Invoices and chasers as Gmail drafts in the booking thread? From your Gmail, or a business alias?
-- [ ] Amend plan law 4 so Expend may write its own labels, calendar and drafts.
+- [x] Amend plan law 4 so Expend may write its own labels, calendar and drafts (done: section 5.1 of docs/intelligence-cycle.md).
 - [ ] Which labels to switch on; whether amounts show on your calendar.
 - [ ] Automatic AI reading of job mail, and the monthly AI cap.
 - [ ] Statutory interest: opt in per invoice?

@@ -3,23 +3,37 @@
 namespace App\Domain\Calendar;
 
 use App\Domain\Audit\AuditLog;
+use App\Jobs\FindJobs;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
 use App\Models\JobCandidate;
 use App\Models\Setting;
 use Carbon\CarbonImmutable;
 use DateTimeZone;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
+use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Reader;
 use Throwable;
 
 /**
  * Reads your calendar's private iCal feed (read-only) so each transaction can show what was on that day.
+ *
+ * Cancelled entries (STATUS:CANCELLED) aren't kept as live entries, so one the feed now marks cancelled stops counting
+ * at the next refresh. A feed that doesn't answer, can't be read, isn't a calendar, comes back cut short (it doesn't
+ * end with END:VCALENDAR) or comes back with no entries at all never wipes the stored entries: they're kept until a
+ * good feed says otherwise, and the message says so in plain words.
  */
 final class CalendarSync
 {
+    /**
+     * Refresh from the feed, then let the job finder look at what's new (FindJobs, queued, which keeps to your
+     * "find jobs automatically" setting). The hourly refresh and Sync now in Settings both come through here.
+     *
+     * @throws EmptyFeed when the feed had no entries and some are stored (they're kept)
+     */
     public function sync(?string $url = null, int $yearsBack = 4): int
     {
         $url ??= Setting::get('calendar_ics_url');
@@ -27,23 +41,60 @@ final class CalendarSync
             throw new RuntimeException('Add your calendar feed address in Settings first.');
         }
 
-        $response = Http::timeout(30)->get($url);
+        try {
+            $response = Http::timeout(30)->get($url);
+        } catch (ConnectionException $e) {
+            // Timed out, or the address couldn't be reached: cURL's own words mean nothing to you.
+            throw new RuntimeException('The calendar feed didn’t answer, so the entries already here were kept. Try again in a few minutes.', previous: $e);
+        }
         if (! $response->successful()) {
-            throw new RuntimeException("The calendar feed couldn't be read (HTTP {$response->status()}).");
+            throw new RuntimeException("The calendar feed couldn't be read (HTTP {$response->status()}), so the entries already here were kept.");
         }
 
-        return $this->load($response->body(), $yearsBack);
+        $count = $this->load($response->body(), $yearsBack);
+        try {
+            FindJobs::dispatch();
+        } catch (Throwable $e) {
+            report($e); // the calendar itself is loaded; the nightly run looks for jobs too
+        }
+
+        return $count;
     }
 
+    /**
+     * Replace the stored entries with the feed's. Nothing is changed when the feed can't be read, isn't a calendar or
+     * was cut short (it throws first), or when it has no entries at all while some are stored (EmptyFeed).
+     */
     public function load(string $ics, int $yearsBack = 4): int
     {
-        $calendar = Reader::read($ics, Reader::OPTION_FORGIVING);
+        try {
+            $calendar = Reader::read($ics, Reader::OPTION_FORGIVING);
+        } catch (Throwable) {
+            $calendar = null; // empty, cut short mid-entry, or a web page (a sign-in page) instead of the feed
+        }
+        if (! $calendar instanceof VCalendar) {
+            throw new RuntimeException('The calendar feed address didn’t return a calendar, so the entries already here were kept.');
+        }
+        // The forgiving reader accepts a feed that stops after any entry, and reads only the entries before the cut: a
+        // whole feed ends with END:VCALENDAR.
+        if (strcasecmp(substr(rtrim($ics), -13), 'END:VCALENDAR') !== 0) {
+            throw new RuntimeException('The calendar feed came back cut short, so the entries already here were kept. Try again in a few minutes.');
+        }
+        // No entries at all, not even past or cancelled ones: a feed having a bad moment, not an empty calendar.
+        if (count($calendar->select('VEVENT')) === 0 && ($kept = CalendarEvent::query()->count()) > 0) {
+            throw new EmptyFeed($kept);
+        }
         $start = CarbonImmutable::now()->subYears($yearsBack)->startOfYear();
         $end = CarbonImmutable::now()->addYear();
         $expanded = $calendar->expand($start, $end, new DateTimeZone('Europe/London'));
 
         $rows = [];
         foreach ($expanded->VEVENT ?? [] as $event) {
+            // A cancelled entry (or a cancelled occurrence of a repeating one) isn't on: left out, so it stops
+            // counting for the job finder, the calendar page and what was on each day.
+            if (strtoupper(trim((string) ($event->STATUS ?? ''))) === 'CANCELLED') {
+                continue;
+            }
             $allDay = ! $event->DTSTART->hasTime();
             $startsAt = CarbonImmutable::instance($event->DTSTART->getDateTime());
             $endsAt = isset($event->DTEND) ? CarbonImmutable::instance($event->DTEND->getDateTime()) : null;

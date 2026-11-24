@@ -19,6 +19,7 @@ use App\Domain\Intel\Ranker;
 use App\Domain\Intel\ReceiptMatch;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoicePayments;
+use App\Domain\Jobs\CandidateText;
 use App\Domain\Jobs\Opportunities;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\Reconciler;
@@ -757,11 +758,16 @@ final class TodoList
             });
         }
 
-        // Possible jobs from the job finder.
-        $candidates = JobCandidate::query()->where('status', 'open')->orderBy('starts_on')->get();
-        foreach ($candidates as $c) {
-            $add('jobs', 2, 'candidate:'.$c->id, 'Possible job: '.$c->title, $c->starts_on->format('j M Y').($c->client_name ? ' · '.$c->client_name : '').' · from '.count($c->sources).' '.(count($c->sources) === 1 ? 'source' : 'sources'),
-                '/connections?year='.UkTaxYear::fromDate($c->starts_on)->label(), [self::action('cand_add', $c->id, 'Add as a job'), self::action('cand_dismiss', $c->id, 'Not a job', 'ghost')]);
+        // Possible jobs from the job finder, the next 14 days first (CandidateText). One found in your calendar says so
+        // ("From your calendar: Tue 3 Dec, 08:00–18:00, Acme Arena"), opens that entry, and offers "Part of <job>" when
+        // a job you have is near it with the same client or place; one whose entry has gone says so.
+        $candidates = JobCandidate::query()->where('status', 'open')->orderBy('starts_on')->orderBy('id')->get();
+        foreach (CandidateText::forAll($candidates) as $id => $t) {
+            $add('jobs', 2, 'candidate:'.$id, $t['title'], $t['detail'], $t['href'], array_values(array_filter([
+                self::action('cand_add', $id, 'Add as a job'),
+                $t['part_of'] ? self::action('cand_merge', $id.':'.$t['part_of']['job_id'], $t['part_of']['label']) : null,
+                self::action('cand_dismiss', $id, 'Not a job', 'ghost'),
+            ])));
         }
 
         // Money moving between your own accounts, suggested by the matcher, that is safe to confirm in one go: both
