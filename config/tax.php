@@ -33,6 +33,7 @@ $base = [
     'rates' => ['basic' => '20', 'higher' => '40', 'additional' => '45'],
     'class4' => ['lower' => 1_257_000, 'upper' => 5_027_000, 'main_rate' => '6', 'upper_rate' => '2'],
     'class2' => null,
+    'class2_voluntary' => null,
     'mileage' => [
         'car_van_first' => 45, 'car_van_after' => 25, 'threshold_miles' => 10_000,
         'motorcycle' => 24,
@@ -46,6 +47,9 @@ $base = [
     'trading_allowance' => 100_000,
     'vat_threshold' => 9_000_000,
     'payments_on_account_threshold' => 100_000,
+    // The most a pension can take in a year with tax relief (FA 2004 s228), before carry-forward (s228A) and the
+    // taper for very high incomes (s228ZA). £60,000 from 2023-24; £40,000 before.
+    'pension_annual_allowance' => 6_000_000,
     'cash_basis_default' => true,
     'sources' => $sources,
 ];
@@ -59,6 +63,7 @@ return [
             'class4' => ['lower' => 956_800, 'upper' => 5_027_000, 'main_rate' => '9', 'upper_rate' => '2'],
             'class2' => ['weekly' => 305, 'payable_from' => 651_500],
             'vat_threshold' => 8_500_000,
+            'pension_annual_allowance' => 4_000_000,
             'cash_basis_default' => false,
         ]),
 
@@ -69,6 +74,7 @@ return [
             // Payable from the lower profits limit; treated as paid between the small profits threshold and it.
             'class2' => ['weekly' => 315, 'payable_from' => 1_190_800],
             'vat_threshold' => 8_500_000,
+            'pension_annual_allowance' => 4_000_000,
             'cash_basis_default' => false,
         ]),
 
@@ -80,13 +86,19 @@ return [
         ]),
 
         // From 2024-25: Class 2 no longer compulsory, Class 4 main rate 6%, cash basis the default.
-        '2024-25' => $base,
+        // Voluntary Class 2 (profits under the small profits threshold): it keeps the year counting for the state pension.
+        '2024-25' => array_replace_recursive($base, [
+            'class2_voluntary' => ['weekly' => 345, 'small_profits_threshold' => 672_500],
+        ]),
 
-        '2025-26' => $base,
+        '2025-26' => array_replace_recursive($base, [
+            'class2_voluntary' => ['weekly' => 350, 'small_profits_threshold' => 684_500],
+        ]),
 
         // Simplified mileage for cars and goods vehicles rose to 55p for the first 10,000 miles.
         '2026-27' => array_replace_recursive($base, [
             'mileage' => ['car_van_first' => 55],
+            'class2_voluntary' => ['weekly' => 365, 'small_profits_threshold' => 710_500],
         ]),
 
     ],

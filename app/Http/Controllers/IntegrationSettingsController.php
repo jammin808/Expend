@@ -35,6 +35,7 @@ class IntegrationSettingsController extends Controller
                 'key_set' => AiConfig::ready(), 'key_from_env' => (bool) config('services.anthropic.key'), 'model' => AiConfig::model(), 'models' => AiConfig::MODELS,
                 'effort' => AiConfig::effort(), 'cap_usd' => Setting::get('ai_monthly_cap_usd'), 'usage' => AiUsage::thisMonth(),
                 'suggestions' => (bool) Setting::get('ai_suggestions'), 'extraction' => Setting::get('ai_extraction'),
+                'web_research' => Setting::get('ai_web_research') !== false,
             ],
             'business' => [
                 'name' => Setting::get('business_name'), 'address' => Setting::get('business_address'), 'email' => Setting::get('business_email'),
@@ -119,7 +120,7 @@ class IntegrationSettingsController extends Controller
         $data = $request->validate([
             'api_key' => 'nullable|string|max:300', 'model' => ['required', Rule::in(array_keys(AiConfig::MODELS))],
             'effort' => 'required|in:low,medium,high,xhigh', 'cap_usd' => 'required|numeric|min:0|max:10000',
-            'suggestions' => 'boolean', 'extraction' => 'required|in:off,on_demand,on',
+            'suggestions' => 'boolean', 'extraction' => 'required|in:off,on_demand,on', 'web_research' => 'boolean',
         ]);
         if (! empty($data['api_key'])) {
             Setting::put('anthropic_api_key', trim($data['api_key']));
@@ -129,6 +130,9 @@ class IntegrationSettingsController extends Controller
         Setting::put('ai_monthly_cap_usd', (float) $data['cap_usd']);
         Setting::put('ai_suggestions', (bool) ($data['suggestions'] ?? false));
         Setting::put('ai_extraction', $data['extraction']);
+        if (array_key_exists('web_research', $data)) {
+            Setting::put('ai_web_research', (bool) $data['web_research']);
+        }
         AuditLog::record('settings.ai', 'Settings', null, collect($data)->except('api_key')->all() + ['api_key_changed' => ! empty($data['api_key'])]);
 
         return back()->with('success', 'AI settings saved.');

@@ -8,5 +8,5 @@ class AssistantLog extends Model
 {
     protected $guarded = ['id'];
 
-    protected $casts = ['tool_calls' => 'array', 'unmatched_figures' => 'array'];
+    protected $casts = ['tool_calls' => 'array', 'unmatched_figures' => 'array', 'notes' => 'array'];
 }

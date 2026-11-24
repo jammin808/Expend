@@ -103,9 +103,10 @@ class ReviewFixesTodoActionsTest extends TestCase
         Setting::put('smtp_password', 'wrong');
     }
 
+    /** A long test run grows past the worker's default 128MB, after which it stops before the next job. */
     private function work(): void
     {
-        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0]);
+        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0, '--memory' => 4096]);
     }
 
     private static function alerted(string $contains): \Closure
@@ -280,7 +281,7 @@ class ReviewFixesTodoActionsTest extends TestCase
 
         $this->post("/invoices/{$invoice->id}/send", ['to' => 'pay@client.example'])->assertSessionHas('success');
         $this->assertNotNull($invoice->fresh()->sent_at, 'Marked while queued, so a second press can see it');
-        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0]);
+        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0, '--memory' => 4096]);
 
         $fresh = $invoice->fresh();
         $this->assertNull($fresh->sent_at);
@@ -294,13 +295,13 @@ class ReviewFixesTodoActionsTest extends TestCase
         // A resend or a reminder that fails puts back what was there before.
         $invoice->forceFill(['sent_at' => '2025-01-02 09:00:00', 'sent_to' => 'old@client.example', 'reminded_at' => null, 'reminder_count' => 0])->save();
         $this->post("/invoices/{$invoice->id}/send", ['to' => 'new@client.example'])->assertSessionHas('success');
-        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0]);
+        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0, '--memory' => 4096]);
         $this->assertSame(['2025-01-02 09:00:00', 'old@client.example'], [$invoice->fresh()->sent_at->format('Y-m-d H:i:s'), $invoice->fresh()->sent_to]);
 
         $this->travel(40)->days();
         $this->post("/invoices/{$invoice->id}/send", ['to' => 'old@client.example', 'reminder' => true])->assertSessionHas('success');
         $this->assertSame(1, (int) $invoice->fresh()->reminder_count);
-        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0]);
+        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0, '--memory' => 4096]);
         $this->assertSame([0, null], [(int) $invoice->fresh()->reminder_count, $invoice->fresh()->reminded_at]);
         $this->assertTrue(AuditEvent::query()->where('action', 'invoice.reminder_failed')->exists());
     }
@@ -310,7 +311,7 @@ class ReviewFixesTodoActionsTest extends TestCase
         config(['queue.default' => 'database']);
         $invoice = $this->issuedInvoice(today()->format('Y-m-d'));
         $this->post("/invoices/{$invoice->id}/send", ['to' => 'pay@client.example'])->assertSessionHas('success');
-        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0]);
+        $this->artisan('queue:work', ['--stop-when-empty' => true, '--tries' => 1, '--sleep' => 0, '--memory' => 4096]);
 
         $this->assertSame('pay@client.example', $invoice->fresh()->sent_to);
         $this->assertSame(0, DB::table('failed_jobs')->count());

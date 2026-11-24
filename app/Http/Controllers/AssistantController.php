@@ -20,7 +20,7 @@ class AssistantController extends Controller
     {
         return Inertia::render('assistant', [
             'history' => AssistantLog::query()->where('channel', 'app')->latest()->limit(20)->get()->reverse()->values()
-                ->map(fn ($l) => ['id' => $l->id, 'question' => $l->question, 'answer' => $l->answer, 'unmatched' => $l->unmatched_figures ?? [], 'tools' => collect($l->tool_calls)->pluck('tool')->unique()->values()]),
+                ->map(fn ($l) => ['id' => $l->id, 'question' => $l->question, 'answer' => $l->answer, 'unmatched' => $l->unmatched_figures ?? [], 'notes' => $l->notes ?? [], 'tools' => collect($l->tool_calls)->pluck('tool')->unique()->values()]),
             'aiReady' => AiConfig::ready(),
             'usage' => AiUsage::thisMonth(),
         ]);
@@ -40,7 +40,7 @@ class AssistantController extends Controller
             return response()->json(['ok' => false, 'message' => $e->getMessage()], 422);
         }
 
-        return response()->json(['ok' => true, 'answer' => $result['answer'], 'unmatched' => $result['unmatched'], 'tools' => collect($result['tools'])->pluck('tool')->unique()->values(), 'id' => $result['log_id']]);
+        return response()->json(['ok' => true, 'answer' => $result['answer'], 'unmatched' => $result['unmatched'], 'notes' => $result['notes'], 'tools' => collect($result['tools'])->pluck('tool')->unique()->values(), 'id' => $result['log_id']]);
     }
 
     public function suggest(Request $request, TransactionAdvisor $advisor): RedirectResponse

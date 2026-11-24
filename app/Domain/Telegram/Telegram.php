@@ -225,14 +225,26 @@ final class Telegram
                 ->map(fn ($l) => ['question' => $l->question, 'answer' => (string) $l->answer])->values()->all();
             $answer = $assistant->ask($text, 'telegram', $history);
             $reply = $answer['answer'];
-            if ($answer['unmatched']) {
-                $reply .= "\n\n⚠ Not found in your records: ".implode(', ', $answer['unmatched']).'. Treat these as unverified.';
-            }
+            $reply .= self::answerWarnings($answer['unmatched'], $answer['notes'] ?? []);
             self::reply($chatId, $reply);
         } catch (Throwable $e) {
             report($e);
             self::reply($chatId, 'Sorry, that didn’t work: '.$e->getMessage());
         }
+    }
+
+    /** Lines under an assistant answer: figures and links not found anywhere, then things to check before relying on it. */
+    public static function answerWarnings(array $unmatched, array $notes): string
+    {
+        $out = '';
+        if ($unmatched) {
+            $out .= "\n\n⚠ Not found in your records: ".implode(', ', $unmatched).'. Treat these as unverified.';
+        }
+        if ($notes) {
+            $out .= "\n\nℹ Check before relying on: ".implode('; ', $notes).'.';
+        }
+
+        return $out;
     }
 
     public static function documentSummary(Document $document): string

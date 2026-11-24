@@ -6,6 +6,7 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Export\YearExporter;
 use App\Domain\Tax\BillPreview;
 use App\Domain\Tax\PenaltyEstimator;
+use App\Domain\Tax\TaxSavings;
 use App\Domain\Tax\ReturnSummary;
 use App\Domain\Tax\TaxEstimator;
 use App\Domain\Tax\TaxParameters;
@@ -165,6 +166,7 @@ class TaxYearController extends Controller
             'checks' => YearChecks::checks($label, $summary),
             'lookups' => Present::lookups(),
             'penalties' => rescue(fn () => PenaltyEstimator::forYear($label), null),
+            'savings' => rescue(fn () => TaxSavings::review($label), null),
         ]);
     }
 
