@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Todo\FindingsRegistry;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Models\TodoDismissal;
@@ -22,6 +23,14 @@ class TodoController extends Controller
         Cache::put('todo_total', $list['total'], 120);
 
         return Inertia::render('todo', $list + ['groups' => TodoList::GROUPS]);
+    }
+
+    /** What has been found and dealt with: the history behind the list, with the money involved. */
+    public function history(): Response
+    {
+        FindingsRegistry::sync();
+
+        return Inertia::render('todo-history', FindingsRegistry::summary());
     }
 
     /** Snooze a to-do for a while, or mark it not relevant (it stays hidden until something about it changes its key). */

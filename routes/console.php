@@ -10,6 +10,7 @@ use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\TransferPairer;
 use App\Domain\Telegram\Telegram;
+use App\Domain\Todo\FindingsRegistry;
 use App\Domain\Verification\Verifier;
 use App\Jobs\FindJobs;
 use App\Jobs\ScanGmail;
@@ -135,6 +136,11 @@ Artisan::command('ledger:reset-link', function () {
 })->purpose('Print a one-time password reset link for the owner (for when email can’t be sent)');
 
 // One cron entry on the server runs all of these: * * * * * php artisan schedule:run
+Artisan::command('ledger:findings', function () {
+    $r = FindingsRegistry::sync();
+    $this->info("Findings: {$r['new']} new, {$r['resolved']} resolved, {$r['open']} open.");
+})->purpose('Record what the to-do list finds and what has been dealt with since');
+
 Artisan::command('ledger:categorise', function (Categoriser $categoriser) {
     $made = 0;
     BankTransaction::query()->where('review_status', 'unreviewed')->whereDoesntHave('allocations')->orderBy('id')
@@ -167,6 +173,7 @@ Schedule::command('ledger:transfers')->dailyAt('04:07')->withoutOverlapping();
 Schedule::command('ledger:categorise')->dailyAt('04:12')->withoutOverlapping();
 Schedule::command('ledger:find-jobs')->dailyAt('04:17')->withoutOverlapping();
 Schedule::command('ledger:recheck')->dailyAt('04:47')->withoutOverlapping();
+Schedule::command('ledger:findings')->dailyAt('05:07')->withoutOverlapping();
 // Re-run the Gmail searches weekly for this tax year (and last year until the 31 January deadline), so new,
 // changed and cancelled bookings and POs are picked up. Emails already read are skipped.
 Schedule::call(function () {

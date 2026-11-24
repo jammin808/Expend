@@ -69,7 +69,10 @@ export default function Todo({
                         {total === 0
                             ? 'Nothing needs you right now.'
                             : `${total} ${total === 1 ? 'thing needs' : 'things need'} you, most urgent first.`}{' '}
-                        The same list comes to Telegram each Monday, with buttons.
+                        The same list comes to Telegram each Monday, with buttons.{' '}
+                        <Link href="/todo/history" className="underline underline-offset-2">
+                            What’s been found and dealt with
+                        </Link>
                     </p>
                 </div>
 

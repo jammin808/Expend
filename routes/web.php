@@ -112,6 +112,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('calendar/not-job', [JobFinderController::class, 'calendarNotJob'])->name('calendar.notJob');
     Route::get('connections', [ConnectionsController::class, 'index'])->name('connections');
     Route::get('todo', [TodoController::class, 'index'])->name('todo');
+    Route::get('todo/history', [TodoController::class, 'history'])->name('todo.history');
     Route::get('search', SearchController::class)->name('search');
     Route::get('explain/category/{category}', [TaxHelpController::class, 'category'])->name('explain.category');
     Route::get('explain/{source}/{id}', [TaxHelpController::class, 'payment'])->whereIn('source', ['bank', 'manual'])->whereNumber('id')->name('explain.payment');
