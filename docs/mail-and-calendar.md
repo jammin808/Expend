@@ -6,7 +6,19 @@ Access is not autonomy. Sending anything to a client, changing the owner's own c
 still need the owner's press, unless M9–M10 of docs/intelligence-cycle.md grant more. Expend may write freely only
 to things it owns: its own Gmail labels, its own calendar and its own drafts (this needs plan law 4 amending).
 
-Status: proposal. Which batches to build is the owner's choice.
+**Owner's choices (24 November 2026):**
+
+- Build all four batches in section 5, with one change: **Gmail is checked hourly, or when the owner presses
+  "Check now"**, not every 2 minutes. The hourly check uses Gmail's change log (history.list) the same way.
+- Invoices and chasers are prepared as **Gmail drafts in the booking conversation, from the connected Gmail
+  account**. The owner always presses Send.
+- **Plan law 4 is amended:** Expend may write freely to its own Gmail labels, its own Google calendar and its own
+  drafts, audited. It still never sends to clients, edits the owner's own calendar entries or moves money without
+  the owner's press.
+- **Job mail is read automatically by AI as it arrives, within the monthly AI cap**: only mail that looks like work
+  (client domains, PO words, attachments, known threads); the rest is skipped and not stored.
+
+Where section 2 or 5 says "every 2 minutes", read "hourly, or on Check now".
 
 *For the owner, 24 November 2026. Code facts come from the repository at commit 3384b60. Google and legal facts were checked against official pages (section 6). "Unverified" marks anything nobody could confirm.*
 
