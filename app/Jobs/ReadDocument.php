@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Domain\Ai\DocumentReader;
+use App\Domain\Jobs\Opportunities;
 use App\Domain\Telegram\Telegram;
 use App\Domain\Verification\Verifier;
 use App\Models\Document;
@@ -33,6 +34,12 @@ class ReadDocument implements ShouldQueue
             $document = $reader->read($document);
             try {
                 $verifier->document($document, $document->text_status !== 'extracted' && Setting::get('ai_extraction') === 'on');
+            } catch (Throwable $e) {
+                report($e);
+            }
+            // Work it may offer (an availability check, a hold, an offer): proposed, never made a job by itself.
+            try {
+                app(Opportunities::class)->fromDocument($document);
             } catch (Throwable $e) {
                 report($e);
             }

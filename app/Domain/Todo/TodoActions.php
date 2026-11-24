@@ -6,7 +6,9 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\JobFinder;
+use App\Domain\Jobs\Opportunities;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\DecisionService;
 use App\Domain\Ledger\RuleLearner;
@@ -17,17 +19,18 @@ use App\Domain\Verification\Verifier;
 use App\Jobs\ReadDocument;
 use App\Models\BankTransaction;
 use App\Models\CalendarJobLink;
-use App\Models\Client;
 use App\Models\Document;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\MerchantRule;
+use App\Models\Opportunity;
 use App\Models\Setting;
 use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Models\WorkJob;
 use App\Support\Money;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
@@ -41,11 +44,12 @@ use InvalidArgumentException;
  */
 final class TodoActions
 {
-    public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok'];
+    public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
+        'opp_add', 'opp_decline', 'opp_dismiss'];
 
     public function __construct(
         private AllocationWriter $writer, private DecisionService $decisions, private JobFinder $finder, private InvoiceService $invoices,
-        private InvoiceMailer $mailer, private TravelMatcher $matcher, private Verifier $verifier,
+        private InvoiceMailer $mailer, private TravelMatcher $matcher, private Verifier $verifier, private Opportunities $opportunities,
     ) {}
 
     /**
@@ -71,6 +75,9 @@ final class TodoActions
             'inv_chase' => $this->mailer->send(Invoice::query()->findOrFail((int) $id), null, true, once: true, offeredAt: $offeredAt),
             'inv_send' => $this->mailer->send(Invoice::query()->findOrFail((int) $id), once: true, offeredAt: $offeredAt),
             'transfers_ok' => $this->transfersOk((int) $id, $offeredAt),
+            'opp_add' => $this->opportunityAdd((int) $id, $offeredAt),
+            'opp_decline' => $this->opportunityDecide((int) $id, 'decline', $offeredAt),
+            'opp_dismiss' => $this->opportunityDecide((int) $id, 'dismiss', $offeredAt),
             default => throw new InvalidArgumentException('Unknown action.'),
         };
     }
@@ -186,11 +193,64 @@ final class TodoActions
         $job = $this->finder->accept($c, [
             'title' => $c->title, 'starts_on' => $c->starts_on->format('Y-m-d'), 'ends_on' => $c->ends_on->format('Y-m-d'),
             'start_time' => $c->start_time, 'end_time' => $c->end_time, 'location' => $c->location, 'postcode' => $c->postcode, 'po_number' => $c->po_number,
-            'client_id' => $c->client_name ? Client::query()->firstOrCreate(['name' => trim($c->client_name)])->id : null,
+            'client_id' => $c->client_name && trim($c->client_name) !== '' ? JobCreator::client($c->client_name, 'you')->id : null,
             'status' => $c->ends_on->isPast() ? 'done' : 'booked',
         ]);
 
         return "Added {$job->title} and linked what it was found from.";
+    }
+
+    /**
+     * Make an opportunity a job with the details read from its emails (you said yes, or it's booked). A Telegram button
+     * pressed after the opportunity changed (a later email moved its dates) does nothing: it's checked in the app first.
+     */
+    private function opportunityAdd(int $id, ?CarbonInterface $offeredAt): string
+    {
+        $o = $this->openOpportunity($id, $offeredAt);
+        if (! in_array($o->status, ['offered', 'confirmed'], true)) {
+            throw new InvalidArgumentException('It isn’t offered or booked yet: open it under Jobs › Enquiries & offers to add it as a job.');
+        }
+        // Only on details found word for word in its emails (every day, the title, client and rate); otherwise it's
+        // checked on its page first (as the list says).
+        if (! $o->oneTapReady()) {
+            throw new InvalidArgumentException('Check its details first: '.url('/opportunities/'.$o->id));
+        }
+        $job = $this->opportunities->accept($o, [], $offeredAt ? 'telegram' : 'you', $links);
+        $days = $job->dayList();
+        $linked = $links['linked'] ?? 0;
+
+        return "Added {$job->title} (".count($days).' '.(count($days) === 1 ? 'day' : 'days').', '.$job->starts_on->format('j M Y')
+            .($job->ends_on->isSameDay($job->starts_on) ? '' : ' to '.$job->ends_on->format('j M Y')).')'
+            .($linked ? " and linked {$linked} ".($linked === 1 ? 'email' : 'emails') : '').'. Nothing was sent to anyone. '.url('/jobs/'.$job->id);
+    }
+
+    /** Record that you said no to an opportunity, or that it isn't work. Nothing is sent to anyone. */
+    private function opportunityDecide(int $id, string $what, ?CarbonInterface $offeredAt): string
+    {
+        $o = $this->openOpportunity($id, $offeredAt);
+        $by = $offeredAt ? 'telegram' : 'you';
+        if ($what === 'decline') {
+            $this->opportunities->decline($o, 'From the to-do list', $by);
+
+            return "Marked as declined: {$o->title}. Nothing was sent: reply to them yourself if you haven’t.";
+        }
+        $this->opportunities->dismiss($o, 'From the to-do list', $by);
+
+        return "Dismissed: {$o->title} isn’t work.";
+    }
+
+    /** An opportunity still waiting on you, unchanged since the button was offered (a Telegram message's date). */
+    private function openOpportunity(int $id, ?CarbonInterface $offeredAt): Opportunity
+    {
+        $o = Opportunity::query()->findOrFail($id);
+        if (! $o->isOpen()) {
+            throw (new ModelNotFoundException)->setModel(Opportunity::class, [$id]); // decided, a job, or closed since
+        }
+        if ($offeredAt && $o->updated_at && $o->updated_at->gt($offeredAt)) {
+            throw new InvalidArgumentException('It’s changed since this message. Open it in Expend to check: '.url('/opportunities/'.$o->id));
+        }
+
+        return $o;
     }
 
     private function candidateDismiss(int $id): string

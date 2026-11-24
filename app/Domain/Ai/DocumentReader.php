@@ -6,20 +6,25 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\Grounding;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Jobs\JobDays;
+use App\Domain\Jobs\Opportunities;
 use App\Domain\Verification\Verifier;
 use App\Models\Document;
 use App\Models\DocumentFact;
+use App\Models\Opportunity;
 use App\Models\WorkJob;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
+use Throwable;
 
 /**
  * Reads a document with Claude and records what it says: kind, summary, job details, travel,
- * accommodation, PO lines. Every value must come with a verbatim quote, and each quote is checked
- * against the document's own text before anything is marked verified. Nothing is applied to jobs,
- * invoices or the ledger automatically.
+ * accommodation, PO lines, and work it offers (an availability check, a hold, an offer, a booking or a
+ * cancellation). Every value must come with a verbatim quote, and each quote is checked against the
+ * document's own text before anything is marked verified. Nothing is applied to jobs, invoices or the
+ * ledger automatically: work it offers is only proposed (Opportunities).
  */
 final class DocumentReader
 {
@@ -30,6 +35,9 @@ final class DocumentReader
         'catering' => 'Catering', 'po_number' => 'PO number', 'rate' => 'Rate or fee', 'payment_terms' => 'Payment terms',
         'invoice_to' => 'Send invoice to', 'deadline' => 'Deadline', 'other' => 'Other',
     ];
+
+    /** Where work being offered stands, as the document puts it (Opportunity::STAGES, plus "went elsewhere"). */
+    public const OPPORTUNITY_STATUSES = ['enquiry', 'held', 'offered', 'confirmed', 'lost'];
 
     public function __construct(private AiClient $ai) {}
 
@@ -137,13 +145,19 @@ final class DocumentReader
             }
         }
 
+        // Work asked about, held or offered (or called off) isn't a new job: it's proposed as an opportunity instead,
+        // and becomes a job only when you accept it.
+        $opportunity = self::opportunity($data['opportunity'] ?? null, $text, $status, Opportunities::newestOf($document));
+        $unbooked = in_array($opportunity['status_hint']['value'] ?? null, ['enquiry', 'held', 'offered', 'lost'], true);
+
         $extraction = [
             'summary' => mb_substr((string) ($data['summary'] ?? ''), 0, 1000),
             'job_link_hint' => $linkHint,
             'job_link_reason' => $jobId ? ($data['job_link']['reason'] ?? null) : null,
-            'new_job' => $jobId ? null : $this->newJob($data['new_job'] ?? null, $text, $status),
+            'new_job' => $jobId || $unbooked ? null : $this->newJob($data['new_job'] ?? null, $text, $status),
             'po' => $po,
             'receipt' => $this->receipt($data['receipt'] ?? null, $text, $status),
+            'opportunity' => $opportunity,
             'unverified_count' => count(array_filter($facts, fn ($f) => ! $f['verified'])) + count(array_filter($po['lines'] ?? [], fn ($l) => ! $l['verified'])),
         ];
 
@@ -167,9 +181,129 @@ final class DocumentReader
 
         AuditLog::record('document.read', $document, null, [
             'kind' => $kind, 'facts' => count($facts), 'unverified' => $extraction['unverified_count'], 'model' => $model, 'job' => $document->work_job_id,
-        ], null, 'ai');
+        ] + ($extraction['opportunity'] ? ['opportunity' => $extraction['opportunity']['status_hint']['value'] ?? 'unclear'] : []), null, 'ai');
 
-        return $document->fresh(['facts']);
+        $document = $document->fresh(['facts']);
+        // Work it offers (an availability check, a hold, an offer, a booking or a cancellation) is proposed, or the
+        // opportunity it belongs to is updated, however the reading was started. Never made a job by itself.
+        if ($extraction['opportunity']) {
+            try {
+                app(Opportunities::class)->fromDocument($document);
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
+
+        return $document;
+    }
+
+    /**
+     * The work a document offers, each detail with the words it came from and whether those words (and the value in
+     * them) were found in the document. Shaped as Opportunities::fromDocument() reads it, which checks it all again.
+     * Null when the document offers no work, or says nothing usable about it. For an email, $newest is its newest
+     * message: the words for where the work stands must be there (not in the earlier messages it quotes), and must say
+     * that stage ("pencil" for a hold, "confirmed" for a booking).
+     *
+     * @return ?array{status_hint: ?array, hold_rank: ?array, title: ?array, client: ?array, contact: ?array, role: ?array,
+     *     venue: ?array, postcode: ?array, dates: list<array{date: string, kind: string, quote: ?string, verified: bool, note: ?string}>,
+     *     rate: ?array, reply_by: ?array, po_number: ?array, unverified: list<string>}
+     */
+    public static function opportunity(mixed $o, ?string $text, string $status, ?string $newest = null): ?array
+    {
+        if (! is_array($o)) {
+            return null;
+        }
+        $check = function (?string $quote, ?callable $inQuote = null, ?int $amount = null) use ($text, $status): array {
+            if ($quote === null || trim($quote) === '') {
+                return ['verified' => false, 'note' => 'No words were quoted for it. Check before using.'];
+            }
+            $c = Grounding::check($text, $status, $quote, $amount);
+            if ($c['verified'] && $inQuote !== null && ! $inQuote($quote)) {
+                return ['verified' => false, 'note' => 'It isn’t in the quoted words. Check before using.'];
+            }
+
+            return $c;
+        };
+        $quoteOf = fn (mixed $f) => is_array($f) && is_string($f['quote'] ?? null) && trim($f['quote']) !== '' ? mb_substr($f['quote'], 0, 1000) : null;
+        $in = fn (string $value) => fn (string $quote) => mb_strlen(Grounding::normalise($value)) >= 2
+            && str_contains(Grounding::normalise($quote), Grounding::normalise($value));
+        $out = ['status_hint' => null, 'hold_rank' => null, 'title' => null, 'client' => null, 'contact' => null, 'role' => null, 'venue' => null,
+            'postcode' => null, 'dates' => [], 'rate' => null, 'reply_by' => null, 'po_number' => null];
+
+        $hint = is_array($o['status_hint'] ?? null) ? $o['status_hint']['value'] ?? null : null;
+        if (in_array($hint, self::OPPORTUNITY_STATUSES, true)) {
+            $out['status_hint'] = ['value' => $hint, 'quote' => $quoteOf($o['status_hint'])] + $check($quoteOf($o['status_hint']),
+                fn (string $q) => Opportunities::stageInQuote($hint, $q) && ($newest === null || Grounding::quoteFound($newest, $q)));
+        }
+        $rank = is_array($o['hold_rank'] ?? null) ? $o['hold_rank']['value'] ?? null : null;
+        if (is_int($rank) && $rank >= 1 && $rank <= 9) {
+            $words = [1 => '1st|first', 2 => '2nd|second', 3 => '3rd|third'][$rank] ?? $rank.'th';
+            $out['hold_rank'] = ['value' => $rank, 'quote' => $quoteOf($o['hold_rank'])]
+                + $check($quoteOf($o['hold_rank']), fn (string $q) => (bool) preg_match('/\b('.$words.')\b/i', $q));
+        }
+
+        // The words: what and where the work is, and who it's for. The client, venue, postcode and PO number must be
+        // in their quote; a title or role is the document's own wording, so only its quote is checked.
+        foreach (['title' => [150, false], 'client' => [120, true], 'role' => [120, false], 'venue' => [200, true], 'postcode' => [10, true], 'po_number' => [100, true]] as $field => [$max, $inQuote]) {
+            $value = is_array($o[$field] ?? null) ? $o[$field]['value'] ?? null : null;
+            $value = is_scalar($value) ? trim(preg_replace('/\s+/u', ' ', (string) $value) ?? '') : '';
+            if ($value === '') {
+                continue;
+            }
+            $value = mb_substr($field === 'postcode' ? strtoupper($value) : $value, 0, $max);
+            $bare = $field === 'client' ? trim(preg_replace('/\b(ltd|limited|plc|llp|the)\b\.?/iu', ' ', $value) ?? $value) : $value;
+            $out[$field] = ['value' => $value, 'quote' => $quoteOf($o[$field])] + $check($quoteOf($o[$field]), $inQuote ? $in($bare !== '' ? $bare : $value) : null);
+        }
+
+        // Who's asking: their name and email address must both be in the quoted words.
+        if (is_array($o['contact'] ?? null)) {
+            $name = is_string($o['contact']['name'] ?? null) && trim($o['contact']['name']) !== '' ? mb_substr(trim($o['contact']['name']), 0, 120) : null;
+            $email = is_string($o['contact']['email'] ?? null) && preg_match('/^[^@\s<>]+@[^@\s<>]+\.[a-z]{2,}$/i', trim($o['contact']['email']))
+                ? mb_substr(strtolower(trim($o['contact']['email'])), 0, 200) : null;
+            if ($name !== null || $email !== null) {
+                $out['contact'] = ['name' => $name, 'email' => $email, 'quote' => $quoteOf($o['contact'])]
+                    + $check($quoteOf($o['contact']), fn (string $q) => ($name === null || $in($name)($q)) && ($email === null || $in($email)($q)));
+            }
+        }
+
+        // Its days, each with its kind, and each checked in its own words ("12-14 March" gives the 13th too).
+        $days = [];
+        foreach (is_array($o['dates'] ?? null) ? $o['dates'] : [] as $d) {
+            $date = is_array($d) ? self::date(is_string($d['date'] ?? null) ? $d['date'] : null) : null;
+            if ($date === null || isset($days[$date]) || count($days) >= JobDays::MAX_DAYS) {
+                continue;
+            }
+            $kind = in_array($d['kind'] ?? null, Opportunity::DAY_KINDS, true) ? $d['kind'] : 'work';
+            $days[$date] = ['date' => $date, 'kind' => $kind, 'quote' => $quoteOf($d)] + $check($quoteOf($d), fn (string $q) => Opportunities::dateCovered($date, $q));
+        }
+        ksort($days);
+        $out['dates'] = array_values($days);
+
+        // The money: the amount must be in its quote, with its currency and unit (a day rate isn't a fee for the job).
+        $rate = is_array($o['rate'] ?? null) ? $o['rate'] : null;
+        if ($rate && is_int($rate['amount_minor'] ?? null) && $rate['amount_minor'] > 0) {
+            $unit = in_array($rate['unit'] ?? null, Opportunity::RATE_UNITS, true) ? $rate['unit'] : 'job';
+            $currency = preg_match('/^[A-Z]{3}$/', (string) ($rate['currency'] ?? '')) ? $rate['currency'] : 'GBP';
+            $out['rate'] = ['amount_minor' => $rate['amount_minor'], 'currency' => $currency, 'unit' => $unit, 'quote' => $quoteOf($rate)]
+                + $check($quoteOf($rate), fn (string $q) => Opportunities::rateInQuote($currency, $unit, $q), $rate['amount_minor']);
+        }
+
+        $replyBy = is_array($o['reply_by'] ?? null) ? self::date(is_string($o['reply_by']['value'] ?? null) ? $o['reply_by']['value'] : null) : null;
+        if ($replyBy !== null) {
+            $out['reply_by'] = ['value' => $replyBy, 'quote' => $quoteOf($o['reply_by'])] + $check($quoteOf($o['reply_by']), fn (string $q) => Grounding::dateInQuote($replyBy, $q));
+        }
+
+        if (! $out['status_hint'] && ! $out['dates'] && ! $out['client'] && ! $out['title']) {
+            return null; // nothing to go on
+        }
+        $unverified = [];
+        foreach ($out as $field => $fact) {
+            if ($field === 'dates' ? collect($fact)->contains(fn ($d) => ! $d['verified']) : ($fact !== null && ! $fact['verified'])) {
+                $unverified[] = $field;
+            }
+        }
+
+        return $out + ['unverified' => $unverified];
     }
 
     /**
@@ -293,6 +427,15 @@ Rules:
 - For a purchase order, list every line item with its own quote, and give the stated total with its quote.
 - Travel and accommodation: say what is booked, for when, and who booked or pays for it, if the document says.
 - Only link to a job from the list provided, and only when the document clearly refers to it (same dates and client or venue, or a PO or job reference). Otherwise leave job_id null.
+
+Work being offered (the "opportunity" block):
+- Fill it whenever the document asks about, holds, offers, confirms or calls off work for the freelancer, whatever its kind (a plain email or a job invite too): an availability check ("are you free 12-14 March?"), a request for a quote, a pencil or hold (1st or 2nd option, first refusal), a firm offer with a rate, a booking confirmation, or a cancellation, release or "we've gone with someone else". Otherwise set it to null. Newsletters, job-board alerts, adverts and mail sent to a whole list are not work being offered.
+- status_hint: "enquiry" (asked if they're free, or for a quote), "held" (pencilled, on hold, an option), "offered" (a firm offer waiting for their yes), "confirmed" (booked), "lost" (cancelled, released, or gone to someone else). In an email thread, go by the newest message. Quote the words that show it.
+- hold_rank: 1 for a 1st option or first refusal, 2 for a 2nd option, and so on; null when it isn't a ranked hold.
+- client: the company booking them, who they'd invoice (a crewing agency if the agency books them), as written. contact: the person asking (never the freelancer themselves): their email address with the words that contain it (often a From: line), and their name only if those same words contain it.
+- dates: one entry per day, each with the words that give it; a range such as "12-14 March" gives each day in it, each with that same quote. kind is "rig" for a build, get-in or load-in day, "derig" for a de-rig, get-out or load-out day, "travel" for a travel day, otherwise "work". A date with no year is the next one on or after the date the document was sent.
+- rate: the fee or rate offered, as written, with unit "day", "hour" or "job" (a fee for the whole job). reply_by: the date they want an answer by, only if stated.
+- Use kind "opportunity" for a document whose main purpose is an enquiry, hold or offer for work that isn't booked yet; a booking confirmation is "job_invite". Work that isn't booked yet is not a new job: leave new_job null unless the document confirms the booking.
 TXT;
     }
 
@@ -324,6 +467,8 @@ TXT;
     {
         $nullableString = ['type' => ['string', 'null']];
         $quoted = fn (array $props) => ['type' => 'object', 'properties' => $props, 'required' => array_keys($props), 'additionalProperties' => false];
+        // One detail of the work offered: its value (null when the document doesn't say) and the words it came from.
+        $fact = $quoted(['value' => $nullableString, 'quote' => $nullableString]);
 
         return $quoted([
             'kind' => ['type' => 'string', 'enum' => array_keys(Document::KINDS)],
@@ -354,6 +499,21 @@ TXT;
             'receipt' => ['anyOf' => [['type' => 'null'], $quoted([
                 'merchant' => $nullableString, 'date' => $nullableString, 'amount_minor' => ['type' => 'integer'],
                 'currency' => ['type' => 'string'], 'quote' => $nullableString,
+            ])]],
+            'opportunity' => ['anyOf' => [['type' => 'null'], $quoted([
+                'status_hint' => $quoted(['value' => ['type' => 'string', 'enum' => self::OPPORTUNITY_STATUSES], 'quote' => $nullableString]),
+                'hold_rank' => $quoted(['value' => ['type' => ['integer', 'null']], 'quote' => $nullableString]),
+                'title' => $fact, 'client' => $fact,
+                'contact' => $quoted(['name' => $nullableString, 'email' => $nullableString, 'quote' => $nullableString]),
+                'role' => $fact, 'venue' => $fact, 'postcode' => $fact,
+                'dates' => ['type' => 'array', 'items' => $quoted([
+                    'date' => ['type' => 'string'], 'kind' => ['type' => 'string', 'enum' => Opportunity::DAY_KINDS], 'quote' => ['type' => 'string'],
+                ])],
+                'rate' => ['anyOf' => [['type' => 'null'], $quoted([
+                    'amount_minor' => ['type' => 'integer'], 'currency' => ['type' => 'string'],
+                    'unit' => ['type' => 'string', 'enum' => Opportunity::RATE_UNITS], 'quote' => ['type' => 'string'],
+                ])]],
+                'reply_by' => $fact, 'po_number' => $fact,
             ])]],
         ]);
     }

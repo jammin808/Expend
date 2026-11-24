@@ -1,6 +1,7 @@
 import { InvoicedTick, type Invoiced } from '@/components/doc-line';
 import { JobForm, type JobData } from '@/components/job-form';
 import { JobsTabs } from '@/components/jobs-tabs';
+import { PoChasePanel } from '@/components/po-chase';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/app-layout';
@@ -69,6 +70,7 @@ export default function Jobs({
                         </Button>
                     </div>
                 </div>
+                {filters.show === 'no_po' ? <PoChasePanel /> : !filters.show && <PoChasePanel limit={5} allHref="/jobs?show=no_po" />}
                 <div className="flex flex-wrap gap-1.5 text-sm">
                     {[
                         [null, 'All jobs'],

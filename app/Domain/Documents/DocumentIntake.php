@@ -3,16 +3,21 @@
 namespace App\Domain\Documents;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Jobs\Opportunities;
+use App\Domain\Jobs\OpportunityRules;
 use App\Jobs\ReadDocument;
 use App\Models\Document;
 use App\Models\Setting;
 use Illuminate\Support\Facades\Storage;
+use Throwable;
 use ZBateson\MailMimeParser\MailMimeParser;
 
 /**
  * The single way documents enter the app, whether uploaded, emailed or sent by Telegram.
  * Stores the original, extracts text, unpacks email attachments, ignores exact duplicates,
- * and queues the AI read when AI reading is switched on.
+ * and queues the AI read when AI reading is switched on. An email is also checked for work it may
+ * offer (an availability check, a hold, an offer): read with AI when that's on, otherwise spotted
+ * by its words (OpportunityRules). Either way it's only proposed, never made a job.
  */
 final class DocumentIntake
 {
@@ -62,12 +67,69 @@ final class DocumentIntake
 
         AuditLog::record('document.received', $document, null, ['name' => $name, 'source' => $source, 'size' => strlen($contents)]);
 
-        if (($meta['held'] ?? false) === false && Setting::get('ai_extraction') === 'on' && AiConfig::ready() && $document->kind !== 'email') {
-            $document->update(['status' => 'queued']);
-            ReadDocument::dispatch($document->id);
+        if (($meta['held'] ?? false) === false && ! self::readByCaller($source, $parentId)) {
+            if ($isEmail) {
+                $this->readOrSpot($document->fresh());
+            } elseif (Setting::get('ai_extraction') === 'on' && AiConfig::ready()) {
+                $document->update(['status' => 'queued']);
+                ReadDocument::dispatch($document->id);
+            }
         }
 
         return $document->fresh();
+    }
+
+    /**
+     * After an email is kept, look for work it may offer. With AI reading on, its body is read when it may be about
+     * work (OpportunityRules::worthReading: it asks about work, its subject suggests it, it confirms or calls off work,
+     * or it's a reply in a conversation that already has an opportunity). With $readLong (Gmail's searches, which pick
+     * job emails), any email with enough to say is read, as before; so is one you forwarded yourself with nothing else
+     * in it to read. Anything else (a hotel booking a filter forwarded, say) isn't sent to the AI. When the AI won't
+     * read it, the rules look for an obvious offer of work by its words.
+     *
+     * @return 'read'|'spotted'|null
+     */
+    public function readOrSpot(Document $email, bool $readLong = false): ?string
+    {
+        if ($email->kind !== 'email' || $email->status !== 'new') {
+            return null; // held for your approval, or already read
+        }
+        $long = mb_strlen((string) $email->text) > 300;
+        if (Setting::get('ai_extraction') === 'on' && AiConfig::ready() && (OpportunityRules::worthReading($email)
+            || ($long && ($readLong || (self::fromYou($email) && ! $email->children()->where('kind', '!=', 'email')->exists()))))) {
+            $email->update(['status' => 'queued']);
+            ReadDocument::dispatch($email->id);
+
+            return 'read';
+        }
+        try {
+            return app(OpportunityRules::class)->spot($email) ? 'spotted' : null;
+        } catch (Throwable $e) {
+            report($e); // a problem spotting work never stops an email being kept
+
+            return null;
+        }
+    }
+
+    /** Sent (or forwarded) by you, from one of your own addresses. */
+    private static function fromYou(Document $email): bool
+    {
+        return preg_match('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', (string) $email->email_from, $m) === 1
+            && isset(Opportunities::ownAddresses()[strtolower($m[0])]);
+    }
+
+    /**
+     * Whoever passed this in reads it themselves: Gmail's scanner, once it has logged the message (so its thread is
+     * known), and Telegram, which reads what you send it and replies with what it found (reading it here too would
+     * read it twice).
+     */
+    private static function readByCaller(string $source, ?int $parentId): bool
+    {
+        if ($parentId !== null) {
+            return false;
+        }
+
+        return $source === 'gmail' || ($source === 'telegram' && Setting::get('ai_extraction') !== 'off' && AiConfig::ready());
     }
 
     private function unpackEmail(Document $document, string $raw): void

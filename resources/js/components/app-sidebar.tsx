@@ -33,7 +33,7 @@ export function AppSidebar() {
     const { nav } = usePage<SharedData>().props;
     const url = usePage().url;
 
-    // A short menu: Documents and Stays & travel live under Jobs, Import under Accounts.
+    // A short menu: Enquiries & offers, Documents and Stays & travel live under Jobs, Import under Accounts.
     const main = [
         { title: 'Overview', url: '/dashboard', icon: LayoutGrid, also: [] as string[] },
         { title: 'To do', url: '/todo', icon: ListTodo, badge: nav?.todo, also: [] },
@@ -43,7 +43,7 @@ export function AppSidebar() {
         { title: 'Transactions', url: '/transactions', icon: FileSpreadsheet, also: [] },
     ];
     const work = [
-        { title: 'Jobs', url: '/jobs', icon: Briefcase, also: ['/documents', '/travel'] },
+        { title: 'Jobs', url: '/jobs', icon: Briefcase, also: ['/documents', '/travel', '/opportunities'] },
         { title: 'Connections', url: '/connections', icon: Network, also: [] },
         { title: 'Invoices', url: '/invoices', icon: ReceiptText, also: [] },
         { title: 'Mileage', url: '/mileage', icon: Car, also: [] },

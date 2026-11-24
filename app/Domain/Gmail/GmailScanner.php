@@ -4,7 +4,6 @@ namespace App\Domain\Gmail;
 
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
-use App\Jobs\ReadDocument;
 use App\Jobs\ReadTravelEmail;
 use App\Models\Document;
 use App\Models\GmailMessage;
@@ -32,7 +31,21 @@ final class GmailScanner
             'label' => 'POs, job invites and production packs',
             'query' => '(subject:(PO OR "purchase order" OR "call sheet" OR "production pack" OR "crew pack" OR "job sheet" OR "booking form" OR "tech pack" OR "running order" OR invite OR "day sheet" OR "run sheet" OR "crew call" OR "show info" OR "production schedule" OR "job confirmation" OR "booking confirmation" OR pencil OR "work order") OR filename:(PO OR "purchase order" OR callsheet OR "call sheet" OR "production pack")) -in:sent -in:drafts -in:chats',
         ],
+        // Work offered before there's a PO: availability checks, holds and pencils, offers, booking and crew requests,
+        // and requests for a quote. Words in the subject, or phrases in the body that only an offer of work uses
+        // (single words such as "availability" or "pencil" only in the subject, and "dates" only beside a word such as
+        // "crew"); "are you free", "can you do" and "would you be interested" in the body only beside a word about the
+        // work (crew, LX, show, a day rate), so a drink or a party stays out. Never your own mail, newsletters and
+        // promotions, job boards' alerts, machines, a PO email ("could you quote our PO number") or a shop's "your quote
+        // request". Tested against sample emails in OpportunityAcquireTest.
+        'opportunities' => [
+            'label' => 'Work offers: availability checks, holds and bookings',
+            'query' => '(subject:(availability OR avail OR "are you available" OR "are you free" OR "you free" OR "can you do" OR pencil OR pencilled OR penciled OR "1st option" OR "2nd option" OR "first option" OR "second option" OR "1st hold" OR "2nd hold" OR "first refusal" OR "soft hold" OR "hold request" OR "booking request" OR "booking enquiry" OR "booking inquiry" OR "crew request" OR "crew needed" OR "crew call" OR "tech needed" OR "techs needed" OR freelance OR freelancer OR "day rate" OR "quote request" OR "request for quote" OR "job offer" OR "work offer" OR "offer of work") OR (subject:dates subject:(crew OR tech OR technician OR freelance OR job OR work OR show OR event)) OR "are you available" OR "would you be available" OR "would you be free" OR "your availability" OR "confirm availability" OR "1st option" OR "2nd option" OR "first refusal" OR "pencil you" OR "pencilled you" OR "penciled you" OR "hold you for" OR "day rate" OR "booking request" OR "crew request" OR "like to book you" OR "like to offer you" OR "book you for" OR "quote me for" OR "quote us for" OR "quote for the job" OR "quote your rate" OR (("are you free" OR "you\'re free" OR "can you do" OR "would you be interested" OR "you free") (crew OR tech OR techs OR technician OR LX OR lighting OR sound OR audio OR video OR rig OR derig OR show OR event OR gig OR "call time" OR "day rate" OR "per day" OR "a day" OR "for the day" OR venue OR stage OR conference OR festival OR awards OR gala OR arena))) -in:sent -in:drafts -in:chats -from:me -category:promotions -category:social -category:forums -from:(noreply OR no-reply OR donotreply OR newsletter OR indeed.com OR linkedin.com OR reed.co.uk OR totaljobs.com OR cv-library.co.uk OR monster.co.uk OR glassdoor.com OR glassdoor.co.uk OR mandy.com OR productionbase.co.uk OR stagejobspro.com OR thestage.co.uk OR talenttrack.com OR facebookmail.com OR eventbrite.com OR mailchimp.com) -subject:(newsletter OR webinar OR digest OR "job alert" OR "jobs alert" OR "new jobs" OR "jobs this week" OR unsubscribe OR sale OR discount OR "your quote request" OR "your booking request")',
+        ],
     ];
+
+    /** The searches that find emails about work, read as job documents (not as stays or journeys). */
+    public const JOB_SEARCHES = ['job_documents', 'job', 'opportunities'];
 
     public function __construct(private DocumentIntake $intake) {}
 
@@ -94,7 +107,7 @@ final class GmailScanner
         if ($seen && ($seen->document_id || $seen->status !== 'failed')) {
             // Already kept. One first found by a job's own search (a hotel booking that names the venue's town) and
             // now found by the hotel or travel search is read as a stay or journey now: the job search never does.
-            if ($seen->document_id && $seen->status === 'stored' && in_array($seen->search, ['job', 'job_documents'], true) && ! in_array($search, ['job', 'job_documents'], true)) {
+            if ($seen->document_id && $seen->status === 'stored' && in_array($seen->search, self::JOB_SEARCHES, true) && ! in_array($search, self::JOB_SEARCHES, true)) {
                 $seen->update(['search' => $search]);
                 ReadTravelEmail::dispatch($seen->id);
             }
@@ -126,16 +139,17 @@ final class GmailScanner
         ]);
 
         // A booking from a hotel or travel company found by a job's search is read as a stay or journey too.
-        $travel = in_array($search, ['job_documents', 'job'], true) ? self::travelSearchFor($from) : $search;
+        $travel = in_array($search, self::JOB_SEARCHES, true) ? self::travelSearchFor($from) : $search;
         if ($travel !== null) {
             if ($travel !== $search) {
                 $logged->update(['search' => $travel]);
             }
             ReadTravelEmail::dispatch($logged->id);
-        } elseif (Setting::get('ai_extraction') === 'on' && AiConfig::ready() && $document->kind === 'email' && $document->status === 'new' && mb_strlen((string) $document->text) > 300) {
-            // The email itself is read too (attachments already are): POs and job details are often in the body.
-            $document->update(['status' => 'queued']);
-            ReadDocument::dispatch($document->id);
+        } else {
+            // The email itself is read too (attachments already are): POs, job details and offers of work are often in
+            // the body. A short "are you free on the 12th?" is read as well. With AI reading off, an obvious offer of
+            // work is spotted by its words instead.
+            $this->intake->readOrSpot($document, true);
         }
 
         return $document;

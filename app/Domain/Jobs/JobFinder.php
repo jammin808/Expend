@@ -182,8 +182,8 @@ final class JobFinder
     public function accept(JobCandidate $candidate, array $fields, ?array &$links = null): WorkJob
     {
         return DB::transaction(function () use ($candidate, $fields, &$links) {
-            $job = WorkJob::query()->create($fields + ['status' => 'booked']);
-            AuditLog::record('job.created', $job, null, $job->toArray(), 'From the job finder');
+            // What it was found from goes in the job's history; the search for the rest runs once this is saved.
+            $job = app(JobCreator::class)->create($fields + ['status' => 'booked'], 'you', self::candidateEvidence($candidate), 'From the job finder');
             // Its calendar entries bring only their days within the dates you gave the job.
             $links = $this->linkSources($candidate, $job, [$job->starts_on->format('Y-m-d'), $job->ends_on->format('Y-m-d')]);
             JobDays::useFormTimes($job, $fields);
@@ -192,6 +192,17 @@ final class JobFinder
 
             return $job;
         });
+    }
+
+    /** @return list<array{type: string, id: mixed, quote: ?string, verified: bool}> what a possible job was found from */
+    private static function candidateEvidence(JobCandidate $candidate): array
+    {
+        $types = ['calendar' => 'calendar_event', 'travel' => 'travel_item', 'document' => 'document'];
+
+        return array_map(fn ($s) => [
+            'type' => $types[$s['type'] ?? 'document'] ?? 'document', 'id' => $s['id'] ?? null,
+            'quote' => $s['quote'] ?? ($s['label'] ?? null), 'verified' => (bool) ($s['verified'] ?? false),
+        ], $candidate->sources ?? []);
     }
 
     /**

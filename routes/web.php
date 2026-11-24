@@ -15,6 +15,7 @@ use App\Http\Controllers\JobController;
 use App\Http\Controllers\JobFinderController;
 use App\Http\Controllers\ManualExpenseController;
 use App\Http\Controllers\MileageController;
+use App\Http\Controllers\OpportunityController;
 use App\Http\Controllers\RuleLearningController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SetupController;
@@ -123,6 +124,18 @@ Route::middleware(['auth'])->group(function () {
     Route::post('todo/dismiss', [TodoController::class, 'dismiss'])->name('todo.dismiss');
     Route::post('todo/{code}/{id}', [TodoController::class, 'act'])->where('id', '[A-Za-z0-9_:]+')->name('todo.act');
     Route::post('checks/{type}/{id}', [VerificationController::class, 'store'])->whereNumber('id')->name('checks.store');
+    // Work you might get, from your emails and documents: nothing here replies to anyone.
+    Route::get('opportunities', [OpportunityController::class, 'index'])->name('opportunities.index');
+    Route::post('opportunities', [OpportunityController::class, 'store'])->name('opportunities.store');
+    Route::get('opportunities/po-chase', [OpportunityController::class, 'poChase'])->name('opportunities.poChase');
+    Route::get('opportunities/{opportunity}', [OpportunityController::class, 'show'])->whereNumber('opportunity')->name('opportunities.show');
+    Route::patch('opportunities/{opportunity}', [OpportunityController::class, 'update'])->whereNumber('opportunity')->name('opportunities.update');
+    Route::post('opportunities/{opportunity}/accept', [OpportunityController::class, 'accept'])->whereNumber('opportunity')->name('opportunities.accept');
+    Route::post('opportunities/{opportunity}/decline', [OpportunityController::class, 'decline'])->whereNumber('opportunity')->name('opportunities.decline');
+    Route::post('opportunities/{opportunity}/dismiss', [OpportunityController::class, 'dismiss'])->whereNumber('opportunity')->name('opportunities.dismiss');
+    Route::post('opportunities/{opportunity}/reopen', [OpportunityController::class, 'reopen'])->whereNumber('opportunity')->name('opportunities.reopen');
+    Route::post('opportunities/{opportunity}/link', [OpportunityController::class, 'confirmLink'])->whereNumber('opportunity')->name('opportunities.link');
+
     Route::get('jobs', [JobController::class, 'index'])->name('jobs.index');
     Route::post('jobs', [JobController::class, 'store'])->name('jobs.store');
     Route::get('jobs/{job}', [JobController::class, 'show'])->name('jobs.show');

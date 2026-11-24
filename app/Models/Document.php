@@ -12,6 +12,7 @@ class Document extends Model
     public const KINDS = [
         'po' => 'Purchase order',
         'job_invite' => 'Job invite or booking',
+        'opportunity' => 'Job enquiry, hold or offer',
         'production_pack' => 'Production pack',
         'call_sheet' => 'Call sheet or schedule',
         'booking' => 'Travel or hotel booking',

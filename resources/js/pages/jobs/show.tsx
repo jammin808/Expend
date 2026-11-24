@@ -7,6 +7,7 @@ import { JobFinds, type Find, type GatherState } from '@/components/job-finds';
 import { JobForm, type JobData } from '@/components/job-form';
 import { JobSheet, type SheetFact } from '@/components/job-sheet';
 import { Money } from '@/components/money';
+import { PoChasePanel } from '@/components/po-chase';
 import { StatusPill } from '@/components/status-pill';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -159,6 +160,7 @@ export default function JobShow({
                         <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                             Add PO number, or mark it not needed
                         </Button>
+                        <PoChasePanel jobId={job.id} className="w-full space-y-2 border-t border-amber-200 pt-3 dark:border-amber-900" />
                     </div>
                 ) : (
                     job.po && (

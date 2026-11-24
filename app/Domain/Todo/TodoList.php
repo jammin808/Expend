@@ -5,6 +5,7 @@ namespace App\Domain\Todo;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoicePayments;
+use App\Domain\Jobs\Opportunities;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\Reconciler;
 use App\Domain\Ledger\RuleLearner;
@@ -19,6 +20,7 @@ use App\Models\Document;
 use App\Models\ImportBatch;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
+use App\Models\Opportunity;
 use App\Models\Setting;
 use App\Models\TaxYear;
 use App\Models\TodoDismissal;
@@ -28,6 +30,7 @@ use App\Models\WorkJob;
 use App\Support\Money;
 use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -36,8 +39,9 @@ use Throwable;
 
 /**
  * Everything that needs you, in one list, most urgent first: a reconnect, a held statement, unpaid invoices, failed
- * checks, a filing deadline, invoices to send, possible jobs, payments and stays to decide, jobs with no PO, payments
- * missing from your statements and documents held for approval. Each item carries one-tap actions (TodoActions),
+ * checks, a filing deadline, work to answer (an offer or hold whose reply-by date is close), bookings with no job yet,
+ * invoices to send, possible jobs, payments and stays to decide, jobs with no PO (with who to ask), payments missing
+ * from your statements and documents held for approval. Each item carries one-tap actions (TodoActions),
  * used by the to-do page and by Telegram buttons.
  *
  * Building it reads most of the ledger, so the last list is kept (see cached()) for the dashboard, and built afresh
@@ -50,7 +54,7 @@ final class TodoList
 {
     public const GROUPS = [
         'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'checks' => 'Failed checks', 'deadline' => 'Tax return', 'penalties' => 'Fines and interest',
-        'invoice' => 'Invoices to send', 'jobs' => 'Possible jobs', 'transfers' => 'Transfers between your accounts', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
+        'offers' => 'Work to answer', 'bookings' => 'Booked with no job yet', 'invoice' => 'Invoices to send', 'jobs' => 'Possible jobs', 'transfers' => 'Transfers between your accounts', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
         'no_po' => 'Jobs with no PO', 'reconcile' => 'Accounts that don’t match the bank', 'missing' => 'Payments missing from statements', 'documents' => 'Documents held',
     ];
 
@@ -75,7 +79,7 @@ final class TodoList
     /** The tables the list is made from (directly, or through the rule offers, PO status and bank checks). */
     private const WATCHED = [
         'accounts', 'allocations', 'bank_transactions', 'calendar_job_links', 'categories', 'clients', 'document_facts', 'documents', 'import_batches',
-        'invoices', 'job_candidates', 'manual_expenses', 'merchant_rules', 'statement_balances', 'tax_years', 'travel_items', 'verifications', 'work_jobs',
+        'invoices', 'job_candidates', 'manual_expenses', 'merchant_rules', 'opportunities', 'statement_balances', 'tax_years', 'travel_items', 'verifications', 'work_jobs',
     ];
 
     /** The settings it reads: the Gmail connection, and merchants you said no to a rule for. */
@@ -204,6 +208,19 @@ final class TodoList
     public static function snoozeOnly(string $key): bool
     {
         return in_array($key, ['gmail', 'transfers'], true) || str_starts_with($key, 'deadline:') || str_starts_with($key, 'penalty:');
+    }
+
+    /** Work you're asked about is listed this many days before the date to reply by. */
+    public const REPLY_DAYS = 3;
+
+    /**
+     * Work waiting for your answer: an availability check, a hold or an offer with no job yet, whose date to reply by
+     * is within REPLY_DAYS days or has already passed (until the nightly check closes it as passed with no answer).
+     */
+    public static function toAnswer(Builder $query): Builder
+    {
+        return $query->whereIn('status', ['enquiry', 'held', 'offered'])->whereNull('work_job_id')
+            ->whereNotNull('reply_by')->whereDate('reply_by', '<=', today()->addDays(self::REPLY_DAYS)->format('Y-m-d'));
     }
 
     public static function action(string $code, int|string $id, string $label, string $style = 'default'): array
@@ -357,6 +374,43 @@ final class TodoList
                 $detail, '/years/'.$y['tax_year'], [], ['amount' => -($owed > 0 ? $owed : $soon['amount_pence'])]);
         }
 
+        // Work to answer: an availability check, a hold or an offer whose date to reply by is close or has passed.
+        // You reply to them yourself; the buttons only record what you decided. A new date to reply by is a new item.
+        foreach (self::toAnswer(Opportunity::query()->with('client'))->orderBy('reply_by')->orderBy('id')->get() as $o) {
+            $in = (int) today()->diffInDays($o->reply_by, false);
+            $what = match ($o->status) {
+                'offered' => 'Offer',
+                'held' => $o->hold_rank ? self::ordinal($o->hold_rank).' option hold' : 'Hold',
+                default => 'Are you free?',
+            };
+            $client = $o->client?->name ?? $o->client_name;
+            $add('offers', 1, 'opp_reply:'.$o->id.':'.$o->reply_by->format('Y-m-d'), $what.': '.$o->title.($client ? ' for '.$client : ''),
+                implode(' · ', array_filter([
+                    // The date, not "in 2 days": worded the same each day, so the findings history only notes a real change.
+                    ($in < 0 ? 'Reply was due ' : 'Reply by ').$o->reply_by->format('j M Y'),
+                    self::opportunityDetail($o),
+                ])).'. Reply to them yourself: Expend never replies for you.',
+                '/opportunities/'.$o->id,
+                array_values(array_filter([
+                    $o->status === 'offered' && self::oneTap($o) ? self::action('opp_add', $o->id, 'I said yes: add the job') : null,
+                    self::action('opp_decline', $o->id, 'I said no', 'ghost'),
+                ])));
+        }
+
+        // Booked, with no job yet: one tap adds the job with the details read from the emails (checked against them).
+        foreach (Opportunity::query()->needsJob()->with('client')->orderByRaw('CASE WHEN starts_on IS NULL THEN 1 ELSE 0 END')->orderBy('starts_on')->orderBy('id')->get() as $o) {
+            $soon = $o->starts_on !== null && $o->starts_on->lte(today()->addDays(14));
+            $client = $o->client?->name ?? $o->client_name;
+            $add('bookings', $soon ? 1 : 2, 'opp_job:'.$o->id, 'Booked, no job yet: '.$o->title.($client ? ' for '.$client : ''),
+                implode(' · ', array_filter([self::opportunityDetail($o)]))
+                    .(self::oneTap($o) ? '. Add it as a job (its emails come with it), or say it isn’t work.' : '. Open it to check the details, then add it as a job.'),
+                '/opportunities/'.$o->id,
+                array_values(array_filter([
+                    self::oneTap($o) ? self::action('opp_add', $o->id, 'Add the job') : null,
+                    self::action('opp_dismiss', $o->id, 'Not work', 'ghost'),
+                ])));
+        }
+
         // Finished jobs with no invoice issued (as PoStatus counts it: an issued or paid invoice for the job).
         $finished = $capped(WorkJob::query()->with('client')->where('status', '!=', 'cancelled')->whereDate('ends_on', '<', today())->orderByDesc('ends_on'), 300)->get();
         $invoiced = Invoice::query()->whereIn('work_job_id', $finished->pluck('id'))->whereIn('status', ['issued', 'paid'])->distinct()->pluck('work_job_id')->flip();
@@ -456,9 +510,28 @@ final class TodoList
                 ['amount' => $i->amount_minor ? -$i->amount_minor : null, 'currency' => $i->currency ?: 'GBP']);
         }
 
-        // Jobs with no PO.
-        foreach (self::withoutPo($capped(WorkJob::query()->where('status', '!=', 'cancelled')->orderByDesc('starts_on'), 300)->get()) as $j) {
-            $add('no_po', 2, 'no_po:'.$j->id, 'No PO: '.$j->title, $j->starts_on->format('j M Y').'. Link the PO email or attachment, add the number, or mark it not needed.', '/jobs/'.$j->id,
+        // Jobs with no PO. Those worth chasing now (starting within 60 days, under way, or done and not invoiced) come
+        // first, with who to ask (Opportunities::poChase): the job's page has the request ready to send from your email.
+        $noPo = self::withoutPo($capped(WorkJob::query()->where('status', '!=', 'cancelled')->orderByDesc('starts_on'), 300)->get());
+        $chase = [];
+        if ($noPo->isNotEmpty()) {
+            try {
+                foreach (app(Opportunities::class)->poChase(null, 60, $noPo->pluck('id')->all()) as $c) {
+                    $chase[$c['job_id']] = $c;
+                }
+            } catch (Throwable $e) {
+                report($e); // listed without who to ask
+            }
+        }
+        foreach ($noPo->sortBy(fn (WorkJob $j) => isset($chase[$j->id]) ? 0 : 1)->values() as $j) {
+            $c = $chase[$j->id] ?? null;
+            $who = $c['contact'] ?? null;
+            // Worded the same every day (no "starts in 5 days"), so the findings history only notes a real change.
+            $add('no_po', 2, 'no_po:'.$j->id, 'No PO: '.$j->title, $c
+                ? $j->starts_on->format('j M Y').'. '.($c['days_until'] < 0 && $j->ends_on->lt(today()) ? 'Done and not invoiced. ' : '').($who
+                    ? 'Ask '.trim(($who['name'] ? $who['name'].' ' : '').'<'.$who['email'].'>').' for it: the job’s page has the request ready to send from your own email.'
+                    : 'No one found to ask: link the PO email or attachment, add the number, or mark it not needed.')
+                : $j->starts_on->format('j M Y').'. Link the PO email or attachment, add the number, or mark it not needed.', '/jobs/'.$j->id,
                 [self::action('job_no_po', $j->id, 'No PO needed', 'ghost')]);
         }
 
@@ -527,6 +600,41 @@ final class TodoList
         usort($items, fn ($a, $b) => [$a['priority'], $order[$a['group']]] <=> [$b['priority'], $order[$b['group']]]);
 
         return ['items' => $items, 'counts' => $counts, 'total' => array_sum($counts), 'per_group' => $limit];
+    }
+
+    /** An opportunity's dates, rate and who it's from, in a few words: "12–14 Mar 2026 · £350.00 a day · Alex Smith". */
+    private static function opportunityDetail(Opportunity $o): string
+    {
+        $dates = null;
+        if ($o->starts_on) {
+            $end = $o->ends_on ?? $o->starts_on;
+            $dates = $o->starts_on->isSameDay($end) ? $o->starts_on->format('j M Y')
+                : ($o->starts_on->format('Y-m') === $end->format('Y-m') ? $o->starts_on->format('j') : $o->starts_on->format('j M')).'–'.$end->format('j M Y');
+        }
+        $unchecked = $o->unverifiedFields();
+
+        return implode(' · ', array_filter([
+            $dates ?? 'No dates yet',
+            $o->venue,
+            $o->rate_minor ? Money::formatMinor($o->rate_minor, $o->rate_currency ?? 'GBP', false).' '.(['day' => 'a day', 'hour' => 'an hour'][$o->rate_unit] ?? 'for the job') : null,
+            $o->contact_name ?? $o->contact_email,
+            $unchecked ? 'not found word for word in the email: '.implode(', ', $unchecked) : null,
+            $o->mayBeOff() ? 'a later email may call it off' : null,
+        ]));
+    }
+
+    /**
+     * Whether the job can be added with one tap from the list (or Telegram): every one of its days, its title, client
+     * and rate were found word for word in the email (Opportunity::oneTapReady). Otherwise it's opened and checked first.
+     */
+    private static function oneTap(Opportunity $o): bool
+    {
+        return $o->oneTapReady();
+    }
+
+    private static function ordinal(int $n): string
+    {
+        return $n.(in_array($n % 100, [11, 12, 13], true) ? 'th' : ([1 => 'st', 2 => 'nd', 3 => 'rd'][$n % 10] ?? 'th'));
     }
 
     /**

@@ -283,7 +283,7 @@ class GmailTravelTest extends TestCase
     {
         $this->actingAs(User::factory()->create());
         $this->hotel('2025-05-09', '2025-05-10');
-        $this->get('/travel?year=2025-26')->assertOk()->assertInertia(fn ($page) => $page->has('items', 1)->where('year', '2025-26')->has('gmail.searches', 3));
-        $this->get('/settings/integrations')->assertOk()->assertInertia(fn ($page) => $page->where('gmail.connected', false)->has('gmail.searches', 3));
+        $this->get('/travel?year=2025-26')->assertOk()->assertInertia(fn ($page) => $page->has('items', 1)->where('year', '2025-26')->has('gmail.searches', 4));
+        $this->get('/settings/integrations')->assertOk()->assertInertia(fn ($page) => $page->where('gmail.connected', false)->has('gmail.searches', 4));
     }
 }

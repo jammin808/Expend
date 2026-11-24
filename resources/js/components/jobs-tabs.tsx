@@ -3,13 +3,14 @@ import { Link, usePage } from '@inertiajs/react';
 
 const TABS = [
     { href: '/jobs', label: 'Jobs' },
+    { href: '/opportunities', label: 'Enquiries & offers' },
     { href: '/jobs/calendar', label: 'Calendar' },
     { href: '/jobs/finder', label: 'Possible jobs' },
     { href: '/documents', label: 'Documents' },
     { href: '/travel', label: 'Stays & travel' },
 ];
 
-/** Jobs, possible jobs, documents and stays live together under Jobs. */
+/** Jobs, enquiries and offers, possible jobs, documents and stays live together under Jobs. */
 export function JobsTabs() {
     const url = usePage().url.split('?')[0];
     const current = TABS.filter((t) => url === t.href || url.startsWith(t.href + '/')).sort((a, b) => b.href.length - a.href.length)[0]?.href;

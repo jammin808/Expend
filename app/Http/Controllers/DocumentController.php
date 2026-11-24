@@ -7,17 +7,20 @@ use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Jobs\JobCreator;
+use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\PoStatus;
-use App\Models\Client;
 use App\Models\Document;
 use App\Models\Invoice;
 use App\Models\Verification;
 use App\Models\WorkJob;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
+use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
@@ -133,13 +136,19 @@ class DocumentController extends Controller
             'title' => 'required|string|max:150', 'client' => 'nullable|string|max:120', 'starts_on' => 'required|date',
             'ends_on' => 'required|date|after_or_equal:starts_on', 'location' => 'nullable|string|max:200', 'postcode' => 'nullable|string|max:10',
         ]);
-        $job = WorkJob::query()->create([
-            'title' => $data['title'], 'starts_on' => $data['starts_on'], 'ends_on' => $data['ends_on'],
-            'client_id' => $data['client'] ? Client::query()->firstOrCreate(['name' => trim($data['client'])])->id : null,
-            'location' => $data['location'] ?? null, 'postcode' => isset($data['postcode']) ? strtoupper($data['postcode']) : null,
-        ]);
-        DocumentReader::relink($document, $job->id, 'you');
-        AuditLog::record('job.created_from_document', $job, null, ['document' => $document->id, 'suggested' => $new]);
+        try {
+            $job = DB::transaction(function () use ($data, $document, $new) {
+                $job = app(JobCreator::class)->create([
+                    'title' => $data['title'], 'starts_on' => $data['starts_on'], 'ends_on' => $data['ends_on'], 'client_name' => $data['client'] ?? null,
+                    'location' => $data['location'] ?? null, 'postcode' => $data['postcode'] ?? null,
+                ], 'you', [['type' => 'document', 'id' => $document->id, 'quote' => $new['quote'] ?? null, 'verified' => (bool) ($new['verified'] ?? false)]], 'From a document');
+                app(JobFinder::class)->linkDocument($document, $job, 'you');
+
+                return $job;
+            });
+        } catch (InvalidArgumentException $e) {
+            return back()->with('error', $e->getMessage());
+        }
 
         return to_route('jobs.show', $job)->with('success', "Created {$job->title} and linked the document.");
     }
@@ -148,7 +157,7 @@ class DocumentController extends Controller
     {
         try {
             $invoice = $invoices->draftFromDocument($document);
-        } catch (\InvalidArgumentException $e) {
+        } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
 

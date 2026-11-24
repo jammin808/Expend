@@ -7,6 +7,7 @@ use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobFinder;
+use App\Domain\Jobs\Opportunities;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\TransferPairer;
@@ -63,6 +64,14 @@ Artisan::command('ledger:find-jobs {year? : A tax year such as 2024-25; default 
 
     return 0;
 })->purpose('Find jobs in your calendar, documents, stays and journeys, and link what clearly belongs to a job');
+
+Artisan::command('ledger:opportunities', function (Opportunities $opportunities) {
+    $r = $opportunities->refresh();
+    $this->info("Opportunities: {$r['read']} read documents looked at, {$r['linked']} matched to jobs you've added, {$r['expired']} passed with no answer. "
+        ."{$r['open']} open, {$r['needs_job']} confirmed with no job yet.");
+
+    return 0;
+})->purpose('Keep job opportunities up to date: match them to your jobs and close the ones that have passed (never makes a job)');
 
 Artisan::command('ledger:recheck {--limit=80} {--second-reads=5} {--no-gmail : Don’t fetch emails again from Gmail}', function (Verifier $verifier) {
     $r = $verifier->recheck((int) $this->option('limit'), (int) $this->option('second-reads'), ! $this->option('no-gmail'));
@@ -188,6 +197,7 @@ Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('E
 Schedule::command('ledger:transfers')->dailyAt('04:07')->withoutOverlapping();
 Schedule::command('ledger:categorise')->dailyAt('04:12')->withoutOverlapping();
 Schedule::command('ledger:find-jobs')->dailyAt('04:17')->withoutOverlapping();
+Schedule::command('ledger:opportunities')->dailyAt('04:27')->withoutOverlapping();
 Schedule::command('ledger:recheck')->dailyAt('04:47')->withoutOverlapping();
 Schedule::command('ledger:findings')->dailyAt('05:07')->withoutOverlapping();
 // Re-run the Gmail searches weekly for this tax year (and last year until the 31 January deadline), so new,

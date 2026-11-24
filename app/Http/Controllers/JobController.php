@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobGatherer;
 use App\Domain\Jobs\PoStatus;
@@ -27,6 +28,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
+use InvalidArgumentException;
 
 class JobController extends Controller
 {
@@ -222,10 +224,13 @@ class JobController extends Controller
         return $out;
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(Request $request, JobCreator $creator): RedirectResponse
     {
-        $job = WorkJob::query()->create($this->validated($request));
-        AuditLog::record('job.created', $job, null, $job->toArray());
+        try {
+            $job = $creator->create($this->validated($request), 'you');
+        } catch (InvalidArgumentException $e) {
+            return back()->with('error', $e->getMessage());
+        }
 
         return back()->with('success', "Added {$job->title}.");
     }
@@ -269,7 +274,7 @@ class JobController extends Controller
         ]);
 
         if (! empty($data['new_client'])) {
-            $data['client_id'] = Client::query()->firstOrCreate(['name' => trim($data['new_client'])])->id;
+            $data['client_id'] = JobCreator::client($data['new_client'])->id; // "acme events" is the Acme Events you have
         }
         $data['fee_pence'] = Money::parse($data['fee'] ?? null);
         $data['postcode'] = isset($data['postcode']) ? strtoupper(trim($data['postcode'])) : null;

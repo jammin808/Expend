@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\JobGatherer;
@@ -113,7 +114,7 @@ class JobFinderController extends Controller
             'fee' => 'nullable|string', 'po_number' => 'nullable|string|max:100', 'notes' => 'nullable|string|max:2000', 'status' => 'nullable|in:booked,done',
         ]);
         if (! empty($data['new_client'])) {
-            $data['client_id'] = Client::query()->firstOrCreate(['name' => trim($data['new_client'])])->id;
+            $data['client_id'] = JobCreator::client($data['new_client'], 'you')->id; // whatever its capitals, or with Ltd
         }
         $data['fee_pence'] = Money::parse($data['fee'] ?? null);
         $data['postcode'] = ! empty($data['postcode']) ? strtoupper(trim($data['postcode'])) : null;
@@ -221,7 +222,7 @@ class JobFinderController extends Controller
             return back()->with('error', $long);
         }
         if (! empty($data['new_client'])) {
-            $data['client_id'] = Client::query()->firstOrCreate(['name' => trim($data['new_client'])])->id;
+            $data['client_id'] = JobCreator::client($data['new_client'], 'you')->id; // whatever its capitals, or with Ltd
         }
         $fields = collect($data)->except(['key', 'date', 'new_client', 'fee', 'then'])->all();
         $fields['fee_pence'] = Money::parse($data['fee'] ?? null);
@@ -230,8 +231,8 @@ class JobFinderController extends Controller
         $fields['po_not_required'] = (bool) ($data['po_not_required'] ?? false);
 
         $job = DB::transaction(function () use ($fields, $data, $event, $finder) {
-            $job = WorkJob::query()->create($fields);
-            AuditLog::record('job.created', $job, null, $job->toArray(), 'From a calendar entry');
+            // Searched for straight after (below), so not again in the background.
+            $job = app(JobCreator::class)->create($fields, 'you', [['type' => 'calendar_event', 'id' => $event->key(), 'quote' => $event->summary, 'verified' => true]], 'From a calendar entry', false);
             // The entry's days within the dates you typed (not every day it covers), with its kind (rig, show, de-rig).
             $finder->linkCalendar($event, $job, 'you', 'You made this entry a job', [$job->starts_on->format('Y-m-d'), $job->ends_on->format('Y-m-d')]);
             JobDays::useFormTimes($job, $data);

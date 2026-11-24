@@ -5,11 +5,13 @@ namespace App\Domain\Telegram;
 use App\Domain\Ai\Assistant;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
+use App\Domain\Jobs\OpportunityRules;
 use App\Domain\Todo\TodoActions;
 use App\Domain\Todo\TodoList;
 use App\Jobs\ReadDocument;
 use App\Models\AssistantLog;
 use App\Models\Document;
+use App\Models\Opportunity;
 use App\Models\Setting;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -22,6 +24,8 @@ use Throwable;
 /**
  * A private Telegram bot: send it files or photos and they become documents; ask it questions and the
  * assistant answers from your records. Only the one chat you pair with a code from Settings is accepted.
+ * A message you forward to it from someone else (a crew booker's "are you free on the 12th?") is kept as a document
+ * and read for work it offers, like an email: it's never taken as your instruction.
  */
 final class Telegram
 {
@@ -210,6 +214,12 @@ final class Telegram
                 return;
             }
 
+            if (self::forwarded($message)) {
+                self::reply($chatId, self::takeForwarded($message, $text, $intake));
+
+                return;
+            }
+
             if ($text === '/todo' || mb_strtolower($text) === 'todo' || mb_strtolower($text) === 'to do') {
                 self::sendTodo($chatId);
 
@@ -231,6 +241,53 @@ final class Telegram
             report($e);
             self::reply($chatId, 'Sorry, that didn’t work: '.$e->getMessage());
         }
+    }
+
+    /** A message forwarded from someone else (their words, not yours). */
+    public static function forwarded(array $message): bool
+    {
+        return isset($message['forward_origin']) || isset($message['forward_from']) || isset($message['forward_from_chat'])
+            || isset($message['forward_sender_name']) || isset($message['forward_date']);
+    }
+
+    /**
+     * Keep a forwarded message as a document (from whoever wrote it) and look for work it offers: read with AI when
+     * that's on (the reply comes when it's read), otherwise spotted by its words. Only ever proposed, never a job.
+     */
+    private static function takeForwarded(array $message, string $text, DocumentIntake $intake): string
+    {
+        if ($text === '') {
+            return 'There’s no text in that forwarded message to keep.';
+        }
+        $origin = $message['forward_origin'] ?? [];
+        $name = match ($origin['type'] ?? null) {
+            'user' => trim(($origin['sender_user']['first_name'] ?? '').' '.($origin['sender_user']['last_name'] ?? '')),
+            'hidden_user' => (string) ($origin['sender_user_name'] ?? ''),
+            'chat', 'channel' => (string) ($origin['chat']['title'] ?? $origin['sender_chat']['title'] ?? ''),
+            default => trim(($message['forward_from']['first_name'] ?? '').' '.($message['forward_from']['last_name'] ?? '')) ?: (string) ($message['forward_sender_name'] ?? ''),
+        };
+        $name = trim($name) !== '' ? mb_substr(trim($name), 0, 120) : 'someone';
+        $when = is_numeric($origin['date'] ?? $message['forward_date'] ?? null) ? Carbon::createFromTimestamp((int) ($origin['date'] ?? $message['forward_date'])) : now();
+        // Headed like an email, so the date it was sent isn't read as a day of the work.
+        $document = $intake->store("From: {$name} (forwarded in Telegram)\nDate: ".$when->format('j M Y H:i')."\n\n".$text,
+            'telegram-forward-'.$when->format('Ymd-His').'.txt', 'text/plain', 'telegram',
+            ['from' => $name, 'subject' => 'Forwarded in Telegram from '.$name, 'received_at' => $when]);
+
+        if (Setting::get('ai_extraction') !== 'off' && AiConfig::ready()) {
+            ReadDocument::dispatch($document->id, (string) ($message['chat']['id'] ?? ''));
+
+            return 'Kept the message from '.$name.'. Reading it for any work it offers… Nothing is added as a job unless you say so.';
+        }
+        try {
+            $o = app(OpportunityRules::class)->spot($document->fresh());
+        } catch (Throwable $e) {
+            report($e);
+            $o = null;
+        }
+
+        return $o
+            ? 'Kept the message from '.$name.'. It looks like work: '.$o->title.' ('.mb_strtolower(Opportunity::STATUSES[$o->status] ?? $o->status).'). Check it, and make it a job if you take it: '.url('/opportunities/'.$o->id)
+            : 'Kept the message from '.$name.'. Nothing in it looks like work offered: '.url('/documents/'.$document->id);
     }
 
     /** Lines under an assistant answer: figures and links not found anywhere, then things to check before relying on it. */
@@ -261,6 +318,10 @@ final class Telegram
         }
         foreach ($document->facts->take(8) as $fact) {
             $lines[] = '• '.$fact->label.': '.$fact->value.($fact->verified ? '' : ' (unverified)');
+        }
+        $top = $document->parent_id ? ($document->parent ?? $document) : $document;
+        if ($o = Opportunity::query()->where('fingerprint', sha1('document:'.$top->id))->first()) {
+            $lines[] = 'Possible work: '.$o->title.' ('.mb_strtolower(Opportunity::STATUSES[$o->status] ?? $o->status).'). It isn’t a job until you say so: '.url('/opportunities/'.$o->id);
         }
         if ($po = $document->extraction['po'] ?? null) {
             // A PO's amounts are read in hundredths of its currency (pence, cents), whatever the currency: format()'s.
