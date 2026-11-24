@@ -78,14 +78,15 @@ class JobGatherTest extends TestCase
         $unrelated = $this->email('Your gas bill', "Your bill for May 2025.\r\n", '2025-05-14 09:00:00');
 
         $uber = $this->tx('2025-05-14', -2350, 'UBER *TRIP', 'UBER');
-        $hardware = $this->tx('2025-05-15', -1899, 'SCREWFIX LEEDS', 'SCREWFIX');
+        $hardware = $this->tx('2025-05-15', -1899, 'JOHNSONS HARDWARE', 'JOHNSONS HARDWARE');
+        $screwfix = $this->tx('2025-05-14', -2499, 'SCREWFIX LEEDS', 'SCREWFIX');
         $aiGuess = $this->tx('2025-05-15', -4500, 'GAFFER TAPE CO', 'GAFFER TAPE CO');
         $equipment = Category::query()->where('is_allowable', true)->where('kind', 'expense')->value('id');
         app(AllocationWriter::class)->decide($aiGuess, AllocationWriter::lines(-4500, 'business_expense', $equipment), 'ai', false, 'Looks like equipment');
         $toSavings = $this->tx('2025-05-15', -20000, 'Savings', 'A SMITH');
         $fee = $this->tx('2025-06-20', 120000, 'INV-0007', 'ACME EVENTS LTD');
 
-        return compact('day1', 'day2', 'derig', 'other', 'po', 'vague', 'unrelated', 'uber', 'hardware', 'aiGuess', 'toSavings', 'fee');
+        return compact('day1', 'day2', 'derig', 'other', 'po', 'vague', 'unrelated', 'uber', 'hardware', 'screwfix', 'aiGuess', 'toSavings', 'fee');
     }
 
     public function test_saying_a_calendar_entry_is_a_job_finds_what_belongs_to_it(): void
@@ -118,6 +119,8 @@ class JobGatherTest extends TestCase
         $this->assertSame($job->id, $s['aiGuess']->fresh()->allocations()->value('work_job_id'));
         $this->assertSame('possible', JobFind::query()->where('type', 'payment')->where('ref', (string) $s['hardware']->id)->value('status'));
         $this->assertFalse(JobFind::query()->where('type', 'payment')->where('ref', (string) $s['toSavings']->id)->exists());
+        // A common supplier on a job day is suggested as the job's materials.
+        $this->assertSame([$job->id, 'matcher'], [$s['screwfix']->fresh()->allocations()->value('work_job_id'), $s['screwfix']->fresh()->allocations()->value('decided_by')]);
 
         // The fee coming in later is suggested as this job's income.
         $this->assertSame('possible', JobFind::query()->where('type', 'income')->where('ref', (string) $s['fee']->id)->value('status'));

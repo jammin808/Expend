@@ -212,6 +212,10 @@ class DocumentsAndAiTest extends TestCase
         $bank = Account::create(['name' => 'Starling Business', 'kind' => 'bank', 'provider' => 'starling']);
         $path = base_path('tests/fixtures/starling.csv');
         app(Importer::class)->commit($bank, $path, 'starling.csv', ProfileDetector::detect(CsvReader::read($path)['headers']));
+        // Only what nothing else has suggested goes to the AI: start these from nothing.
+        foreach (BankTransaction::query()->whereIn('merchant_key', ['ADOBE', 'PRET MANGER', 'TFL'])->get() as $t) {
+            app(AllocationWriter::class)->clear($t);
+        }
         $adobe = BankTransaction::where('merchant_key', 'ADOBE')->first();
         $pret = BankTransaction::where('merchant_key', 'PRET MANGER')->get();
         $tfl = BankTransaction::where('merchant_key', 'TFL')->first();

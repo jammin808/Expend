@@ -7,12 +7,14 @@ use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Mail\MailboxFetcher;
+use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\TransferPairer;
 use App\Domain\Telegram\Telegram;
 use App\Domain\Verification\Verifier;
 use App\Jobs\FindJobs;
 use App\Jobs\ScanGmail;
 use App\Jobs\SyncGmailLabels;
+use App\Models\BankTransaction;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\Setting;
@@ -133,6 +135,15 @@ Artisan::command('ledger:reset-link', function () {
 })->purpose('Print a one-time password reset link for the owner (for when email can’t be sent)');
 
 // One cron entry on the server runs all of these: * * * * * php artisan schedule:run
+Artisan::command('ledger:categorise', function (Categoriser $categoriser) {
+    $made = 0;
+    BankTransaction::query()->where('review_status', 'unreviewed')->whereDoesntHave('allocations')->orderBy('id')
+        ->chunkById(300, function ($txs) use ($categoriser, &$made) {
+            $made += $categoriser->suggestFor($txs);
+        });
+    $this->info("Suggested {$made} from your past decisions, the bank's categories and common merchants.");
+})->purpose('Suggest what each undecided payment is, learned from your decisions');
+
 Artisan::command('ledger:transfers', function (TransferPairer $pairer) {
     $pairs = $pairer->pairAll();
     $one = $pairer->suggestOneSided();
@@ -153,6 +164,7 @@ Schedule::command('ledger:telegram-digest')->weeklyOn(1, '08:47')->timezone('Eur
 Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('Europe/London');
 // The job finder and the double-check of AI findings, every night; scans get a few second reads a night.
 Schedule::command('ledger:transfers')->dailyAt('04:07')->withoutOverlapping();
+Schedule::command('ledger:categorise')->dailyAt('04:12')->withoutOverlapping();
 Schedule::command('ledger:find-jobs')->dailyAt('04:17')->withoutOverlapping();
 Schedule::command('ledger:recheck')->dailyAt('04:47')->withoutOverlapping();
 // Re-run the Gmail searches weekly for this tax year (and last year until the 31 January deadline), so new,

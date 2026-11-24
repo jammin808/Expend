@@ -33,7 +33,7 @@ final class Suggester
         'travel_parking' => '/\bNCP\b|JUSTPARK|RINGGO|PAYBYPHONE|APCOA|Q-PARK|EURO CAR PARKS|DARTFORD CROSSING|CONGESTION CHARGE|\bULEZ\b/i',
     ];
 
-    public function __construct(private AllocationWriter $writer, private TravelDays $days) {}
+    public function __construct(private AllocationWriter $writer, private TravelDays $days, private Categoriser $categoriser) {}
 
     /** @param Collection<int, BankTransaction> $transactions */
     public function suggestFor(Collection $transactions): int
@@ -78,6 +78,13 @@ final class Suggester
                 $made += (int) $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, 'business_expense', $carHire), 'matcher', false, 'Looks like car hire, usually a business expense. Check it was for work, and link the job');
             } elseif ($tx->amount_pence < 0 && ($travel = $this->travelSuggestion($tx, $text))) {
                 $made += (int) $this->writer->decide($tx, $travel['lines'], 'matcher', false, $travel['reason']);
+            } elseif ($learned = $this->categoriser->propose($tx)) {
+                // Learned from your decisions, the bank's category, or a list of common merchants.
+                try {
+                    $made += (int) $this->writer->decide($tx, $learned['lines'], 'matcher', false, $learned['reason']);
+                } catch (\InvalidArgumentException) {
+                    // doesn't fit this payment
+                }
             }
         }
 

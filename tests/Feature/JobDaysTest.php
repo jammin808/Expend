@@ -16,6 +16,7 @@ use App\Models\Setting;
 use App\Models\User;
 use App\Models\WorkJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -100,7 +101,7 @@ class JobDaysTest extends TestCase
     {
         Setting::put('home_postcode', 'LS1 4AP');
         foreach (['LS1 4AP' => [53.7965, -1.5478], 'M1 1AA' => [53.4808, -2.2426]] as $pc => [$lat, $lng]) {
-            \Illuminate\Support\Facades\DB::table('places')->insert(['postcode' => $pc, 'latitude' => $lat, 'longitude' => $lng, 'created_at' => now(), 'updated_at' => now()]);
+            DB::table('places')->insert(['postcode' => $pc, 'latitude' => $lat, 'longitude' => $lng, 'created_at' => now(), 'updated_at' => now()]);
         }
         $job = WorkJob::query()->create(['title' => 'Winter Expo', 'starts_on' => '2025-11-03', 'ends_on' => '2025-11-03', 'postcode' => 'M1 1AA', 'status' => 'done']);
         JobDay::query()->create(['work_job_id' => $job->id, 'on_date' => '2025-11-07', 'kind' => 'derig', 'source' => 'you']);

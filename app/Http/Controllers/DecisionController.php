@@ -129,6 +129,13 @@ class DecisionController extends Controller
         if ($result['skipped']) {
             $message .= " Left {$result['skipped']} you'd already decided.";
         }
+        if (($result['learned'] ?? 0) > 0) {
+            $learned = "Suggested the same for {$result['learned']} other waiting ".($result['learned'] === 1 ? 'payment' : 'payments').' from there.';
+            $message .= ' '.$learned;
+            if (request()->boolean('quiet') && ! $result['errors']) {
+                return back()->with('success', $learned);
+            }
+        }
 
         if ($result['errors']) {
             return back()->with('error', implode(' ', $result['errors']))->with('success', $result['saved'] ? $message : null);

@@ -3,6 +3,7 @@
 namespace App\Domain\Ledger;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Matching\Categoriser;
 use App\Models\BankTransaction;
 use App\Models\ManualExpense;
 use App\Models\MerchantRule;
@@ -66,6 +67,9 @@ final class DecisionService
             AuditLog::record('rule.saved', $rule, null, $rule->toArray());
         }
 
-        return ['saved' => $saved, 'skipped' => $skipped, 'errors' => array_values(array_unique($errors))];
+        // Learn from it: other payments waiting from the same merchants get the same suggestion.
+        $learned = $saved ? app(Categoriser::class)->learnFrom($sources) : 0;
+
+        return ['saved' => $saved, 'skipped' => $skipped, 'errors' => array_values(array_unique($errors)), 'learned' => $learned];
     }
 }

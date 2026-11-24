@@ -71,14 +71,15 @@ class TodoTest extends TestCase
         $candidate = JobCandidate::query()->sole();
         $this->post("/todo/cand_add/{$candidate->id}")->assertSessionHas('success');
         $this->assertSame('Maybe a job', WorkJob::query()->latest('id')->value('title'));
-        $tx = BankTransaction::query()->where('amount_pence', '<', 0)->whereDoesntHave('allocations')->first();
+        $tx = BankTransaction::query()->where('amount_pence', '<', 0)->where('review_status', '!=', 'confirmed')->first();
+        app(AllocationWriter::class)->clear($tx);
         $this->post("/todo/tx_personal/{$tx->id}")->assertSessionHas('success');
         $this->assertSame('personal', $tx->fresh()->allocations()->sole()->kind);
         $this->post("/todo/cand_add/{$candidate->id}")->assertSessionHas('error', 'That’s already been dealt with.');
         $this->post('/todo/drop_tables/1')->assertNotFound();
 
         // An accepted suggestion is confirmed.
-        $other = BankTransaction::query()->where('amount_pence', '<', 0)->whereDoesntHave('allocations')->first();
+        $other = BankTransaction::query()->where('amount_pence', '<', 0)->where('review_status', '!=', 'confirmed')->where('id', '!=', $tx->id)->first();
         app(AllocationWriter::class)->decide($other, AllocationWriter::lines($other->amount_pence, 'business_expense', Category::query()->where('code', 'software')->value('id')), 'rule');
         $this->post("/todo/tx_accept/{$other->id}")->assertSessionHas('success');
         $this->assertNotNull($other->fresh()->allocations()->sole()->confirmed_at);

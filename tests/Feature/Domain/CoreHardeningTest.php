@@ -70,7 +70,7 @@ class CoreHardeningTest extends TestCase
         $this->assertSame($rows, BankTransaction::query()->where('import_batch_id', $held->id)->count());
         $this->assertSame('committed', $held->fresh()->status);
         $this->assertStringContainsString('Checked against the PDF', $held->fresh()->review_note);
-        $this->assertSame('import.accepted', AuditEvent::query()->latest('id')->value('action'));
+        $this->assertTrue(AuditEvent::query()->where('action', 'import.accepted')->exists());
 
         $other = Account::create(['name' => 'Other', 'kind' => 'bank', 'provider' => 'starling']);
         $second = $this->import($other, 'starling_broken.csv');
