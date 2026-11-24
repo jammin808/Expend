@@ -4,8 +4,10 @@ namespace App\Domain\Todo;
 
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Jobs\PoStatus;
+use App\Domain\Ledger\Reconciler;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\OwnAccounts;
+use App\Models\Account;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Document;
@@ -20,6 +22,7 @@ use App\Models\Verification;
 use App\Models\WorkJob;
 use App\Support\Money;
 use App\Support\UkTaxYear;
+use Carbon\CarbonImmutable;
 
 /**
  * Everything that needs you, in one list, most urgent first: a reconnect, a held statement, unpaid invoices, failed
@@ -32,7 +35,7 @@ final class TodoList
     public const GROUPS = [
         'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'checks' => 'Failed checks', 'deadline' => 'Tax return',
         'invoice' => 'Invoices to send', 'jobs' => 'Possible jobs', 'transfers' => 'Transfers between your accounts', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
-        'no_po' => 'Jobs with no PO', 'missing' => 'Payments missing from statements', 'documents' => 'Documents held',
+        'no_po' => 'Jobs with no PO', 'reconcile' => 'Accounts that don’t match the bank', 'missing' => 'Payments missing from statements', 'documents' => 'Documents held',
     ];
 
     /**
@@ -181,6 +184,23 @@ final class TodoList
             $add('no_po', 2, 'no_po:'.$j->id, 'No PO: '.$j->title, $j->starts_on->format('j M Y').'. Link the PO email or attachment, add the number, or mark it not needed.', '/jobs/'.$j->id,
                 [self::action('job_no_po', $j->id, 'No PO needed', 'ghost')]);
         }
+
+        // Accounts that don't match the bank's own figures, and statements not imported for a while.
+        $reconcile = 0;
+        foreach (Account::query()->where('is_active', true)->get() as $acc) {
+            $r = Reconciler::account($acc);
+            foreach ($r['gaps'] as $g) {
+                $reconcile++;
+                $add('reconcile', 2, 'gap:'.$acc->id.':'.$g['from'].':'.$g['missing_pence'], $acc->name.': '.Money::format(abs($g['missing_pence'])).' missing', $g['text'].' Import the statement for those dates (or the missing rows); if they’re already in another account, check the right account was chosen.',
+                    '/imports', [], ['amount' => $g['missing_pence']]);
+            }
+            if ($r['stale']) {
+                $reconcile++;
+                $add('reconcile', 3, 'stale:'.$acc->id.':'.$r['last_line'], $acc->name.': nothing imported since '.CarbonImmutable::parse($r['last_line'])->format('j M Y'),
+                    'Import its latest statement, or choose “Hide from checks” on Accounts if it’s closed.', '/imports');
+            }
+        }
+        $counts['reconcile'] = $reconcile;
 
         // Paid bookings with no payment in your statements.
         $unpaid = TravelItem::query()->whereNull('bank_transaction_id')->whereNotNull('amount_minor')->where('status', '!=', 'cancelled')

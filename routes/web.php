@@ -89,6 +89,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('accounts', [AccountController::class, 'index'])->name('accounts.index');
     Route::post('accounts', [AccountController::class, 'store'])->name('accounts.store');
     Route::patch('accounts/{account}', [AccountController::class, 'update'])->name('accounts.update');
+    Route::post('accounts/{account}/balances', [AccountController::class, 'addBalance'])->name('accounts.balances.store');
+    Route::delete('accounts/{account}/balances/{balance}', [AccountController::class, 'removeBalance'])->name('accounts.balances.destroy');
 
     Route::get('jobs/finder', [JobFinderController::class, 'index'])->name('jobs.finder');
     Route::post('jobs/finder/run', [JobFinderController::class, 'run'])->name('jobs.finder.run');
