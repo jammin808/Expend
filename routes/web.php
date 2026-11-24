@@ -75,6 +75,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('years', [TaxYearController::class, 'store'])->name('years.store');
     Route::get('years/{label}', [TaxYearController::class, 'show'])->where('label', '\d{4}-\d{2}')->name('years.show');
     Route::patch('years/{label}', [TaxYearController::class, 'update'])->where('label', '\d{4}-\d{2}')->name('years.update');
+    Route::patch('years/{label}/submissions/{submission}', [TaxYearController::class, 'submission'])->where('label', '\d{4}-\d{2}')->name('years.submission');
     Route::post('years/{label}/lock', [TaxYearController::class, 'lock'])->where('label', '\d{4}-\d{2}')->name('years.lock');
     Route::get('years/{label}/export', [TaxYearController::class, 'export'])->where('label', '\d{4}-\d{2}')->name('years.export');
 

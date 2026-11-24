@@ -15,6 +15,17 @@ class Setting extends Model
     public const DEFAULTS = [
         'home_postcode' => null,
         'scottish_taxpayer' => false,
+        // Making Tax Digital for Income Tax: the tax year HMRC accepted you as a volunteer for the new penalties from
+        // (their confirmation letter), the tax year an exemption from MTD runs from, and whether HMRC treat the earlier
+        // requirements as never imposed. They decide which penalties apply. mtd_exempt is the old tick with no year
+        // (read as exempt from 2026-27); saving Settings replaces it.
+        'mtd_volunteer_from' => null,
+        'mtd_exempt_from' => null,
+        'mtd_exempt_never_required' => false,
+        'mtd_exempt' => false,
+        // Weeks you were self-employed (and aged 16 to State Pension age) in each year with compulsory Class 2 National
+        // Insurance, e.g. ['2022-23' => 30]. A year not listed counts as 52 weeks, a full year.
+        'class2_weeks' => [],
         'calendar_ics_url' => null,
         'overnight_near_miles' => 12,
         'overnight_far_miles' => 40,
@@ -56,14 +67,24 @@ class Setting extends Model
 
     protected $fillable = ['key', 'value'];
 
+    /** @var array<string, ?string>|null  stored values read inside remembering(), by key (null: not set) */
+    private static ?array $memo = null;
+
     public static function get(string $key, mixed $default = null): mixed
     {
-        $row = static::query()->find($key);
-        if (! $row || $row->value === null) {
+        if (self::$memo !== null && array_key_exists($key, self::$memo)) {
+            $value = self::$memo[$key];
+        } else {
+            $value = static::query()->find($key)?->value;
+            if (self::$memo !== null) {
+                self::$memo[$key] = $value;
+            }
+        }
+        if ($value === null) {
             return $default ?? (self::DEFAULTS[$key] ?? null);
         }
 
-        $raw = in_array($key, self::ENCRYPTED, true) ? Crypt::decryptString($row->value) : $row->value;
+        $raw = in_array($key, self::ENCRYPTED, true) ? Crypt::decryptString($value) : $value;
 
         return json_decode($raw, true);
     }
@@ -73,6 +94,32 @@ class Setting extends Model
         $json = json_encode($value);
         $stored = $value === null ? null : (in_array($key, self::ENCRYPTED, true) ? Crypt::encryptString($json) : $json);
         static::query()->updateOrCreate(['key' => $key], ['value' => $stored]);
+        if (self::$memo !== null) {
+            unset(self::$memo[$key]);
+        }
+    }
+
+    /**
+     * Run $work reading each setting from the database once (a setting saved meanwhile is read afresh). For work that
+     * reads the same settings many times, such as the penalty estimate, which asks about Making Tax Digital for every
+     * year. Only for the length of the call, so a long-running process never keeps a stale value.
+     *
+     * @template T
+     *
+     * @param  callable():T  $work
+     * @return T
+     */
+    public static function remembering(callable $work): mixed
+    {
+        $outer = self::$memo === null;
+        self::$memo ??= [];
+        try {
+            return $work();
+        } finally {
+            if ($outer) {
+                self::$memo = null;
+            }
+        }
     }
 
     /** @return array<string, mixed> all settings except encrypted ones (those report only whether they're set). */

@@ -61,7 +61,8 @@ return [
         '2021-22' => array_replace_recursive($base, [
             'additional_rate_threshold' => 15_000_000,
             'class4' => ['lower' => 956_800, 'upper' => 5_027_000, 'main_rate' => '9', 'upper_rate' => '2'],
-            'class2' => ['weekly' => 305, 'payable_from' => 651_500],
+            // Payable on profits of, or over, the small profits threshold (SSCBA 1992 s11(2) as it stood in 2021-22).
+            'class2' => ['weekly' => 305, 'payable_from' => 651_500, 'payable_when' => 'at_or_above'],
             'vat_threshold' => 8_500_000,
             'pension_annual_allowance' => 4_000_000,
             'cash_basis_default' => false,
@@ -71,8 +72,9 @@ return [
             'additional_rate_threshold' => 15_000_000,
             // Blended rates and threshold for 2022-23 (Health and Social Care Levy reversal).
             'class4' => ['lower' => 1_190_800, 'upper' => 5_027_000, 'main_rate' => '9.73', 'upper_rate' => '2.73'],
-            // Payable from the lower profits limit; treated as paid between the small profits threshold and it.
-            'class2' => ['weekly' => 315, 'payable_from' => 1_190_800],
+            // Payable only on profits over the lower profits threshold; treated as paid from the small profits
+            // threshold up to and including it (SSCBA 1992 s11(2), (5A)-(5B)).
+            'class2' => ['weekly' => 315, 'payable_from' => 1_190_800, 'payable_when' => 'above', 'small_profits_threshold' => 672_500],
             'vat_threshold' => 8_500_000,
             'pension_annual_allowance' => 4_000_000,
             'cash_basis_default' => false,
@@ -80,7 +82,8 @@ return [
 
         '2023-24' => array_replace_recursive($base, [
             'class4' => ['lower' => 1_257_000, 'upper' => 5_027_000, 'main_rate' => '9', 'upper_rate' => '2'],
-            'class2' => ['weekly' => 345, 'payable_from' => 1_257_000],
+            // As 2022-23: payable only on profits over £12,570, treated as paid from £6,725 up to it.
+            'class2' => ['weekly' => 345, 'payable_from' => 1_257_000, 'payable_when' => 'above', 'small_profits_threshold' => 672_500],
             'vat_threshold' => 8_500_000,
             'cash_basis_default' => false,
         ]),

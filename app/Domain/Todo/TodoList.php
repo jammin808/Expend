@@ -11,7 +11,9 @@ use App\Domain\Ledger\Reconciler;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\OwnAccounts;
 use App\Domain\Matching\TransferPairer;
+use App\Domain\Tax\FilingDates;
 use App\Domain\Tax\PenaltyEstimator;
+use App\Domain\Tax\Submissions;
 use App\Models\Account;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -79,11 +81,11 @@ final class TodoList
     /** The tables the list is made from (directly, or through the rule offers, PO status and bank checks). */
     private const WATCHED = [
         'accounts', 'allocations', 'bank_transactions', 'calendar_job_links', 'categories', 'clients', 'document_facts', 'documents', 'import_batches',
-        'invoices', 'job_candidates', 'manual_expenses', 'merchant_rules', 'opportunities', 'statement_balances', 'tax_years', 'travel_items', 'verifications', 'work_jobs',
+        'invoices', 'job_candidates', 'manual_expenses', 'merchant_rules', 'opportunities', 'statement_balances', 'tax_submissions', 'tax_years', 'travel_items', 'verifications', 'work_jobs',
     ];
 
-    /** The settings it reads: the Gmail connection, and merchants you said no to a rule for. */
-    private const WATCHED_SETTINGS = ['google_client_id', 'google_client_secret', 'gmail_refresh_token', 'gmail_last_result', 'rule_offers_declined'];
+    /** The settings it reads: the Gmail connection, merchants you said no to a rule for, and your Making Tax Digital status (penalties). */
+    private const WATCHED_SETTINGS = ['google_client_id', 'google_client_secret', 'gmail_refresh_token', 'gmail_last_result', 'rule_offers_declined', 'mtd_volunteer_from', 'mtd_exempt', 'mtd_exempt_from', 'mtd_exempt_never_required'];
 
     /** This process has written to what the list is made from since it last built it (see watch()). */
     private static bool $changed = false;
@@ -207,7 +209,7 @@ final class TodoList
      */
     public static function snoozeOnly(string $key): bool
     {
-        return in_array($key, ['gmail', 'transfers'], true) || str_starts_with($key, 'deadline:') || str_starts_with($key, 'penalty:');
+        return in_array($key, ['gmail', 'transfers'], true) || str_starts_with($key, 'deadline:') || str_starts_with($key, 'penalty:') || str_starts_with($key, 'submission:');
     }
 
     /** Work you're asked about is listed this many days before the date to reply by. */
@@ -330,12 +332,28 @@ final class TodoList
             $add('checks', 1, 'check:'.$v->subject_type.':'.$v->subject_id, $label, $v->summary, $href, [self::action('recheck', $v->subject_type.':'.$v->subject_id, 'Re-check')]);
         }
 
-        // A return due within 60 days. One you filed and unlocked to amend isn't late: it can be amended until a year
-        // after the filing deadline, so that's the date shown as it gets close.
+        // Fines and interest (worked out once here: the return reminders below say what being late costs in points).
+        try {
+            $fines = PenaltyEstimator::all()['years'];
+        } catch (Throwable $e) {
+            report($e);
+            $fines = [];
+        }
+        $returnEffect = [];
+        foreach ($fines as $y) {
+            // Only where points are the law for the year: elsewhere being late costs the £100 penalty.
+            $annual = collect($y['submissions'] ?? [])->firstWhere('kind', 'annual');
+            if ($annual && $annual['effect'] && ! $annual['announced']) {
+                $returnEffect[$y['tax_year']] = $annual['effect'];
+            }
+        }
+
+        // A return due within 60 days. One you filed and unlocked to amend isn't late: it can be amended until 12 months
+        // after its filing date (TMA 1970 s9ZA), so that's the date shown as it gets close.
         // Both dates are whole days: a return is on time until the end of its deadline day.
         foreach (TaxYear::query()->where('status', '!=', 'filed')->get() as $year) {
             if ($year->status === 'amending') {
-                $by = $year->period()->filingDeadline()->addYear();
+                $by = FilingDates::amendBy($year->label, $year);
                 if (today()->lte($by) && $by->lte(now()->addDays(60))) {
                     $add('deadline', 1, 'deadline:'.$year->label.':amend', "Tax return {$year->label}: amend by ".$by->format('j F Y'),
                         'You unlocked it to make changes. HMRC accepts an amended return online until then; lock the year again once it’s sent.', '/years/'.$year->label);
@@ -343,35 +361,94 @@ final class TodoList
 
                 continue;
             }
-            $deadline = $year->period()->filingDeadline();
-            if ($deadline->lte(now()->addDays(60))) {
-                $add('deadline', 1, 'deadline:'.$year->label, "Tax return {$year->label}: ".(today()->gt($deadline) ? 'overdue since ' : 'due ').$deadline->format('j F Y'),
-                    'Work through the year, then copy the figures into HMRC online.', '/years/'.$year->label);
-            }
-        }
-
-        // Fines and interest: penalties already due or still growing, or the next one coming within 60 days.
-        try {
-            $fines = PenaltyEstimator::all()['years'];
-        } catch (Throwable $e) {
-            report($e);
-            $fines = [];
-        }
-        foreach ($fines as $y) {
-            $owed = $y['penalties_pence'] + $y['interest_pence'];
-            $soon = collect($y['upcoming'])->first(fn ($p) => $p['date'] <= now()->addDays(60)->format('Y-m-d'));
-            if ($owed <= 0 && ! $soon) {
+            // The filing date follows HMRC's notice to file (FilingDates); with no notice there's no return due yet.
+            $dates = FilingDates::for($year->label, $year);
+            $deadline = $dates['filing_date'];
+            if ($deadline === null || $deadline->gt(now()->addDays(60))) {
                 continue;
             }
+            if (today()->gt($dates['own_return_last'])) {
+                // Past the last day to file your own return (s34A), or to replace HMRC's determination (s28C(5)).
+                $add('deadline', 1, 'deadline:'.$year->label, "Tax return {$year->label}: too late to file it yourself",
+                    ($dates['own_return_basis'] === 'determination'
+                        ? 'The time to replace HMRC’s determination of '.$dates['determination_on']->format('j F Y').' with your own return ended on '.$dates['own_return_last']->format('j F Y')
+                            .', so it stands as the tax for the year. Only a claim for special relief can change it: get advice from an accountant.'
+                        : 'The time limit for filing your own return ended on '.$dates['own_return_last']->format('j F Y').'. HMRC can still assess the tax: get advice from an accountant before you contact them.'),
+                    '/years/'.$year->label);
+
+                continue;
+            }
+            $estimated = $dates['filing_basis'] === 'estimate';
+            $add('deadline', 1, 'deadline:'.$year->label, "Tax return {$year->label}: ".(today()->gt($deadline) ? 'overdue since ' : 'due ').$deadline->format('j F Y').($estimated ? ' (estimated)' : ''),
+                implode(' ', array_filter([
+                    'Work through the year, then copy the figures into HMRC online.',
+                    $estimated ? 'The date is estimated from your notice to file (its date plus 3 months and 7 days, as HMRC’s system works it out); the date printed on HMRC’s notice is the one that counts.' : null,
+                    $dates['notice'] === 'assumed' ? 'Assumes HMRC sent you a notice to file by 31 July '.($year->period()->startYear + 1).'; if they didn’t, or sent it later, say so on the year page.' : null,
+                    $returnEffect[$year->label] ?? null,
+                ])), '/years/'.$year->label);
+        }
+
+        // Fines and interest: penalties already due or still growing, or the next ones coming within 60 days. (Points
+        // and £200s for submissions not yet due come up with the submissions, below and in the return reminders.)
+        foreach ($fines as $y) {
+            $owed = $y['penalties_pence'] + $y['interest_pence'];
+            // Every late payment penalty on the next date (they can fall together), or another penalty coming soon.
+            $nextLate = PenaltyEstimator::nextLatePayment($y['upcoming']);
+            $within = now()->addDays(60)->format('Y-m-d');
+            $soon = $nextLate && $nextLate['date'] <= $within
+                ? ['label' => implode(' and ', $nextLate['labels']), 'date' => $nextLate['date'], 'amount_pence' => $nextLate['pence'], 'range' => null]
+                : collect($y['upcoming'])->first(fn ($p) => $p['date'] <= $within && ! str_starts_with($p['code'], 'points') && ! str_starts_with($p['code'], 'sch24_'));
+            // A year HMRC haven't asked a return for, though you needed to tell them: that comes first.
+            $notify = (bool) ($y['notify_hmrc'] ?? false);
+            // Penalties a broken payment plan held off that HMRC can charge now (by notice).
+            $risk = (int) ($y['plan']['at_risk_pence'] ?? 0);
+            if ($owed <= 0 && ! $soon && ! $notify && $risk <= 0) {
+                continue;
+            }
+            // A penalty HMRC set within a range (telling HMRC late): its floor isn't what it costs if nothing changes.
+            $ranged = collect([...$y['penalties'], ...$y['upcoming']])->filter(fn ($p) => ! empty($p['range']) || ! empty($p['amount_unknown']));
+            $upTo = $ranged->sum(fn ($p) => $p['range']['max_pence'] ?? 0);
+            $soonText = $soon ? ($soon['range'] ?? null
+                ? 'Next: '.$soon['label'].' on '.CarbonImmutable::parse($soon['date'])->format('j F Y').' (up to '.Money::format($soon['range']['max_pence'], 'GBP', false).').'
+                : 'Next: '.$soon['label'].' on '.CarbonImmutable::parse($soon['date'])->format('j F Y').(! empty($soon['amount_unknown']) ? ' (not worked out).' : ' ('.Money::format($soon['amount_pence'], 'GBP', false).').')) : null;
             $detail = implode(' ', array_filter([
                 $owed > 0 ? Money::format($y['penalties_pence'], 'GBP', false).' in penalties and '.Money::format($y['interest_pence'], 'GBP', false).' interest so far'
                     .($y['per_day_pence'] > 0 ? ', growing by about '.Money::format($y['per_day_pence'], 'GBP', false).' a day' : '').'.' : null,
-                $soon ? 'Next: '.$soon['label'].' on '.CarbonImmutable::parse($soon['date'])->format('j F Y').' ('.Money::format($soon['amount_pence'], 'GBP', false).').' : null,
+                $upTo > 0 ? 'The penalty for telling HMRC late can be up to '.Money::format($upTo, 'GBP', false).'.' : null,
+                $risk > 0 ? Money::format($risk, 'GBP', false).' more that your broken payment plan held off can now be charged.' : null,
+                $soonText,
                 $y['actions'][0] ?? null,
                 'An estimate from your records.',
             ]));
-            $add('penalties', 1, 'penalty:'.$y['tax_year'], $owed > 0 ? "Fines and interest for {$y['tax_year']}: ".Money::format($owed, 'GBP', false) : "Avoid a fine for {$y['tax_year']}",
-                $detail, '/years/'.$y['tax_year'], [], ['amount' => -($owed > 0 ? $owed : $soon['amount_pence'])]);
+            // Items set within a range carry no amount: their floor would understate them.
+            $amount = $owed > 0 ? $owed : ($soon && empty($soon['range']) && empty($soon['amount_unknown']) ? $soon['amount_pence'] : 0);
+            $add('penalties', 1, 'penalty:'.$y['tax_year'], $owed > 0 ? "Fines and interest for {$y['tax_year']}: ".Money::format($owed, 'GBP', false)
+                : ($notify ? "Tell HMRC you need to file for {$y['tax_year']}" : ($risk > 0 && ! $soon ? "Payment plan broken for {$y['tax_year']}" : "Avoid a fine for {$y['tax_year']}")),
+                $detail, '/years/'.$y['tax_year'], [], $amount > 0 ? ['amount' => -$amount] : []);
+        }
+
+        // Making Tax Digital quarterly updates due within 14 days, or late with no "sent on" date: what being late
+        // costs in late submission points (or £200 at the threshold), and where to record the date.
+        foreach ($fines as $y) {
+            $points = $y['points'] ?? ($y['announced']['points'] ?? null);
+            foreach ($y['submissions'] ?? [] as $s) {
+                if ($s['kind'] !== 'quarterly' || $s['submitted_on'] !== null || ! in_array($s['status'], ['not_sent', 'not_due'], true)) {
+                    continue;
+                }
+                $due = CarbonImmutable::parse($s['due_on']);
+                $late = $s['status'] === 'not_sent';
+                if (! $late && $due->gt(today()->addDays(14))) {
+                    continue;
+                }
+                // Late only if it wasn't sent: Expend just has no "sent on" date for it.
+                $add('penalties', 1, 'submission:'.$y['tax_year'].':q'.$s['quarter'], 'Quarterly update '.$y['tax_year'].' ('.Submissions::periodText($s).'): '
+                    .($late ? 'no sent date recorded (due '.$due->format('j F Y').')' : 'due '.$due->format('j F Y')),
+                    implode(' ', array_filter([
+                        $late && $s['effect'] ? preg_replace('/^(Late|If it wasn’t sent on time): /u', 'If late: ', $s['effect']) : $s['effect'],
+                        $points && ! $s['volunteer'] ? $points['text'].($points['announced'] && ! str_contains((string) $s['effect'], 'announced rules') ? ' (Under the announced rules, which aren’t law yet.)' : '') : null,
+                        $late ? 'Already sent? Record the date on the year page.' : 'Once it’s sent, record the date on the year page.',
+                    ])), '/years/'.$y['tax_year'], [], $s['penalty_pence'] > 0 ? ['amount' => -$s['penalty_pence']] : []);
+            }
         }
 
         // Work to answer: an availability check, a hold or an offer whose date to reply by is close or has passed.

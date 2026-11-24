@@ -39,11 +39,14 @@ final class TaxSavings
         $today = CarbonImmutable::today();
         // A year that isn't over yet only has the records so far: checks that need the whole year wait, or use a labelled projection.
         $inProgress = $today->lte($period->endsOn());
-        // Claims to set a loss sideways or carry it back (ITA s64(5), s72) and amendments (TMA s9ZA): a year after the filing date.
-        $claimBy = $period->filingDeadline()->addYear();
+        // Claims to set a loss sideways or carry it back (ITA s64(5), s72): a year after the normal filing date, 31 January.
+        $claimBy = $period->filingDeadline()->addYearNoOverflow();
         // Whether the return is in: a filing date counts, whatever the status says (as for penalties).
         $record = TaxYear::query()->where('label', $label)->first();
         $filed = $record && ($record->filed_on !== null || in_array($record->status, ['filed', 'amending'], true));
+        // Amending the return (TMA s9ZA): 12 months after its own filing date, so 31 October for a paper return filed
+        // under a notice given by 31 July, and later for a late notice (the same date the to-do list and assistant give).
+        $amendBy = FilingDates::amendBy($label, $record);
         $s = ReturnSummary::for($label);
         $profit = (int) $s['net_profit_pence'];
         $p = TaxParameters::for($label);
@@ -197,17 +200,26 @@ final class TaxSavings
             // Overpayment relief: 4 years after the end of the tax year (TMA Sch 1AB para 3).
             $overpaidBy = $period->endsOn()->addYears(4);
             $undecided = $pending === 1 ? "1 payment in {$label} is still undecided." : "{$pending} payments in {$label} are still undecided.";
-            if (! $filed) {
-                $add('missed-claims-deadlines', 'action', $undecided.' Any that are business costs reduce your tax: include them in the return when you file it.'
-                    .($today->lte($claimBy) ? ' After filing you can amend it until '.$date($claimBy).'.' : ''));
-            } elseif ($today->lte($claimBy)) {
-                $add('missed-claims-deadlines', 'action', $undecided.' Any that are business costs left out of the return reduce your tax: you can amend it until '.$date($claimBy)
+            // Your own return can only be filed until 5 April four years after the year (TMA s34A), or, once HMRC have made
+            // a determination, until the last day it can replace it (s28C(5)), as the penalties say.
+            $dates = FilingDates::for($label, $record, $filed);
+            $ownReturnLast = $dates['own_return_last'];
+            if (! $filed && $today->gt($ownReturnLast)) {
+                $add('missed-claims-deadlines', 'info', $undecided.' Any that are business costs would have reduced your tax, but '.($dates['own_return_basis'] === 'determination'
+                    ? 'the time to replace HMRC’s determination for '.$label.' with your own return ended on '.$date($ownReturnLast).', so the determination stands. Only a claim for special relief can change it: get advice from an accountant.'
+                    : 'the time limit for filing your own return for '.$label.' ended on '.$date($ownReturnLast).'. Get advice from an accountant before you contact HMRC.'));
+            } elseif (! $filed) {
+                $add('missed-claims-deadlines', 'action', $undecided.' Any that are business costs reduce your tax: include them in the return when you file it'
+                    .($dates['own_return_basis'] === 'determination' ? ', by '.$date($ownReturnLast).' to replace HMRC’s determination' : '').'.'
+                    .($today->lte($amendBy) ? ' After filing you can amend it until '.$date($amendBy).'.' : ''));
+            } elseif ($today->lte($amendBy)) {
+                $add('missed-claims-deadlines', 'action', $undecided.' Any that are business costs left out of the return reduce your tax: you can amend it until '.$date($amendBy)
                     .', and claim back overpaid tax until '.$date($overpaidBy).'.');
             } elseif ($today->lte($overpaidBy)) {
-                $add('missed-claims-deadlines', 'action', $undecided.' The deadline to amend the return was '.$date($claimBy).'. If any are business costs left out of it, you can still claim back overpaid tax (overpayment relief) until '
+                $add('missed-claims-deadlines', 'action', $undecided.' The deadline to amend the return was '.$date($amendBy).'. If any are business costs left out of it, you can still claim back overpaid tax (overpayment relief) until '
                     .$date($overpaidBy).', though not for capital allowances.');
             } else {
-                $add('missed-claims-deadlines', 'info', $undecided.' The deadlines to amend the return ('.$date($claimBy).') and to claim back overpaid tax ('.$date($overpaidBy).') have passed, so deciding them won’t change this year’s tax.');
+                $add('missed-claims-deadlines', 'info', $undecided.' The deadlines to amend the return ('.$date($amendBy).') and to claim back overpaid tax ('.$date($overpaidBy).') have passed, so deciding them won’t change this year’s tax.');
             }
         }
 
@@ -215,8 +227,16 @@ final class TaxSavings
         $fines = rescue(fn () => PenaltyEstimator::forYear($label), null, false);
         $finesDue = $fines ? (int) ($fines['penalties_pence'] + $fines['interest_pence']) : 0;
         if ($fines && ($finesDue > 0 || $fines['upcoming'])) {
+            // A penalty HMRC set within a range (telling HMRC late) counts at its floor in the totals: say how high it goes.
+            $ranged = collect([...$fines['penalties'], ...$fines['upcoming']])->filter(fn ($p) => ! empty($p['range']));
+            $upTo = $ranged->sum(fn ($p) => $p['range']['max_pence']);
+            $others = collect($fines['upcoming'])->filter(fn ($p) => empty($p['range']));
+            $more = $others->sum('amount_pence');
+            $moreText = $others->isEmpty() ? null
+                : ($more > 0 || ! $others->contains(fn ($p) => str_starts_with($p['code'], 'points')) ? Money::format($more, 'GBP', false).' more' : 'a late submission point');
             $add('penalties-and-interest', 'action', 'Fines and interest for '.$label.': '.Money::format($finesDue, 'GBP', false).' so far'
-                .($fines['upcoming'] ? ', and '.Money::format($fines['upcoming_pence'], 'GBP', false).' more if nothing changes' : '').'. '.($fines['actions'][0] ?? ''));
+                .($moreText ? ', and '.$moreText.' if nothing changes' : '')
+                .($upTo > 0 ? ', and a penalty of up to '.Money::format($upTo, 'GBP', false).' for telling HMRC late' : '').'. '.($fines['actions'][0] ?? ''));
         }
 
         // Zero-emission car: 100% first-year allowance on new ones bought by 5 April 2027.

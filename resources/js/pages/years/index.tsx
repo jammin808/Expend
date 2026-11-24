@@ -17,7 +17,7 @@ interface YearRow {
     filed_expenses_pence: number | null;
     filed_profit_pence: number | null;
     payments_on_account_paid_pence: number;
-    deadline: string;
+    deadline: string | null;
     progress: { value_pct: number; unreviewed_count: number; suggested_count: number; total_count: number };
     has_rates: boolean;
 }
@@ -82,7 +82,14 @@ function YearEditor({ year, statuses }: { year: YearRow; statuses: Record<string
 }
 
 interface PenaltySummary {
-    totals: { penalties_pence: number; interest_pence: number; upcoming_pence: number; per_day_pence: number; unpaid_pence: number };
+    totals: {
+        penalties_pence: number;
+        interest_pence: number;
+        upcoming_pence: number;
+        per_day_pence: number;
+        unpaid_pence: number;
+        at_risk_pence: number;
+    };
     as_of: string;
     years: {
         tax_year: string;
@@ -90,7 +97,9 @@ interface PenaltySummary {
         interest_pence: number;
         upcoming_pence: number;
         unpaid_pence: number;
-        next: { date: string; label: string; amount_pence: number } | null;
+        /** Held off by a payment plan that was broken: HMRC can charge it by notice. */
+        at_risk_pence: number;
+        next: { date: string; label: string; amount_pence: number; up_to: boolean } | null;
     }[];
 }
 
@@ -146,6 +155,9 @@ export default function YearsIndex({
                             {penalties.totals.upcoming_pence > 0
                                 ? `, ${money(penalties.totals.upcoming_pence, 'GBP', { signed: false })} more coming if nothing changes`
                                 : ''}
+                            {penalties.totals.at_risk_pence > 0
+                                ? `, and ${money(penalties.totals.at_risk_pence, 'GBP', { signed: false })} a broken payment plan holds off that HMRC could charge by notice`
+                                : ''}
                         </p>
                         <p className="text-muted-foreground text-xs">
                             An estimate from your records, as of {day(penalties.as_of)}
@@ -162,9 +174,15 @@ export default function YearsIndex({
                                     <span className="min-w-0 flex-1">
                                         {money(p.penalties_pence, 'GBP', { signed: false })} penalties,{' '}
                                         {money(p.interest_pence, 'GBP', { signed: false })} interest
+                                        {p.at_risk_pence > 0 && (
+                                            <span className="block text-xs text-amber-800 dark:text-amber-300">
+                                                {money(p.at_risk_pence, 'GBP', { signed: false })} at risk: your payment plan was broken
+                                            </span>
+                                        )}
                                         {p.next && (
                                             <span className="text-muted-foreground block text-xs">
-                                                Next: {p.next.label} on {day(p.next.date)} ({money(p.next.amount_pence, 'GBP', { signed: false })})
+                                                Next: {p.next.label} on {day(p.next.date)} ({p.next.up_to ? 'up to ' : ''}
+                                                {money(p.next.amount_pence, 'GBP', { signed: false })})
                                             </span>
                                         )}
                                     </span>
@@ -182,7 +200,7 @@ export default function YearsIndex({
                                     {y.label}
                                 </Link>
                                 <StatusPill status={y.status} />
-                                <span className="text-muted-foreground text-sm">Due {day(y.deadline)}</span>
+                                <span className="text-muted-foreground text-sm">{y.deadline ? `Due ${day(y.deadline)}` : 'No notice to file'}</span>
                                 {!y.has_rates && <span className="text-xs text-amber-700">No tax rates loaded</span>}
                                 <div className="ml-auto flex min-w-48 flex-1 items-center gap-3 sm:max-w-xs">
                                     <Progress value={y.progress.value_pct} />
