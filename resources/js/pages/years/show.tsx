@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+import { YearLockPanel, type LockCheck, type LockSnapshot } from '@/components/year-lock-panel';
 import AppLayout from '@/layouts/app-layout';
 import { day, money } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -84,6 +85,10 @@ interface Props {
     lookups: Lookups;
     penalties: PenaltyYear | null;
     savings: SavingsReview | null;
+    /** What was kept when the year was last locked, if it was locked with a snapshot. */
+    lock?: LockSnapshot | null;
+    /** Whether it still holds, once you ask ("Check it"). */
+    lock_check?: LockCheck | null;
 }
 
 function Step({ n, title, children, aside }: { n: number; title: string; children: React.ReactNode; aside?: React.ReactNode }) {
@@ -101,7 +106,21 @@ function Step({ n, title, children, aside }: { n: number; title: string; childre
     );
 }
 
-export default function YearShow({ year, progress, coverage, groups, summary, estimate, bill, checks, lookups, penalties, savings }: Props) {
+export default function YearShow({
+    year,
+    progress,
+    coverage,
+    groups,
+    summary,
+    estimate,
+    bill,
+    checks,
+    lookups,
+    penalties,
+    savings,
+    lock,
+    lock_check,
+}: Props) {
     const [group, setGroup] = useState<Props['groups'][number] | null>(null);
     const [decision, setDecision] = useState<Decision>({ kind: 'business_expense', business_pct: 100 });
     const [poa, setPoa] = useState((year.payments_on_account_paid_pence / 100).toFixed(2));
@@ -167,11 +186,26 @@ export default function YearShow({ year, progress, coverage, groups, summary, es
                         <Button
                             variant="outline"
                             onClick={() => {
+                                const failed = (errors: Record<string, string>) =>
+                                    toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error');
                                 if (year.locked) {
                                     const reason = window.prompt('Why are you unlocking this year? (kept in the audit log)');
-                                    if (reason) router.post(`/years/${year.label}/lock`, { reason }, { preserveScroll: true });
-                                } else if (window.confirm(`Lock ${year.label}? Nothing in it can change until you unlock it with a reason.`)) {
-                                    router.post(`/years/${year.label}/lock`, {}, { preserveScroll: true });
+                                    if (reason) router.post(`/years/${year.label}/lock`, { reason }, { preserveScroll: true, onError: failed });
+                                } else if (checks.some((c) => c.status === 'fail')) {
+                                    // A failing check needs a reason to lock anyway: it's kept with the lock.
+                                    const reason = window.prompt(
+                                        `Some checks before filing are failing (${checks
+                                            .filter((c) => c.status === 'fail')
+                                            .map((c) => c.label.toLowerCase())
+                                            .join('; ')}). Why are you locking ${year.label} anyway? (kept with the lock)`,
+                                    );
+                                    if (reason) router.post(`/years/${year.label}/lock`, { reason }, { preserveScroll: true, onError: failed });
+                                } else if (
+                                    window.confirm(
+                                        `Lock ${year.label}? Nothing in it can change until you unlock it with a reason. Its figures and a copy of the spreadsheet are kept with the lock.`,
+                                    )
+                                ) {
+                                    router.post(`/years/${year.label}/lock`, {}, { preserveScroll: true, onError: failed });
                                 }
                             }}
                         >
@@ -179,6 +213,8 @@ export default function YearShow({ year, progress, coverage, groups, summary, es
                         </Button>
                     </div>
                 </div>
+
+                {lock && <YearLockPanel label={year.label} lock={lock} check={lock_check} />}
 
                 {penalties &&
                     (penalties.penalties.length > 0 ||

@@ -579,7 +579,7 @@ class FirstDiscoveriesTest extends TestCase
         Http::fake();
 
         $this->get('/todo')->assertOk()->assertInertia(fn ($p) => $p
-            ->where('checked', ['hmrc' => 8, 'jobs' => 8, 'years' => 1])
+            ->where('checked', ['hmrc' => 8, 'jobs' => 8, 'years' => 1, 'closeout' => 8])
             ->where('groups.tax', 'Tax records to check')->where('groups.claims', 'Expenses you could claim'));
 
         $count = function (): int {

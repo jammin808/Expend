@@ -3,7 +3,7 @@ import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
 import { cn } from '@/lib/utils';
-import { Head, Link, router } from '@inertiajs/react';
+import { Deferred, Head, Link, router } from '@inertiajs/react';
 import { CheckCircle2, ChevronRight } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 
@@ -35,6 +35,16 @@ interface Item {
     why_refs?: WhyRef[];
     /** The reasons offered for marking it not relevant. */
     reasons?: Record<string, string>;
+    /** Shown below the fold: a new check's finding, or one demoted by its false positives. */
+    below_fold?: boolean;
+}
+
+/** A kind of finding that can be shown below the fold or with the rest (Intel\DetectorLevels). */
+interface DetectorLevel {
+    code: string;
+    name: string;
+    level: 'normal' | 'info' | 'raised' | 'demoted';
+    reason: string | null;
 }
 
 interface WhyRef {
@@ -73,6 +83,7 @@ interface Checked {
     hmrc: number | null;
     jobs: number | null;
     years: number | null;
+    closeout?: number | null;
 }
 
 const counted = (n: number | null, one: string, many: string, what = '') =>
@@ -96,6 +107,9 @@ export default function Todo({
     checked,
     directions = {},
     snooze_reasons = {},
+    below = [],
+    more_below,
+    detector_levels = [],
 }: {
     items: Item[];
     counts: Record<string, number>;
@@ -108,6 +122,12 @@ export default function Todo({
     directions?: Record<string, string>;
     /** The reasons offered for a snooze. */
     snooze_reasons?: Record<string, string>;
+    /** Found below the fold by what the list works out itself (a close-out of its own, a kind demoted). */
+    below?: Item[];
+    /** What the new checks found, below the fold: loaded once the list is on the page. */
+    more_below?: { items: Item[]; counts: Record<string, number> };
+    /** The kinds of finding that can be raised or lowered, with how each is shown now. */
+    detector_levels?: DetectorLevel[];
 }) {
     const [busy, setBusy] = useState<string | null>(null);
     const [why, setWhy] = useState<Record<string, boolean>>({});
@@ -175,6 +195,152 @@ export default function Todo({
         e.preventDefault();
         if (asking) dismiss(asking.item, asking.days, 'other', other.trim() || undefined);
     };
+    // Below the fold: what the list worked out, then what the new checks found once it's loaded, ranked as found.
+    const belowAll = [...below, ...(more_below?.items ?? [])];
+    const belowKinds = detector_levels.filter((d) => belowAll.some((i) => i.code === d.code));
+    const raised = detector_levels.filter((d) => d.level === 'raised');
+    // A detector's code as a button's id holds it: no full stop in a to-do button's id.
+    const level = (code: string, up: boolean) =>
+        router.post(`/todo/${up ? 'det_raise' : 'det_lower'}/${code.replace(/\./g, ':')}`, {}, { preserveScroll: true });
+
+    const row = (i: Item) => (
+        <li key={i.key} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 flex-1">
+                <p className="text-muted-foreground text-[11px] tracking-wide uppercase">{groups[i.group]}</p>
+                {i.href ? (
+                    <Link href={i.href} className="flex items-center gap-1 font-medium hover:underline">
+                        <span className="truncate">{i.title}</span>
+                        <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+                    </Link>
+                ) : (
+                    <p className="font-medium">{i.title}</p>
+                )}
+                {i.detail && <p className="text-muted-foreground text-sm">{i.detail}</p>}
+                {(i.grade || (i.direction && directions[i.direction]) || (i.why_refs?.length ?? 0) > 0) && (
+                    <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                        {i.grade && (
+                            <span className={cn('rounded-full border px-1.5 py-px', GRADE_STYLE[i.grade])} title={i.grade_basis ?? undefined}>
+                                {i.grade[0].toUpperCase() + i.grade.slice(1)}
+                            </span>
+                        )}
+                        {i.amount !== undefined && i.amount !== null && i.direction && directions[i.direction] && (
+                            <span className="text-muted-foreground">{directions[i.direction]}</span>
+                        )}
+                        {(i.why_refs?.length ?? 0) > 0 && (
+                            <button
+                                type="button"
+                                className="text-muted-foreground hover:text-foreground underline underline-offset-2"
+                                aria-expanded={!!why[i.key]}
+                                onClick={() => setWhy({ ...why, [i.key]: !why[i.key] })}
+                            >
+                                {why[i.key] ? 'Hide why' : 'Why'}
+                            </button>
+                        )}
+                    </p>
+                )}
+                {why[i.key] && (
+                    <div className="bg-muted/40 mt-1.5 space-y-1 rounded-md p-2 text-xs">
+                        {i.grade && i.grade_basis && (
+                            <p>
+                                {i.grade[0].toUpperCase() + i.grade.slice(1)}: {i.grade_basis}.
+                            </p>
+                        )}
+                        <ul className="space-y-0.5">
+                            {i.why_refs?.map((r) => (
+                                <li key={r.ref}>
+                                    {r.state === 'source_missing' ? (
+                                        // Its label says so: "An invoice that’s no longer there".
+                                        <span className="text-rose-700 dark:text-rose-400">{r.label}</span>
+                                    ) : r.href ? (
+                                        <Link href={r.href} className="underline underline-offset-2">
+                                            {r.label}
+                                        </Link>
+                                    ) : (
+                                        r.label
+                                    )}
+                                    {r.state === 'source_changed' && <span className="text-amber-700 dark:text-amber-400"> · changed since</span>}
+                                    {r.check && CHECK_WORDS[r.check] && <span className="text-muted-foreground"> · {CHECK_WORDS[r.check]}</span>}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+                {asking?.item.key === i.key && (
+                    <div className="mt-2 space-y-1.5 rounded-md border p-2 text-xs">
+                        <p className="font-medium">{asking.days ? 'Why snooze it?' : 'Why isn’t it relevant?'}</p>
+                        <div className="flex flex-wrap gap-1.5">
+                            {Object.entries(reasonsFor(asking))
+                                .filter(([code]) => code !== 'other')
+                                .map(([code, label]) => (
+                                    <button
+                                        key={code}
+                                        type="button"
+                                        className="hover:bg-muted rounded-full border px-2.5 py-1"
+                                        onClick={() => dismiss(i, asking.days, code)}
+                                    >
+                                        {label}
+                                    </button>
+                                ))}
+                        </div>
+                        <form onSubmit={submitOther} className="flex flex-wrap items-center gap-1.5">
+                            <input
+                                value={other}
+                                onChange={(e) => setOther(e.target.value)}
+                                maxLength={200}
+                                placeholder="Or say why"
+                                aria-label="Your reason"
+                                className="bg-background min-w-0 flex-1 rounded-md border px-2 py-1"
+                            />
+                            <Button type="submit" size="sm" variant="outline">
+                                {asking.days ? 'Snooze' : 'Not relevant'}
+                            </Button>
+                            <Button type="button" size="sm" variant="ghost" onClick={() => setAsking(null)}>
+                                Cancel
+                            </Button>
+                        </form>
+                    </div>
+                )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+                {i.amount !== undefined && i.amount !== null && <Money pence={i.amount} currency={i.currency ?? 'GBP'} className="text-sm" />}
+                <span className="flex flex-col items-end text-[11px]">
+                    <button
+                        type="button"
+                        className="text-muted-foreground hover:text-foreground"
+                        onClick={() => {
+                            setOther('');
+                            setAsking({ item: i, days: 7 });
+                        }}
+                    >
+                        Snooze a week
+                    </button>
+                    {!i.snooze_only && (
+                        <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground"
+                            onClick={() => {
+                                setOther('');
+                                setAsking({ item: i });
+                            }}
+                        >
+                            Not relevant
+                        </button>
+                    )}
+                </span>
+                {i.actions.map((a) => (
+                    <Button
+                        key={a.code}
+                        size="sm"
+                        variant={a.style === 'ghost' ? 'ghost' : 'outline'}
+                        disabled={busy !== null}
+                        onClick={() => act(a, i.key)}
+                    >
+                        {busy === i.key + a.code ? '…' : a.label}
+                    </Button>
+                ))}
+            </div>
+        </li>
+    );
 
     return (
         <AppLayout breadcrumbs={[{ title: 'To do', href: '/todo' }]}>
@@ -231,155 +397,7 @@ export default function Todo({
                             <h2 className="flex items-center gap-2 text-sm font-semibold">
                                 <span className={cn('size-2 rounded-full', PRIORITY[p].dot)} /> {PRIORITY[p].label}
                             </h2>
-                            <ul className="divide-y rounded-xl border">
-                                {list.map((i) => (
-                                    <li key={i.key} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">
-                                        <div className="min-w-0 flex-1">
-                                            <p className="text-muted-foreground text-[11px] tracking-wide uppercase">{groups[i.group]}</p>
-                                            {i.href ? (
-                                                <Link href={i.href} className="flex items-center gap-1 font-medium hover:underline">
-                                                    <span className="truncate">{i.title}</span>
-                                                    <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-                                                </Link>
-                                            ) : (
-                                                <p className="font-medium">{i.title}</p>
-                                            )}
-                                            {i.detail && <p className="text-muted-foreground text-sm">{i.detail}</p>}
-                                            {(i.grade || (i.direction && directions[i.direction]) || (i.why_refs?.length ?? 0) > 0) && (
-                                                <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
-                                                    {i.grade && (
-                                                        <span
-                                                            className={cn('rounded-full border px-1.5 py-px', GRADE_STYLE[i.grade])}
-                                                            title={i.grade_basis ?? undefined}
-                                                        >
-                                                            {i.grade[0].toUpperCase() + i.grade.slice(1)}
-                                                        </span>
-                                                    )}
-                                                    {i.amount !== undefined && i.amount !== null && i.direction && directions[i.direction] && (
-                                                        <span className="text-muted-foreground">{directions[i.direction]}</span>
-                                                    )}
-                                                    {(i.why_refs?.length ?? 0) > 0 && (
-                                                        <button
-                                                            type="button"
-                                                            className="text-muted-foreground hover:text-foreground underline underline-offset-2"
-                                                            aria-expanded={!!why[i.key]}
-                                                            onClick={() => setWhy({ ...why, [i.key]: !why[i.key] })}
-                                                        >
-                                                            {why[i.key] ? 'Hide why' : 'Why'}
-                                                        </button>
-                                                    )}
-                                                </p>
-                                            )}
-                                            {why[i.key] && (
-                                                <div className="bg-muted/40 mt-1.5 space-y-1 rounded-md p-2 text-xs">
-                                                    {i.grade && i.grade_basis && (
-                                                        <p>
-                                                            {i.grade[0].toUpperCase() + i.grade.slice(1)}: {i.grade_basis}.
-                                                        </p>
-                                                    )}
-                                                    <ul className="space-y-0.5">
-                                                        {i.why_refs?.map((r) => (
-                                                            <li key={r.ref}>
-                                                                {r.state === 'source_missing' ? (
-                                                                    // Its label says so: "An invoice that’s no longer there".
-                                                                    <span className="text-rose-700 dark:text-rose-400">{r.label}</span>
-                                                                ) : r.href ? (
-                                                                    <Link href={r.href} className="underline underline-offset-2">
-                                                                        {r.label}
-                                                                    </Link>
-                                                                ) : (
-                                                                    r.label
-                                                                )}
-                                                                {r.state === 'source_changed' && (
-                                                                    <span className="text-amber-700 dark:text-amber-400"> · changed since</span>
-                                                                )}
-                                                                {r.check && CHECK_WORDS[r.check] && (
-                                                                    <span className="text-muted-foreground"> · {CHECK_WORDS[r.check]}</span>
-                                                                )}
-                                                            </li>
-                                                        ))}
-                                                    </ul>
-                                                </div>
-                                            )}
-                                            {asking?.item.key === i.key && (
-                                                <div className="mt-2 space-y-1.5 rounded-md border p-2 text-xs">
-                                                    <p className="font-medium">{asking.days ? 'Why snooze it?' : 'Why isn’t it relevant?'}</p>
-                                                    <div className="flex flex-wrap gap-1.5">
-                                                        {Object.entries(reasonsFor(asking))
-                                                            .filter(([code]) => code !== 'other')
-                                                            .map(([code, label]) => (
-                                                                <button
-                                                                    key={code}
-                                                                    type="button"
-                                                                    className="hover:bg-muted rounded-full border px-2.5 py-1"
-                                                                    onClick={() => dismiss(i, asking.days, code)}
-                                                                >
-                                                                    {label}
-                                                                </button>
-                                                            ))}
-                                                    </div>
-                                                    <form onSubmit={submitOther} className="flex flex-wrap items-center gap-1.5">
-                                                        <input
-                                                            value={other}
-                                                            onChange={(e) => setOther(e.target.value)}
-                                                            maxLength={200}
-                                                            placeholder="Or say why"
-                                                            aria-label="Your reason"
-                                                            className="bg-background min-w-0 flex-1 rounded-md border px-2 py-1"
-                                                        />
-                                                        <Button type="submit" size="sm" variant="outline">
-                                                            {asking.days ? 'Snooze' : 'Not relevant'}
-                                                        </Button>
-                                                        <Button type="button" size="sm" variant="ghost" onClick={() => setAsking(null)}>
-                                                            Cancel
-                                                        </Button>
-                                                    </form>
-                                                </div>
-                                            )}
-                                        </div>
-                                        <div className="flex shrink-0 items-center gap-2">
-                                            {i.amount !== undefined && i.amount !== null && (
-                                                <Money pence={i.amount} currency={i.currency ?? 'GBP'} className="text-sm" />
-                                            )}
-                                            <span className="flex flex-col items-end text-[11px]">
-                                                <button
-                                                    type="button"
-                                                    className="text-muted-foreground hover:text-foreground"
-                                                    onClick={() => {
-                                                        setOther('');
-                                                        setAsking({ item: i, days: 7 });
-                                                    }}
-                                                >
-                                                    Snooze a week
-                                                </button>
-                                                {!i.snooze_only && (
-                                                    <button
-                                                        type="button"
-                                                        className="text-muted-foreground hover:text-foreground"
-                                                        onClick={() => {
-                                                            setOther('');
-                                                            setAsking({ item: i });
-                                                        }}
-                                                    >
-                                                        Not relevant
-                                                    </button>
-                                                )}
-                                            </span>
-                                            {i.actions.map((a) => (
-                                                <Button
-                                                    key={a.code}
-                                                    size="sm"
-                                                    variant={a.style === 'ghost' ? 'ghost' : 'outline'}
-                                                    disabled={busy !== null}
-                                                    onClick={() => act(a, i.key)}
-                                                >
-                                                    {busy === i.key + a.code ? '…' : a.label}
-                                                </Button>
-                                            ))}
-                                        </div>
-                                    </li>
-                                ))}
-                            </ul>
+                            <ul className="divide-y rounded-xl border">{list.map(row)}</ul>
                             {[...new Set(list.map((i) => i.group))]
                                 .filter((g) => hidden(g) > 0)
                                 .map((g) =>
@@ -414,6 +432,51 @@ export default function Todo({
                     );
                 })}
 
+                <section className="space-y-2 border-t pt-4">
+                    <h2 className="text-sm font-semibold">Found by the newer checks</h2>
+                    <p className="text-muted-foreground text-xs">
+                        These checks are new (or were often wrong), so what they find is shown here, kept off Telegram, until you show a kind with the
+                        rest. When more than one in ten of a kind is marked not relevant because it was wrong, it comes back here on its own.
+                    </p>
+                    <Deferred data="more_below" fallback={<p className="text-muted-foreground text-xs">Looking…</p>}>
+                        <>
+                            {belowAll.length === 0 && <p className="text-muted-foreground text-xs">Nothing found by them right now.</p>}
+                            {belowKinds.length > 0 && (
+                                <ul className="space-y-1 text-xs">
+                                    {belowKinds.map((d) => (
+                                        <li key={d.code} className="flex flex-wrap items-center gap-2">
+                                            <span className="font-medium">{d.name}</span>
+                                            <span className="text-muted-foreground">
+                                                {belowAll.filter((i) => i.code === d.code).length} found
+                                                {d.reason ? ` · ${d.reason}` : ''}
+                                            </span>
+                                            <button type="button" className="underline underline-offset-2" onClick={() => level(d.code, true)}>
+                                                Show with the rest
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                            {belowAll.length > 0 && <ul className="divide-y rounded-xl border">{belowAll.map(row)}</ul>}
+                        </>
+                    </Deferred>
+                    {raised.length > 0 && (
+                        <p className="text-muted-foreground text-xs">
+                            Shown with the rest because you raised {raised.length === 1 ? 'it' : 'them'}:{' '}
+                            {raised.map((d, n) => (
+                                <span key={d.code}>
+                                    {n > 0 && '; '}
+                                    {d.name}{' '}
+                                    <button type="button" className="underline underline-offset-2" onClick={() => level(d.code, false)}>
+                                        move back here
+                                    </button>
+                                </span>
+                            ))}
+                            .
+                        </p>
+                    )}
+                </section>
+
                 {checked && (
                     <p className="text-muted-foreground border-t pt-3 text-xs">
                         Checked:{' '}
@@ -421,6 +484,9 @@ export default function Todo({
                             counted(checked.hmrc, 'payment to HMRC', 'payments to HMRC'),
                             counted(checked.jobs, 'finished job', 'finished jobs', 'for mileage'),
                             counted(checked.years, 'filed year', 'filed years', 'against your records'),
+                            ...(checked.closeout !== undefined
+                                ? [counted(checked.closeout, 'finished job', 'finished jobs', 'against their PO and invoices')]
+                                : []),
                         ].join(', ')}
                         .
                     </p>

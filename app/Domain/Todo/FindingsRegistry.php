@@ -2,11 +2,13 @@
 
 namespace App\Domain\Todo;
 
+use App\Domain\Audit\AuditLog;
 use App\Domain\Intel\Backfills\Findings as FindingsBackfill;
 use App\Domain\Intel\Contracts\CoversCodes;
 use App\Domain\Intel\Contracts\Detector;
 use App\Domain\Intel\Coverage;
 use App\Domain\Intel\Cycle\CycleContext;
+use App\Domain\Intel\DetectorLevels;
 use App\Domain\Intel\Detectors\Registry;
 use App\Domain\Intel\Detectors\TodoGroupsDetector;
 use App\Domain\Intel\FindingDraft;
@@ -55,6 +57,15 @@ final class FindingsRegistry
     /** When the findings were last recorded, and from what (TodoList::fingerprint()). */
     public const SYNCED_KEY = 'findings_synced';
 
+    /** How long the last findings run took, in seconds: whether a page may wait for the next (refresh()). */
+    public const SECONDS_KEY = 'findings_sync_seconds';
+
+    /** A page waits for a findings run only when the last one took less than this many seconds. */
+    public const INLINE_SECONDS = 5;
+
+    /** A findings run queued for a page (refresh()), so it's queued once. */
+    public const QUEUED_KEY = 'findings_sync_queued';
+
     /** How each direction reads as a total. */
     public const DIRECTION_TOTALS = ['owed_to_you' => 'You may be owed', 'owed_by_you' => 'You may owe', 'unrecorded' => 'Missing from your records', 'at_risk' => 'May be lost',
         'claimable' => 'You could claim', 'none' => 'Other amounts'];
@@ -65,15 +76,17 @@ final class FindingsRegistry
      * wasn't worked out in full ('unseen' of them because a limit left some out); 'failed' names the kinds whose check
      * went wrong. In a shadow run ($ctx->shadow) nothing is kept: the counts say what would have changed.
      *
-     * @return array{new:int, resolved:int, open:int, kept?:int, unseen?:int, failed?:list<string>}
+     * 'locked': another run held the findings for 20 seconds, so nothing was recorded here.
+     *
+     * @return array{new:int, resolved:int, open:int, kept?:int, unseen?:int, failed?:list<string>, locked?:true}
      */
     public static function sync(?CycleContext $ctx = null): array
     {
         try {
             return Cache::lock('findings-sync', 300)->block(20, fn () => self::record(null, $ctx ?? new CycleContext));
         } catch (LockTimeoutException) {
-            // Another run is recording the same findings right now.
-            return ['new' => 0, 'resolved' => 0, 'open' => Finding::query()->whereNull('resolved_at')->count()];
+            // Another run is recording the same findings right now: nothing was recorded here.
+            return ['new' => 0, 'resolved' => 0, 'open' => Finding::query()->whereNull('resolved_at')->count(), 'locked' => true];
         }
     }
 
@@ -83,13 +96,34 @@ final class FindingsRegistry
      * account and duplicate charge, so a page view that changes nothing doesn't do it again, and one that comes
      * while the nightly run (or another view) is recording shows what's recorded so far.
      *
+     * $orQueue (a web page): when the last run took INLINE_SECONDS or more, or none has been timed yet (the first
+     * after an upgrade, which records every new kind of finding), the run is queued instead, once, for the queue
+     * worker, and the page shows what's recorded so far (queued() says it's coming). Shared hosting gives a page
+     * view only so long.
+     *
      * @return bool whether they were recorded now
      */
-    public static function refresh(): bool
+    public static function refresh(bool $orQueue = false): bool
     {
         $now = TodoList::fingerprint();
         if (Cache::get(self::SYNCED_KEY) === $now) {
             return false;
+        }
+        if ($orQueue) {
+            $last = Cache::get(self::SECONDS_KEY);
+            if (! is_numeric($last) || (float) $last >= self::INLINE_SECONDS) {
+                if (Cache::add(self::QUEUED_KEY, true, 600)) {
+                    dispatch(static function () {
+                        try {
+                            FindingsRegistry::refresh();
+                        } finally {
+                            Cache::forget(FindingsRegistry::QUEUED_KEY);
+                        }
+                    });
+                }
+
+                return false;
+            }
         }
         $lock = Cache::lock('findings-sync', 300);
         if (! $lock->get()) {
@@ -124,9 +158,16 @@ final class FindingsRegistry
         return self::work($fingerprint, $ctx);
     }
 
+    /** Whether a findings run queued for a page hasn't finished yet. */
+    public static function queued(): bool
+    {
+        return Cache::has(self::QUEUED_KEY);
+    }
+
     /** @return array{new:int, resolved:int, open:int, kept:int, unseen:int, failed:list<string>} */
     private static function work(?string $fingerprint, CycleContext $ctx): array
     {
+        $started = microtime(true);
         $fingerprint ??= TodoList::fingerprint();
         $now = Carbon::now();
         $registry = app(Registry::class);
@@ -146,6 +187,21 @@ final class FindingsRegistry
             $failed = [...$failed, ...self::failedKinds($detector)];
         }
         $active = TodoDismissal::activeKeys();
+        // A kind whose false alarms say so is demoted now (kept and audited, until you raise it again); then how
+        // prominent each kind is (a new detector, or one demoted, is info), worked out once.
+        try {
+            DetectorLevels::settle();
+        } catch (Throwable $e) {
+            report($e);
+        }
+        $levels = DetectorLevels::all();
+        // Items a close-out says now (the job's "less than its PO" and "recharge" items), by the close-out's key.
+        $subsumedBy = [];
+        foreach ($all as $key => $d) {
+            foreach ($d->meta['subsumes'] ?? [] as $old) {
+                $subsumedBy[$old] = $key;
+            }
+        }
         $hiddenBy = $all->map(fn (FindingDraft $d) => collect([$d->key, ...$d->hiddenUnder])->first(fn ($k) => isset($active[$k])));
         $shown = $all->filter(fn ($d, $key) => $hiddenBy[$key] === null);
         self::repairStates($ctx);
@@ -159,7 +215,7 @@ final class FindingsRegistry
 
         $new = 0;
         foreach ($shown as $key => $d) {
-            $fields = self::fields($d, $ctx);
+            $fields = self::fields($d, $ctx, $levels);
             $row = $existing[$key] ?? null;
             if (! $row) {
                 // Found, with the event that says so, together.
@@ -252,8 +308,20 @@ final class FindingsRegistry
         $kept = 0;
         $unseen = 0;
         Finding::query()->whereNotIn('key', $all->keys()->all() ?: [''])->where(fn ($q) => $q->whereNull('resolved_at')->orWhere('resolution', 'snoozed'))->get()
-            ->each(function (Finding $f) use ($now, $ctx, $registry, $byFinding, &$resolved, &$kept, &$unseen) {
+            ->each(function (Finding $f) use ($now, $ctx, $registry, $byFinding, $subsumedBy, &$resolved, &$kept, &$unseen) {
                 FindingsBackfill::adopt($f);
+                // Said by a job's close-out now: superseded by it, citing it, never dealt with twice (or counted twice).
+                // Never one you hid that's still hidden: the close-out leaves what it said out, and your decision stands.
+                if (isset($subsumedBy[$f->key]) && ! $byFinding->has($f->key) && ($into = Finding::query()->where('key', $subsumedBy[$f->key])->value('id')) !== null) {
+                    if ($f->resolved_at === null) {
+                        $resolved++;
+                    }
+                    $cause = 'fnd:'.$into;
+                    self::change($f, ['resolved_at' => $f->resolved_at ?? $now, 'resolution' => 'superseded', 'state' => 'resolved', 'resolution_ref' => $cause], 'resolved', $ctx,
+                        cause: $cause, note: 'Part of the job’s close-out now');
+
+                    return;
+                }
                 $coverage = self::coverageOf($registry, $f);
                 if ($coverage === Coverage::Failed) {
                     $kept++;
@@ -287,21 +355,27 @@ final class FindingsRegistry
 
         if (! $ctx->shadow) {
             Cache::forever(self::SYNCED_KEY, $fingerprint);
+            Cache::forever(self::SECONDS_KEY, round(microtime(true) - $started, 2));
         }
 
         return ['new' => $new, 'resolved' => $resolved, 'open' => $shown->count(), 'kept' => $kept, 'unseen' => $unseen, 'failed' => array_values(array_unique($failed))];
     }
 
-    /** What a finding records from its draft. */
-    private static function fields(FindingDraft $d, CycleContext $ctx): array
+    /**
+     * What a finding records from its draft. Its severity is the Ranker's, at info for a kind shown below the fold
+     * (DetectorLevels), unless it says what items above the fold said before (a close-out that subsumes them).
+     */
+    private static function fields(FindingDraft $d, CycleContext $ctx, ?array $levels = null): array
     {
         $amount = $d->amountPence;
+        $below = DetectorLevels::belowFold($d->code, $levels ?? DetectorLevels::all()) && empty($d->meta['subsumes']);
 
         return ['group' => $d->group, 'title' => mb_substr($d->title, 0, 255), 'detail' => $d->detail, 'href' => $d->href ? mb_substr($d->href, 0, 255) : null,
             'amount_pence' => $amount, 'currency' => self::currency($d->currency, $amount),
             'code' => $d->code, 'detector_version' => $d->detectorVersion, 'subject_ref' => $d->subjectRef, 'scope_ref' => $d->scopeRef, 'evidence' => $d->evidence ?: null,
             'direction' => $d->direction, 'grade' => $d->grade, 'due_on' => $d->dueOn,
-            'severity' => Ranker::severity(['code' => $d->code, 'group' => $d->group, 'amount' => $amount, 'direction' => $d->direction, 'grade' => $d->grade, 'due_on' => $d->dueOn]),
+            'severity' => Ranker::severity(['code' => $d->code, 'group' => $d->group, 'amount' => $amount, 'direction' => $d->direction, 'grade' => $d->grade, 'due_on' => $d->dueOn,
+                'nights' => $d->meta['nights'] ?? null, 'step' => $d->meta['step'] ?? null, 'below_fold' => $below]),
         ] + ($ctx->runId !== null ? ['last_run_id' => $ctx->runId] : []);
     }
 
@@ -593,7 +667,8 @@ final class FindingsRegistry
         }
         $known = Finding::query()->whereIn('key', $current->values()->all())->pluck('id', 'key')->all();
         $rekeyed = [];
-        Finding::query()->where(fn ($q) => $q->where('key', 'like', 'mileage:%')->orWhere('key', 'like', 'drift:%')->orWhere('key', 'like', 'health:failed_jobs:%')->orWhere('key', 'like', 'stale:%'))
+        Finding::query()->where(fn ($q) => $q->where('key', 'like', 'mileage:%')->orWhere('key', 'like', 'drift:%')->orWhere('key', 'like', 'locked_drift:%')
+            ->orWhere('key', 'like', 'health:failed_jobs:%')->orWhere('key', 'like', 'stale:%'))
             ->whereNotIn('key', $all->keys()->all())->where(fn ($q) => $q->whereNull('resolved_at')->orWhere('resolution', 'snoozed'))->orderByDesc('id')->get()
             ->each(function (Finding $f) use ($current, &$known, &$rekeyed, $ctx) {
                 $family = self::family($f->key);
@@ -617,10 +692,13 @@ final class FindingsRegistry
         return $rekeyed;
     }
 
-    /** What a key changing with what it's about is about: mileage:{year} (or mileage:setup), drift:{year}, health:failed_jobs, stale:{account}. */
+    /**
+     * What a key changing with what it's about is about: mileage:{year} (or mileage:setup), drift:{year},
+     * locked_drift:{year}, health:failed_jobs, stale:{account}.
+     */
     private static function family(string $key): ?string
     {
-        if (preg_match('/^((?:mileage|drift):[^:]+|health:failed_jobs):[^:]+$/', $key, $m)) {
+        if (preg_match('/^((?:mileage|drift|locked_drift):[^:]+|health:failed_jobs):[^:]+$/', $key, $m)) {
             return $m[1];
         }
 
@@ -633,6 +711,28 @@ final class FindingsRegistry
         $code = strtoupper((string) $currency);
 
         return $code === '' || $code === 'GBP' || $amount === null ? null : $code;
+    }
+
+    /**
+     * The open findings now, in one digest: how many, and the sha256 of their keys, codes and money (canonical JSON,
+     * keys in order), so two moments can be compared without keeping the list. Kept in a year's lock snapshot.
+     *
+     * @return array{open:int, digest:string}
+     */
+    public static function openDigest(): array
+    {
+        $rows = [];
+        foreach (Finding::query()->whereNull('resolved_at')->orderBy('key')->cursor() as $f) {
+            $rows[] = [$f->key, $f->code, $f->amount_pence === null ? null : (int) $f->amount_pence, $f->currency];
+        }
+
+        return ['open' => count($rows), 'digest' => hash('sha256', AuditLog::canonicalJson($rows))];
+    }
+
+    /** The keys of the open findings about one job, account or year (its scope ref), at most $max. @return list<string> */
+    public static function openKeys(string $scope, int $max = 100): array
+    {
+        return Finding::query()->whereNull('resolved_at')->where('scope_ref', $scope)->orderBy('key')->limit($max)->pluck('key')->all();
     }
 
     /** The most of each finding's history the history page is sent; the rest comes when asked for (eventsOf()). */

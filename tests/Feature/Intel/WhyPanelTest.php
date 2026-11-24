@@ -14,6 +14,7 @@ use App\Domain\Matching\TransferPairer;
 use App\Domain\Travel\TravelMatcher;
 use App\Http\Controllers\WhyController;
 use App\Models\Account;
+use App\Models\AuditEvent;
 use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
 use App\Models\Category;
@@ -288,6 +289,35 @@ class WhyPanelTest extends TestCase
         $finder->rejectCalendarFor($never, $job->id);
         $item = $this->why('cal:'.$never->key())[0];
         $this->assertSame(['none', '“Dinner” isn’t on a job.'], [$item['state'], $item['headline']]);
+    }
+
+    public function test_changing_a_document_records_what_it_was_before(): void
+    {
+        $acme = WorkJob::query()->create(['title' => 'Acme Awards', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14']);
+        $gala = WorkJob::query()->create(['title' => 'Spring Gala', 'starts_on' => '2025-06-02', 'ends_on' => '2025-06-02']);
+        $doc = Document::query()->create(['source' => 'email', 'original_name' => 'po.pdf', 'stored_path' => 'x', 'sha256' => str_repeat('c', 64), 'status' => 'extracted',
+            'kind' => 'po', 'work_job_id' => $acme->id, 'job_linked_by' => 'ai']);
+        $last = fn () => AuditEvent::query()->where('action', 'document.updated')->where('subject_id', $doc->id)->orderByDesc('id')->first();
+
+        // Moved to another job and called something else: the event keeps the job it was on, who put it there, its kind
+        // and its status, so the history shows what it was moved off, not only where it went. (Kept in canonical key
+        // order, so compared as sets of fields.)
+        $this->patch('/documents/'.$doc->id, ['work_job_id' => $gala->id, 'kind' => 'job_invite'])->assertRedirect();
+        $event = $last();
+        $this->assertEquals(['work_job_id' => $acme->id, 'job_linked_by' => 'ai', 'kind' => 'po', 'status' => 'extracted'], $event->before);
+        $this->assertEquals(['work_job_id' => $gala->id, 'kind' => 'job_invite'], $event->after);
+        $this->assertSame(['you', $gala->id, 'you', 'job_invite'], [$event->actor, $doc->fresh()->work_job_id, $doc->fresh()->job_linked_by, $doc->fresh()->kind]);
+
+        // Taken off any job: before is the job you'd put it on.
+        $this->patch('/documents/'.$doc->id, ['work_job_id' => null])->assertRedirect();
+        $this->assertEquals(['work_job_id' => $gala->id, 'job_linked_by' => 'you', 'kind' => 'job_invite', 'status' => 'extracted'], $last()->before);
+
+        // A held one approved: before says it was held.
+        $held = Document::query()->create(['source' => 'email', 'original_name' => 'quote.pdf', 'stored_path' => 'y', 'sha256' => str_repeat('d', 64), 'status' => 'held', 'kind' => 'other']);
+        $this->patch('/documents/'.$held->id, ['approve' => true])->assertRedirect();
+        $event = AuditEvent::query()->where('action', 'document.updated')->where('subject_id', $held->id)->sole();
+        $this->assertEquals(['work_job_id' => null, 'job_linked_by' => null, 'kind' => 'other', 'status' => 'held'], $event->before);
+        $this->assertTrue(AuditLog::verify()['ok']);
     }
 
     /**

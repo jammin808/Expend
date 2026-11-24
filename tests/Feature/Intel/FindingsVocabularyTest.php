@@ -107,10 +107,12 @@ class FindingsVocabularyTest extends TestCase
         $this->assertSame([44, true], [$ctx->runId, $ctx->shadow]);
     }
 
-    public function test_the_registry_holds_the_todo_groups_and_m1s_three(): void
+    public function test_the_registry_holds_the_todo_groups_m1s_three_health_and_m4s(): void
     {
         $registry = app(Registry::class);
-        $this->assertSame(['todo', 'tax.hmrc_unallocated', 'travel.unclaimed', 'year.filed_drift'], array_map(fn ($d) => $d->code(), $registry->all()));
+        $this->assertSame(['todo', 'tax.hmrc_unallocated', 'travel.unclaimed', 'year.filed_drift', 'health', 'job.closeout', 'travel.double_claim', 'income.unlinked',
+            'receipt.unmatched', 'cost.no_receipt', 'dupe.cross_source', 'rule.drift', 'tax.saving', 'acct.unchecked', 'check.unverifiable', 'year.locked_drift'],
+            array_map(fn ($d) => $d->code(), $registry->all()));
         $this->assertInstanceOf(TodoGroupsDetector::class, $registry->forCode('acct.gap'));
         $this->assertInstanceOf(HmrcUnallocated::class, $registry->forCode('tax.hmrc_unallocated'));
         $this->assertInstanceOf(TravelUnclaimed::class, $registry->forCode('travel.unclaimed'));

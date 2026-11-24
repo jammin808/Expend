@@ -223,7 +223,8 @@ class ReviewFixesTodoListTest extends TestCase
 
     public function test_invoice_amounts_are_shown_in_the_invoice_currency(): void
     {
-        $job = $this->job('Paris');
+        // A job still to come: a finished job's PO is its close-out instead (M4: JobCloseoutTest).
+        $job = WorkJob::query()->create(['title' => 'Paris', 'starts_on' => today()->addDays(10)->format('Y-m-d'), 'ends_on' => today()->addDays(10)->format('Y-m-d'), 'po_number' => 'PO-1']);
         $draft = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'currency' => 'EUR', 'total_minor' => 0, 'bill_to_name' => 'Client SA', 'po_total_minor' => 100000]);
         app(InvoiceService::class)->updateDraft($draft, [], [['description' => 'Show day', 'quantity' => '1', 'unit_price' => '800.00']]);
         $issued = $this->issuedInvoice($this->job('Lyon'), '1000.00', 'EUR');

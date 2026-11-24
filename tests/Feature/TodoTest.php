@@ -140,10 +140,12 @@ class TodoTest extends TestCase
 
     public function test_money_you_may_be_owed_and_snoozing(): void
     {
-        $job = WorkJob::query()->create(['title' => 'Gala', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14']);
+        // A job still under way: a finished job's PO and recharges are its close-out instead (M4: JobCloseoutTest).
+        $on = today()->addDays(5);
+        $job = WorkJob::query()->create(['title' => 'Gala', 'starts_on' => $on->format('Y-m-d'), 'ends_on' => $on->copy()->addDays(500)->format('Y-m-d')]);
         $under = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'total_minor' => 0, 'bill_to_name' => 'Client', 'po_total_minor' => 180000]);
         app(InvoiceService::class)->updateDraft($under, [], [['description' => 'Show day', 'quantity' => '1', 'unit_price' => '1500.00']]);
-        TravelItem::query()->create(['kind' => 'hotel', 'provider' => 'Premier Inn', 'status' => 'booked', 'starts_on' => '2025-05-13', 'ends_on' => '2025-05-14',
+        TravelItem::query()->create(['kind' => 'hotel', 'provider' => 'Premier Inn', 'status' => 'booked', 'starts_on' => $on->copy()->subDay()->format('Y-m-d'), 'ends_on' => $on->format('Y-m-d'),
             'amount_minor' => 8900, 'source' => 'manual', 'evidence' => [], 'work_job_id' => $job->id, 'decision' => 'recharge', 'decided_at' => now()]);
 
         $list = TodoList::build();

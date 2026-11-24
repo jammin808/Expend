@@ -36,7 +36,9 @@ use Illuminate\Support\Facades\DB;
  * page instead of giving the miles.
  *
  * Each item is kept by its jobs (mileage:{year}:{set}), so "Not relevant" says those jobs have no mileage to claim
- * (they're left out from then on: TodoList::MILEAGE_JOB), and a job that finishes later brings it back. Only reads:
+ * (they're left out from then on: TodoList::MILEAGE_JOB), and a job that finishes later brings it back. With one
+ * vehicle on simplified mileage, an item whose miles are known offers "Add the trips" (TodoActions' trips_add, bound to
+ * the jobs, the vehicle and the miles shown: actionId()); with none or several, the link to the Mileage page is the way. Only reads:
  * the to-do list keeps what it found (TodoList::mileageFound()), and detect() uses that when it's still current.
  */
 final class TravelUnclaimed implements Detector
@@ -112,7 +114,7 @@ final class TravelUnclaimed implements Detector
             subjectRef: $setup ? 'set:home_postcode' : 'year:'.$i['year'], scopeRef: $setup ? null : 'year:'.$i['year'],
             evidence: array_map(fn ($id) => 'job:'.$id, array_slice($i['job_ids'], 0, 19)),
             amountPence: isset($i['extra']['amount']) ? (int) $i['extra']['amount'] : null, direction: $setup ? 'none' : 'claimable',
-            grade: $setup ? null : Grades::forCode(self::CODE)[0], meta: ['job_ids' => $i['job_ids']], detectorVersion: self::VERSION,
+            grade: $setup ? null : Grades::forCode(self::CODE)[0], actions: $i['actions'] ?? [], meta: ['job_ids' => $i['job_ids']], detectorVersion: self::VERSION,
         );
     }
 
@@ -144,9 +146,11 @@ final class TravelUnclaimed implements Detector
         $home = Setting::get('home_postcode');
         $today = today()->format('Y-m-d');
         $items = [];
-        $item = function (string $key, ?string $year, string $title, string $detail, string $href, array $jobIds, array $extra = []) use (&$items) {
-            $items[] = ['key' => $key, 'year' => $year, 'title' => $title, 'detail' => $detail, 'href' => $href, 'extra' => $extra, 'job_ids' => array_values($jobIds)];
+        $item = function (string $key, ?string $year, string $title, string $detail, string $href, array $jobIds, array $extra = [], array $actions = []) use (&$items) {
+            $items[] = ['key' => $key, 'year' => $year, 'title' => $title, 'detail' => $detail, 'href' => $href, 'extra' => $extra, 'job_ids' => array_values($jobIds), 'actions' => $actions];
         };
+        // "Add the trips" needs to know what they go on: offered only with one vehicle on simplified mileage.
+        $only = self::onlyVehicle();
         $set = function (array $ids) {
             sort($ids);
 
@@ -215,7 +219,8 @@ final class TravelUnclaimed implements Detector
             $titles = array_column($trips, 'title');
             $rate = $rates ? ($type === 'motorcycle' ? $rates['motorcycle'].'p a mile' : $rates['car_van_first'].'p a mile ('.$rates['car_van_after'].'p after '.number_format($rates['threshold_miles']).' miles in the year)') : null;
             $leftOut = $waiting->filter(fn (WorkJob $j) => in_array('car_hire', $journeys[$j->id] ?? [], true))->count();
-            $item('mileage:'.$label.':'.$set(array_column($trips, 'job_id')), $label, $n.' finished '.($n === 1 ? 'job' : 'jobs').' with no mileage: about '.number_format($miles).' miles'
+            $key = 'mileage:'.$label.':'.$set(array_column($trips, 'job_id'));
+            $item($key, $label, $n.' finished '.($n === 1 ? 'job' : 'jobs').' with no mileage: about '.number_format($miles).' miles'
                 .($value !== null ? ', about £'.number_format($value / 100).' to claim' : ''),
                 implode(' ', array_filter([
                     $label.': '.implode(', ', array_slice($titles, 0, 3)).($n > 3 ? ' and '.($n - 3).' more' : '').'.',
@@ -223,7 +228,8 @@ final class TravelUnclaimed implements Detector
                     $on && $vans->count() > 1 ? 'Valued as trips on '.$on->name.', the vehicle the Mileage page offers first: each of your vehicles has its own 10,000 miles.' : null,
                     $leftOut > 0 ? $leftOut.' '.($leftOut === 1 ? 'job' : 'jobs').' you went to by hire car '.($leftOut === 1 ? 'is' : 'are').' left out: claim the hire and its fuel instead.' : null,
                     'If you didn’t drive to '.($n === 1 ? 'it' : 'any of them').', mark this not relevant and '.($n === 1 ? 'it' : 'they').' won’t be listed again.',
-                ])), $href, array_column($trips, 'job_id'), $value !== null ? ['amount' => $value] : []);
+                ])), $href, array_column($trips, 'job_id'), $value !== null ? ['amount' => $value] : [],
+                $only ? [TodoList::action('trips_add', self::actionId($key, $only->id, $trips), 'Add the trips to '.$only->name)] : []);
         }
         if ($noHome !== []) {
             $n = count($noHome);
@@ -232,6 +238,39 @@ final class TravelUnclaimed implements Detector
         }
 
         return ['items' => $items, 'jobs' => count($seen)];
+    }
+
+    /** The one vehicle on simplified mileage (a car, van or motorbike) trips can go on, or null with none or several. */
+    public static function onlyVehicle(): ?Vehicle
+    {
+        $simplified = Vehicle::query()->where('method', 'simplified')->whereIn('type', ['car_van', 'motorcycle'])->get(['id', 'name', 'type', 'method']);
+
+        return $simplified->count() === 1 && Vehicle::query()->where('method', 'simplified')->count() === 1 ? $simplified->first() : null;
+    }
+
+    /**
+     * The id "Add the trips" carries for an item (mileage:{year}:{set}), as a to-do button takes it: {first year}:{set}
+     * :{vehicle}:{miles}, binding it to what was shown: the jobs (the set), the vehicle the trips go on, and the miles
+     * (a short hash of each job's trips and miles). Within Telegram's 64 bytes.
+     *
+     * @param  list<array{job_id:int, one_way:float, trips:int}>  $trips  JobTrips::proposals()'s, for the item's jobs
+     */
+    public static function actionId(string $key, int $vehicleId, array $trips): string
+    {
+        [, $label, $set] = explode(':', $key);
+        $miles = collect($trips)->sortBy('job_id')->map(fn ($t) => $t['job_id'].'='.$t['one_way'].'x'.$t['trips'])->implode(',');
+
+        return substr($label, 0, 4).':'.$set.':'.$vehicleId.':'.substr(md5($miles), 0, 8);
+    }
+
+    /** The item an "Add the trips" id is for ({first year}:{set}, then what binds it), or null for one that isn't. */
+    public static function keyFor(string $actionId): ?string
+    {
+        if (! preg_match('/^(\d{4}):([0-9a-f]{10})(?::\d+:[0-9a-f]{8})?$/', $actionId, $m)) {
+            return null;
+        }
+
+        return 'mileage:'.UkTaxYear::fromLabel($m[1].'-'.substr((string) ((int) $m[1] + 1), 2))->label().':'.$m[2];
     }
 
     /**

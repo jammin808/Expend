@@ -34,8 +34,12 @@ final class TodoGroupsDetector implements CoversCodes, Detector
      * health, work to answer, bookings, quarterly updates and M1's three).
      */
     public const TABLE = [
-        ['health:audit', 'health.audit_chain'], ['health:starling', 'health.starling'], ['health:calendar', 'health.calendar'],
+        ['health:audit', 'health.audit_chain'], ['health:starling', 'health.starling'], ['health:calendar', 'health.calendar'], ['health:mailbox', 'health.mailbox'],
         ['health:failed_jobs:', 'health.failed_jobs'], ['health:ai_cap', 'health.ai_cap'],
+        // M4's detectors, each a detector of its own (ELSEWHERE): here so their keys read the same everywhere.
+        ['closeout:', 'job.closeout'], ['double:', 'travel.double_claim'], ['unlinked:', 'income.unlinked'], ['receipt:', 'receipt.unmatched'],
+        ['noreceipt:', 'cost.no_receipt'], ['xdupe:', 'dupe.cross_source'], ['rule_drift:', 'rule.drift'], ['saving:', 'tax.saving'],
+        ['unchecked:', 'acct.unchecked'], ['unverifiable:', 'check.unverifiable'], ['locked_drift:', 'year.locked_drift'],
         ['import:', 'import.held'], ['invoice_overdue:', 'invoice.overdue'], ['underbilled:', 'invoice.underbilled'], ['recharge:', 'travel.recharge'],
         ['check:', 'check.failed'], ['deadline:', 'tax.deadline'], ['penalty:', 'tax.penalty'], ['submission:', 'tax.submission'],
         ['hmrc:', 'tax.hmrc_unallocated'], ['drift:', 'year.filed_drift'], ['opp_reply:', 'job.offer_reply'], ['opp_job:', 'job.booking'],
@@ -48,6 +52,13 @@ final class TodoGroupsDetector implements CoversCodes, Detector
 
     /** The keys whose findings come from their own detectors, not from this one. */
     public const OWN_DETECTORS = ['hmrc:' => HmrcUnallocated::CODE, 'mileage:' => TravelUnclaimed::CODE, 'drift:' => YearFiledDrift::CODE];
+
+    /**
+     * Codes in the table that other detectors make (the health checks and M4's): this one never reports them, though
+     * classify() still reads their keys (for the backfill, and for a finding kept without its code).
+     */
+    public const ELSEWHERE = [...Health::CODES, 'job.closeout', 'travel.double_claim', 'income.unlinked', 'receipt.unmatched', 'cost.no_receipt', 'dupe.cross_source',
+        'rule.drift', 'tax.saving', 'acct.unchecked', 'check.unverifiable', 'year.locked_drift'];
 
     /** What a failed check's subject type is cited as. */
     private const CHECK_SUBJECTS = ['document' => 'doc', 'travel_item' => 'travel', 'transaction' => 'tx', 'job_candidate' => 'cand'];
@@ -70,7 +81,7 @@ final class TodoGroupsDetector implements CoversCodes, Detector
     /** @return list<string> */
     public function codes(): array
     {
-        $own = array_values(self::OWN_DETECTORS);
+        $own = [...array_values(self::OWN_DETECTORS), ...self::ELSEWHERE];
 
         return array_values(array_unique(array_merge([self::GMAIL], array_values(array_filter(array_column(self::TABLE, 1), fn ($c) => ! in_array($c, $own, true))))));
     }
@@ -89,7 +100,7 @@ final class TodoGroupsDetector implements CoversCodes, Detector
             }
         }
         $items = array_values(array_filter($scan['items'], fn ($i) => ! in_array($i['group'], FindingsRegistry::ROUTINE, true) && self::classify($i['key']) !== null
-            && ! isset(self::OWN_DETECTORS[self::prefixOf($i['key'])])));
+            && ! isset(self::OWN_DETECTORS[self::prefixOf($i['key'])]) && ! in_array(self::classify($i['key'])['code'], self::ELSEWHERE, true)));
         $classified = array_map(fn ($i) => self::classify($i['key'], isset($i['amount']) ? (int) $i['amount'] : null), $items);
         $scopes = self::scopes($classified);
         $drafts = [];
@@ -171,6 +182,19 @@ final class TodoGroupsDetector implements CoversCodes, Detector
             'health.starling' => $out('set:starling_last_result', 'none', null),
             'health.calendar' => $out('set:calendar_synced_at', 'none', null),
             'health.ai_cap' => $out('set:ai_monthly_cap_usd', 'none', null),
+            'health.mailbox' => $out('set:'.Health::MAILBOX_RESULT, 'none', null),
+            'job.closeout' => $out(Ref::maybe('job', $id), 'owed_to_you', $id !== null ? ['ref' => 'job:'.$id] : null),
+            'travel.double_claim' => $parts[0] === 'trip' ? $out(Ref::maybe('trip', $int($parts[1] ?? '')), 'at_risk', null)
+                : $out(Ref::maybe('year', $year($parts[1] ?? '')), 'at_risk', ($y = $year($parts[1] ?? '')) ? ['ref' => 'year:'.$y] : null),
+            'income.unlinked' => $parts[0] === 'exp' ? $out(Ref::maybe('exp', $int($parts[1] ?? '')), 'none', null) : $out(Ref::maybe('tx', $id), 'none', $lookup('bank_transactions', 'tax_year', 'year')),
+            'cost.no_receipt' => $parts[0] === 'exp' ? $out(Ref::maybe('exp', $int($parts[1] ?? '')), 'none', null) : $out(Ref::maybe('tx', $id), 'none', $lookup('bank_transactions', 'tax_year', 'year')),
+            'receipt.unmatched' => $out(Ref::maybe('doc', $id), 'unrecorded', null),
+            'dupe.cross_source' => $out(Ref::maybe('exp', $id), 'at_risk', null),
+            'rule.drift' => $out(Ref::maybe('rule', $id), 'none', null),
+            'tax.saving' => ($y = $year($parts[0])) ? $out('year:'.$y, 'claimable', ['ref' => 'year:'.$y]) : $out(null, 'claimable', null),
+            'acct.unchecked' => $out(Ref::maybe('acct', $id), 'none', $id !== null ? ['ref' => 'acct:'.$id] : null),
+            'check.unverifiable' => $out(self::checkSubject($rest), 'none', null),
+            'year.locked_drift' => ($y = $year($parts[0])) ? $out('year:'.$y, 'none', ['ref' => 'year:'.$y]) : $out(null, 'none', null),
             'health.failed_jobs' => $out(null, 'none', null), // background work has no ref of its own
             'import.held' => $out(Ref::maybe('batch', $id), 'unrecorded', $lookup('import_batches', 'account_id', 'acct')),
             'invoice.overdue', 'invoice.underbilled', 'invoice.unsent' => $out(Ref::maybe('inv', $id), 'owed_to_you', $lookup('invoices', 'work_job_id', 'job')),

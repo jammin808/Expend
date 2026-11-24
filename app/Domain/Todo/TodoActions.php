@@ -5,6 +5,8 @@ namespace App\Domain\Todo;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Intel\AuditContext;
+use App\Domain\Intel\DetectorLevels;
+use App\Domain\Intel\Detectors\TravelUnclaimed;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Jobs\JobCreator;
@@ -16,6 +18,7 @@ use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\Suggester;
 use App\Domain\Matching\TransferPairer;
+use App\Domain\Mileage\JobTrips;
 use App\Domain\Travel\TravelMatcher;
 use App\Domain\Verification\Verifier;
 use App\Jobs\ReadDocument;
@@ -26,8 +29,11 @@ use App\Models\Finding;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\MerchantRule;
+use App\Models\MileageTrip;
 use App\Models\Opportunity;
 use App\Models\Setting;
+use App\Models\TaxYear;
+use App\Models\TodoDismissal;
 use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Models\WorkJob;
@@ -48,7 +54,7 @@ use InvalidArgumentException;
 final class TodoActions
 {
     public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'tx_tax', 'cand_add', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
-        'opp_add', 'opp_decline', 'opp_dismiss', 'fnd_snooze', 'fnd_dismiss'];
+        'opp_add', 'opp_decline', 'opp_dismiss', 'fnd_snooze', 'fnd_dismiss', 'trips_add', 'det_raise', 'det_lower'];
 
     /** How long "Snooze a week" snoozes for. */
     public const SNOOZE_DAYS = 7;
@@ -87,8 +93,63 @@ final class TodoActions
             'opp_dismiss' => $this->opportunityDecide((int) $id, 'dismiss', $offeredAt),
             'fnd_snooze' => $this->findingHide($id, true),
             'fnd_dismiss' => $this->findingHide($id, false),
+            'trips_add' => $this->tripsAdd($id),
+            'det_raise' => DetectorLevels::raise(self::detectorCode($id)),
+            'det_lower' => DetectorLevels::lower(self::detectorCode($id)),
             default => throw new InvalidArgumentException('Unknown action.'),
         };
+    }
+
+    /**
+     * Add the mileage the to-do list offered for finished jobs (a mileage item: TravelUnclaimed), on your one vehicle
+     * on simplified mileage, exactly as the Mileage page's "Add" does (JobTrips::add), as your decision. Bound to what
+     * was shown: the id names the year, the set of jobs, the vehicle and the miles (TravelUnclaimed::actionId()), and
+     * the item worked out now must offer exactly that again. If anything has changed (a job finished since, trips
+     * added, another vehicle, or other miles because your home postcode changed), nothing is added, nothing is
+     * looked up, and it says to look again. With no vehicle on simplified mileage, or more than one, it's done on the
+     * Mileage page.
+     */
+    private function tripsAdd(string $id): string
+    {
+        $key = TravelUnclaimed::keyFor($id);
+        if ($key === null) {
+            throw new InvalidArgumentException('Unknown mileage.');
+        }
+        $label = explode(':', $key)[1];
+        $vehicle = TravelUnclaimed::onlyVehicle();
+        if (! $vehicle) {
+            throw new InvalidArgumentException('Choose the vehicle on the Mileage page: '.url('/mileage?year='.$label));
+        }
+        if (TaxYear::query()->where('label', $label)->whereNotNull('locked_at')->exists()) {
+            throw new InvalidArgumentException("{$label} is locked: unlock it on its year page first.");
+        }
+        $item = collect(TravelUnclaimed::found(TravelUnclaimed::excluded(TodoDismissal::activeKeys()))['items'])->firstWhere('key', $key);
+        if ($item === null) {
+            $now = collect(TravelUnclaimed::found(TravelUnclaimed::excluded(TodoDismissal::activeKeys()))['items'])->first(fn ($i) => ($i['year'] ?? null) === $label);
+            if ($now === null) {
+                throw (new ModelNotFoundException)->setModel(MileageTrip::class); // added since, or nothing left to add
+            }
+            throw new InvalidArgumentException('The jobs for '.$label.' have changed since this was shown. Open the to-do list or the Mileage page again: '.url('/mileage?year='.$label));
+        }
+        if (! collect($item['actions'] ?? [])->contains(fn (array $a) => $a['code'] === 'trips_add' && $a['id'] === $id)) {
+            throw new InvalidArgumentException('The trips for '.$label.' have changed since this was shown (the vehicle or the miles). Open the to-do list or the Mileage page again: '
+                .url('/mileage?year='.$label));
+        }
+        $added = DB::transaction(function () use ($label, $vehicle, $item) {
+            $added = JobTrips::add($label, $vehicle->id, $item['job_ids']);
+            AuditLog::record('mileage.from_jobs', 'Mileage', null, ['year' => $label, 'vehicle_id' => $vehicle->id, 'jobs' => $item['job_ids'], 'trips' => $added, 'from' => 'todo']);
+
+            return $added;
+        });
+
+        return "Added {$added} ".($added === 1 ? 'trip' : 'trips').' for '.count($item['job_ids']).' '.(count($item['job_ids']) === 1 ? 'job' : 'jobs')." on {$vehicle->name}. "
+            .'The distances are estimates from postcodes: correct any that differ from your route on the Mileage page.';
+    }
+
+    /** A detector's code from a button's id ("job:closeout" for job.closeout: a button's id can't hold a full stop). */
+    private static function detectorCode(string $id): string
+    {
+        return str_replace(':', '.', $id);
     }
 
     /**

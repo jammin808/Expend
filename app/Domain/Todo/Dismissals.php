@@ -21,7 +21,7 @@ use InvalidArgumentException;
  * "Not relevant" on mileage to claim means you didn't drive to those jobs: each is left out from then on (a dismissal
  * of its own, TodoList::mileageJobKey()), so a job that finishes later is listed on its own. Undo puts them back.
  * A gap with the bank, or an account with nothing imported lately, is hidden as you saw it (TodoList::dismissKeyFor()):
- * one that changes comes back.
+ * one that changes comes back. A job's close-out is hidden by its parts as you saw them: a new part comes back.
  */
 final class Dismissals
 {
@@ -32,8 +32,8 @@ final class Dismissals
     public const DISMISS_REASONS = [
         'not_problem' => ['label' => 'Not a problem', 'false_positive' => true],
         'sorted' => ['label' => 'Already sorted', 'false_positive' => false],
-        'real' => ['label' => 'Both charges were real', 'false_positive' => true, 'only' => ['tx.duplicate']],
-        'refunded' => ['label' => 'Refunded', 'false_positive' => false, 'only' => ['tx.duplicate']],
+        'real' => ['label' => 'Both charges were real', 'false_positive' => true, 'only' => ['tx.duplicate', 'dupe.cross_source']],
+        'refunded' => ['label' => 'Refunded', 'false_positive' => false, 'only' => ['tx.duplicate', 'dupe.cross_source']],
         'not_mine' => ['label' => 'Not mine', 'false_positive' => true],
         'other' => ['label' => 'Other', 'false_positive' => false],
     ];
@@ -63,6 +63,25 @@ final class Dismissals
         }
 
         return $out;
+    }
+
+    /**
+     * Whether a dismissal's note (as note() keeps it) gives a reason that says the finding was wrong: "Not a problem",
+     * "Not mine", "Both charges were real" (with or without your words after it). These tune its detector
+     * (Intel\DetectorLevels). Your own words alone ("Other") never count.
+     */
+    public static function falsePositive(?string $note): bool
+    {
+        if ($note === null || $note === '') {
+            return false;
+        }
+        foreach (self::DISMISS_REASONS as $r) {
+            if ($r['false_positive'] && ($note === $r['label'] || str_starts_with($note, $r['label'].': '))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** The kind of finding an item with this key is (its code), for the reasons it's offered; null for one that isn't. */
@@ -122,7 +141,7 @@ final class Dismissals
 
         return AuditContext::with('you', function () use ($key, $days, $note, $fromStartOfDay) {
             $target = TodoList::dismissKeyFor($key);
-            if ($target === $key && preg_match('/^(gap|stale):/', $key) && TodoList::findingKey($key) === $key) {
+            if ($target === $key && preg_match('/^(gap|stale|closeout):/', $key) && TodoList::findingKey($key) === $key) {
                 throw new InvalidArgumentException('This has changed since you saw it. Open the to-do list again to see it as it is now.');
             }
             $findingKey = TodoList::findingKey($target);
@@ -161,6 +180,10 @@ final class Dismissals
             $rows = TodoDismissal::query()->whereIn('key', $keys)->get();
             if (preg_match('/^mileage:\d{4}-\d{2}:([0-9a-f]+)$/', $key, $m)) {
                 $rows = $rows->concat(TodoDismissal::query()->where('key', 'like', TodoList::MILEAGE_JOB.'%:'.$m[1])->get());
+            }
+            // A close-out's parts hidden at different times: all of them come back.
+            if (preg_match('/^closeout:(\d+)$/', $key, $m)) {
+                $rows = $rows->concat(TodoDismissal::query()->where('key', 'like', 'closeout:'.$m[1].':%')->get())->unique('id');
             }
             if ($rows->isEmpty()) {
                 return 'It’s back on the list.';

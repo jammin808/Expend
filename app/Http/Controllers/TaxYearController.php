@@ -23,7 +23,9 @@ use App\Support\Money;
 use App\Support\UkTaxYear;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -233,6 +235,12 @@ class TaxYearController extends Controller
         return back()->with('success', 'Saved.');
     }
 
+    /**
+     * Lock a year, or unlock it with a reason. Locking keeps a snapshot in the tax_year.locked event (section 4.6:
+     * YearChecks::lockSnapshot): the return's figures, the sha256 of a spreadsheet exported now (kept, so it can be
+     * checked and downloaded as it was), the open findings and the checks before filing. With a check failing, locking
+     * needs a reason, kept with the event. Unlocking is as it was.
+     */
     public function lock(Request $request, string $label): RedirectResponse
     {
         $year = TaxYear::query()->where('label', $label)->firstOrFail();
@@ -244,10 +252,20 @@ class TaxYearController extends Controller
             return back()->with('success', "{$label} unlocked.");
         }
 
-        $year->update(['locked_at' => now()]);
-        AuditLog::record('tax_year.locked', $year);
+        $request->validate(['reason' => 'nullable|string|min:3|max:250']);
+        $reason = $request->filled('reason') ? trim((string) $request->string('reason')) : null;
+        $checks = YearChecks::checks($label, ReturnSummary::for($label));
+        if (YearChecks::failing($checks) !== [] && $reason === null) {
+            $names = collect($checks)->whereIn('key', YearChecks::failing($checks))->pluck('label')->map(fn ($l) => mb_strtolower($l))->implode('; ');
+            throw ValidationException::withMessages(['reason' => 'Some checks before filing are failing ('.$names.'). Say why you’re locking it anyway: it’s kept with the lock.']);
+        }
+        $taken = YearChecks::lockSnapshot($label);
+        DB::transaction(function () use ($year, $taken, $reason) {
+            $year->update(['locked_at' => now()]);
+            AuditLog::record('tax_year.locked', $year, null, ['snapshot' => $taken['snapshot']] + ($taken['failing'] !== [] ? ['failing' => $taken['failing']] : []), $reason);
+        });
 
-        return back()->with('success', "{$label} locked. Nothing in it can change without unlocking.");
+        return back()->with('success', "{$label} locked. Nothing in it can change without unlocking. Its figures and a copy of the spreadsheet were kept with the lock.");
     }
 
     /** The catch-up page for one year. */
@@ -299,12 +317,24 @@ class TaxYearController extends Controller
             'lookups' => Present::lookups(),
             'penalties' => $penalties,
             'savings' => $savings,
+            // What was kept when the year was last locked, and (when asked: "Check it") whether it still holds.
+            'lock' => YearChecks::lockShown($year),
+            'lock_check' => Inertia::optional(fn () => YearChecks::verifyLock($year)),
         ]);
     }
 
-    public function export(string $label): BinaryFileResponse
+    /** The year's spreadsheet, made now; ?as_locked=1 gives the one kept when the year was last locked, as it was. */
+    public function export(Request $request, string $label): BinaryFileResponse
     {
         $label = UkTaxYear::fromLabel($label)->label();
+        if ($request->boolean('as_locked')) {
+            $year = TaxYear::query()->where('label', $label)->firstOrFail();
+            $kept = YearChecks::lockExport($year);
+            abort_if($kept === null, 404, 'No spreadsheet was kept for this year.');
+            AuditLog::record('tax_year.exported', 'TaxYear', null, ['label' => $label, 'as_locked' => true]);
+
+            return response()->download($kept, 'expense-ledger-'.$label.'-as-locked.xlsx');
+        }
         $path = storage_path('app/private/exports');
         @mkdir($path, 0700, true);
         $file = "{$path}/expense-ledger-{$label}.xlsx";

@@ -66,6 +66,18 @@ final class Grades
         'acct.stale' => [self::CERTAIN, 'The date of the last statement imported'],
         'travel.payment_missing' => [self::LIKELY, 'A booking that says it was paid'],
         'doc.held' => [self::CERTAIN, 'A document waiting for your approval'],
+        // M4's detectors. A close-out rests on the PO's total as read and checked (strong, or likely when the check
+        // didn't pass), and each draft gives its own; acct.unchecked and check.unverifiable have none (about Expend's
+        // checks, not your money).
+        'job.closeout' => [self::STRONG, 'Your PO, invoices and recharge decisions'],
+        'travel.double_claim' => [self::CERTAIN, 'Your mileage and the travel you decided'],
+        'income.unlinked' => [self::CERTAIN, 'Your confirmed income'],
+        'receipt.unmatched' => [self::LIKELY, 'A receipt read from a document, matched by amount and date'],
+        'cost.no_receipt' => [self::LIKELY, 'Your confirmed cost, matched to receipts by amount and date'],
+        'dupe.cross_source' => [self::LIKELY, 'A cash expense and a bank line alike: amount, merchant and date'],
+        'rule.drift' => [self::CERTAIN, 'Your own changes to what the rule decided'],
+        'tax.saving' => [self::LIKELY, 'An estimate from the tax savings review of your records'],
+        'year.locked_drift' => [self::CERTAIN, 'The figures when you locked the year against your records now'],
     ];
 
     public static function valid(?string $grade): bool

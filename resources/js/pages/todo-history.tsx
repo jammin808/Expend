@@ -63,9 +63,13 @@ interface Scope extends Chip {
 
 const resolutionLabel = { resolved: 'Dealt with', snoozed: 'Snoozed', dismissed: 'Marked not relevant', superseded: 'Followed by another' };
 
-/** How it ended, in plain words: a gap with the bank that's joined another says so. */
+/**
+ * How it ended, in plain words: a gap with the bank that's joined another says so, as does a job's "less than its PO"
+ * or "recharge" item that its close-out now says.
+ */
 function endedAs(r: Row): string {
     if (r.resolution === 'superseded' && r.key.startsWith('gap:')) return 'Joined to another gap';
+    if (r.resolution === 'superseded' && (r.key.startsWith('underbilled:') || r.key.startsWith('recharge:'))) return 'Part of the job’s close-out';
     return resolutionLabel[r.resolution ?? 'resolved'];
 }
 
@@ -230,6 +234,7 @@ export default function TodoHistory({
     scope = null,
     recent,
     more_events = null,
+    updating = false,
 }: {
     open: number;
     resolved: number;
@@ -241,6 +246,8 @@ export default function TodoHistory({
     recent: Row[];
     /** All of one finding's history, when "Show all" asked for it. */
     more_events?: { id: number; events: FindingEvent[] } | null;
+    /** What's found now is being recorded in the background: this shows what's recorded so far. */
+    updating?: boolean;
 }) {
     const directions = by_direction.filter((d) => amounts(d.open) || amounts(d.resolved));
     return (
@@ -259,6 +266,11 @@ export default function TodoHistory({
                         charges, failed checks, unpaid invoices) with when it was found, what changed, and why it closed. Updated each night and when
                         you open this page.
                     </p>
+                    {updating && (
+                        <p className="text-muted-foreground mt-2 text-sm" role="status">
+                            Bringing this up to date in the background: reload in a minute or two to see the latest.
+                        </p>
+                    )}
                 </div>
                 {(scopes.length > 0 || scope) && (
                     <div className="flex flex-wrap items-center gap-1.5 text-xs">

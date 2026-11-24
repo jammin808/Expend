@@ -16,9 +16,12 @@ use Carbon\CarbonImmutable;
  * amount score 0, and keep the list's own order. Amounts are compared as they are, in hundredths of their currency:
  * the order is a guide, never a total.
  *
- * Severity: critical for a broken audit log, a deadline or penalty step within 7 days, or a score of £500 or more;
- * important for a score of £50 or more, anything due within 60 days, a failed check, or Expend not working;
- * otherwise info.
+ * Severity: critical for a broken audit log, something in Expend failing two nights running (a health finding whose
+ * 'nights' is 2 or more), the nightly audit log check failing (health.cycle_step for verify.audit_chain, from its first
+ * night), a deadline or penalty step within 7 days, or a score of £500 or more; important for a score
+ * of £50 or more, anything due within 60 days, a failed check, or Expend not working; otherwise info. A finding shown
+ * below the fold ('below_fold': a new detector, or one demoted by its false positives: Intel\DetectorLevels) is info
+ * whatever it involves, so it's kept off Telegram until you raise it.
  */
 final class Ranker
 {
@@ -53,10 +56,26 @@ final class Ranker
         return round(abs($amount) * Grades::weight($grade) * self::urgency($dueOn), 2);
     }
 
-    /** @param  array{code?:?string, group?:string, amount?:?int, direction?:?string, grade?:?string, due_on?:?string}  $item */
+    /** Failing this many nights running makes something in Expend critical (docs/intelligence-cycle.md section 4.5). */
+    public const CRITICAL_NIGHTS = 2;
+
+    /** The nightly step that checks the audit log: critical from its first failure (section 6.4). */
+    public const AUDIT_STEP = 'verify.audit_chain';
+
+    /** @param  array{code?:?string, group?:string, amount?:?int, direction?:?string, grade?:?string, due_on?:?string, nights?:?int, step?:?string, below_fold?:bool}  $item */
     public static function severity(array $item): string
     {
+        if ($item['below_fold'] ?? false) {
+            return 'info';
+        }
         $code = $item['code'] ?? null;
+        if (str_starts_with((string) $code, 'health.') && (int) ($item['nights'] ?? 0) >= self::CRITICAL_NIGHTS) {
+            return 'critical';
+        }
+        // The nightly audit log check itself failing is as serious as the log being altered (section 6.4).
+        if ($code === 'health.cycle_step' && ($item['step'] ?? null) === self::AUDIT_STEP) {
+            return 'critical';
+        }
         $score = self::score(isset($item['amount']) ? (int) $item['amount'] : null, $item['direction'] ?? null, $item['grade'] ?? null, $item['due_on'] ?? null);
         $days = self::daysUntil($item['due_on'] ?? null);
         if ($code === 'health.audit_chain' || (in_array($code, self::DEADLINES, true) && $days !== null && $days <= 7) || $score >= self::CRITICAL_PENCE) {

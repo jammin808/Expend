@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Intel\DetectorLevels;
 use App\Domain\Intel\FindingDraft;
 use App\Domain\Intel\Grades;
 use App\Domain\Intel\RefResolver;
@@ -33,24 +34,49 @@ class TodoController extends Controller
 
         $list = TodoList::build($all === [] ? self::PER_GROUP : self::ALL_OF_A_KIND);
         if ($all !== []) {
-            $seen = [];
-            $list['items'] = array_values(array_filter($list['items'], function (array $i) use (&$seen, $all) {
-                $seen[$i['group']] = ($seen[$i['group']] ?? 0) + 1;
+            foreach (['items', 'below'] as $part) {
+                $seen = [];
+                $list[$part] = array_values(array_filter($list[$part], function (array $i) use (&$seen, $all) {
+                    $seen[$i['group']] = ($seen[$i['group']] ?? 0) + 1;
 
-                return in_array($i['group'], $all, true) || $seen[$i['group']] <= self::PER_GROUP;
-            }));
+                    return in_array($i['group'], $all, true) || $seen[$i['group']] <= self::PER_GROUP;
+                }));
+            }
         }
 
-        // What each item rests on, in plain words (its "Why"), and the reasons offered for hiding it.
-        $refs = RefResolver::resolveMany(collect($list['items'])->flatMap(fn ($i) => $i['why'] ?? [])->unique()->values()->all());
-        $list['items'] = array_map(fn (array $i) => array_diff_key($i, array_flip(['hidden_under', 'job_ids', 'range'])) + [
+        $list['items'] = self::shown($list['items']);
+        $list['below'] = self::shown($list['below']);
+        // The kinds that can be raised or lowered, how each is shown now and why (the page counts what each found).
+        $kinds = collect(DetectorLevels::all())->filter(fn ($l, $code) => in_array($code, DetectorLevels::DEMOTABLE, true))
+            ->map(fn ($l, $code) => ['code' => $code, 'name' => DetectorLevels::name($code), 'level' => $l['level'], 'reason' => $l['reason']])->values()->all();
+
+        return Inertia::render('todo', $list + ['groups' => TodoList::GROUPS, 'all' => $all, 'directions' => array_filter(FindingDraft::DIRECTION_WORDS),
+            'snooze_reasons' => Dismissals::reasonsFor(null, true), 'detector_levels' => $kinds,
+            // What the new checks found, below the fold: loaded once the list is on the page, so the list never waits.
+            'more_below' => Inertia::defer(function () use ($all) {
+                $below = TodoList::belowFold($all === [] ? self::PER_GROUP : self::ALL_OF_A_KIND);
+
+                return ['items' => self::shown($below['items']), 'counts' => $below['counts']];
+            }),
+        ]);
+    }
+
+    /**
+     * Items as the page shows them: what each rests on, in plain words (its "Why", one query per kind of record), the
+     * reasons offered for hiding it, and its grade's basis.
+     *
+     * @param  list<array>  $items
+     * @return list<array>
+     */
+    private static function shown(array $items): array
+    {
+        $refs = RefResolver::resolveMany(collect($items)->flatMap(fn ($i) => $i['why'] ?? [])->unique()->values()->all());
+
+        return array_map(fn (array $i) => array_diff_key($i, array_flip(['hidden_under', 'job_ids', 'range', 'subsumes'])) + [
             'why_refs' => array_values(array_filter(array_map(fn ($r) => isset($refs[$r]) ? array_intersect_key($refs[$r], array_flip(['ref', 'label', 'href', 'state', 'check'])) : null, $i['why'] ?? []))),
             'reasons' => Dismissals::reasonsFor($i['code'] ?? null),
             'grade_basis' => Grades::forCode($i['code'] ?? null)[1],
-        ], $list['items']);
-
-        return Inertia::render('todo', $list + ['groups' => TodoList::GROUPS, 'all' => $all, 'directions' => array_filter(FindingDraft::DIRECTION_WORDS),
-            'snooze_reasons' => Dismissals::reasonsFor(null, true)]);
+        ], $items);
     }
 
     /** Whether a to-do can only be snoozed, not marked not relevant (see TodoList::snoozeOnly()). */
@@ -66,12 +92,13 @@ class TodoController extends Controller
     public function history(Request $request): Response
     {
         // Recorded again only when something the list is made from has changed, and never waiting for a run
-        // already under way (the page shows what's recorded).
-        FindingsRegistry::refresh();
+        // already under way (the page shows what's recorded); queued instead when it takes a while.
+        FindingsRegistry::refresh(orQueue: true);
         $scope = is_string($request->query('scope')) ? $request->query('scope') : null;
 
         // Each finding comes with the latest of its history; ?events={finding} sends all of one ("Show all").
         return Inertia::render('todo-history', FindingsRegistry::summary(null, $scope) + [
+            'updating' => FindingsRegistry::queued(),
             'more_events' => Inertia::optional(fn () => ctype_digit((string) $request->query('events')) ? FindingsRegistry::eventsOf((int) $request->query('events')) : null),
         ]);
     }

@@ -3,13 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Calendar\CalendarSync;
+use App\Domain\Intel\ReceiptMatch;
 use App\Domain\Matching\OwnAccounts;
 use App\Http\Presenters\Present;
 use App\Models\AuditEvent;
 use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
-use App\Models\Document;
 use App\Models\JobFind;
 use App\Models\ManualExpense;
 use App\Models\TravelItem;
@@ -163,38 +163,11 @@ class TransactionController extends Controller
             $out[] = ['type' => 'transfer', 'label' => 'Other side: '.($pair->account?->name ?? 'another account'), 'detail' => $pair->effectiveDate()->format('j M Y').' · '.Money::format($pair->amount_pence),
                 'href' => '/transactions?account='.$pair->account_id.'&q='.urlencode($pair->counterparty ?: $pair->description)];
         }
-        // Receipts read from email or uploads for this amount, dated within a few days of it. A receipt is often
-        // uploaded or forwarded long after the payment (at the month's end, at tax time), so it's found by its
-        // amount and the date on it, whenever it arrived; one with no date on it by when it arrived.
-        // A receipt's amount is in hundredths of its currency (as read); the line's other currencies (the account's
-        // own, and the one the shop charged in) are kept in each currency's own units, so they're put in hundredths.
-        $amounts = array_values(array_unique(array_filter([abs($item->amount_pence),
-            $item->original_amount_minor ? Money::toHundredths(abs($item->original_amount_minor), $item->original_currency) : null,
-            $item->merchant_amount_minor ? Money::toHundredths(abs((int) $item->merchant_amount_minor), $item->merchant_currency) : null])));
-        $date = CarbonImmutable::parse($item->effectiveDate()->format('Y-m-d'));
-        $receipts = Document::query()->where('kind', 'receipt')->whereNotNull('extraction')
-            ->whereIn('extraction->receipt->amount_minor', array_merge($amounts, array_map('strval', $amounts)))
-            ->where(fn ($q) => $q->whereNull('received_at')->orWhere('received_at', '>=', $date->subDays(10)->format('Y-m-d 00:00:00')))
-            ->orderBy('received_at')->orderBy('id')->limit(200)->get(['id', 'parent_id', 'original_name', 'email_subject', 'extraction', 'received_at'])
-            ->filter(function (Document $d) use ($amounts, $date) {
-                $r = $d->extraction['receipt'] ?? null;
-                if (! $r || ! in_array((int) ($r['amount_minor'] ?? 0), $amounts, true)) {
-                    return false;
-                }
-                $on = $r['date'] ?? null;
-                if ($on) {
-                    try {
-                        return abs(CarbonImmutable::parse($on)->startOfDay()->diffInDays($date)) <= 4;
-                    } catch (\Throwable) {
-                        return false; // a date that can't be read isn't a match
-                    }
-                }
-
-                return ! $d->received_at || abs(CarbonImmutable::parse($d->received_at->format('Y-m-d'))->diffInDays($date)) <= 10;
-            });
-        foreach ($receipts as $d) {
+        // Receipts read from email or uploads for this amount, dated within a few days of it (Intel\ReceiptMatch: the
+        // same rule the receipt detectors use, so the page and the to-do list always agree).
+        foreach (ReceiptMatch::forPayment($item) as $d) {
             $out[] = ['type' => 'receipt', 'label' => 'Receipt: '.($d->extraction['receipt']['merchant'] ?? $d->email_subject ?? $d->original_name), 'detail' => 'Same amount'.(($d->extraction['receipt']['date'] ?? null) ? ', '.CarbonImmutable::parse($d->extraction['receipt']['date'])->format('j M Y') : ''),
-                'href' => '/documents/'.($d->parent_id ?? $d->id)];
+                'href' => ReceiptMatch::href($d)];
         }
         // What a job's search found it for, as things stand now (as the job page shows it): not once it's on a job
         // (that job is listed above), nor once you've decided it as something a job can't take.

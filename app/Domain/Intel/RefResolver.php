@@ -189,7 +189,7 @@ final class RefResolver
     private static function settings(array $keys): array
     {
         $keys = array_values(array_filter($keys, fn ($k) => ! in_array($k, Setting::ENCRYPTED, true)));
-        $always = [TodoList::AUDIT_RESULT, 'gmail_last_result', 'starling_last_result', 'calendar_synced_at'];
+        $always = [TodoList::AUDIT_RESULT, 'gmail_last_result', 'starling_last_result', 'calendar_synced_at', 'mailbox_last_result'];
         $look = array_values(array_filter($keys, fn ($k) => ! array_key_exists($k, Setting::DEFAULTS) && ! in_array($k, $always, true)));
         $stored = $look === [] ? [] : array_flip(Setting::query()->whereIn('key', $look)->pluck('key')->all());
 
@@ -230,6 +230,7 @@ final class RefResolver
             'gmail_last_result' => 'Gmail connection',
             'starling_last_result' => 'Starling import',
             'calendar_synced_at' => 'Calendar refresh',
+            'mailbox_last_result' => 'Forwarding mailbox',
             'home_postcode' => 'Your home postcode',
             'ai_monthly_cap_usd' => 'This month’s AI spending cap',
             TodoList::AUDIT_RESULT => 'Nightly audit check',
@@ -240,7 +241,7 @@ final class RefResolver
     private static function settingHref(string $key): ?string
     {
         return match ($key) {
-            'gmail_last_result', 'starling_last_result', 'ai_monthly_cap_usd' => '/settings/integrations',
+            'gmail_last_result', 'starling_last_result', 'ai_monthly_cap_usd', 'mailbox_last_result' => '/settings/integrations',
             'calendar_synced_at', 'home_postcode' => '/settings/ledger',
             default => null,
         };

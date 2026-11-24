@@ -2,16 +2,21 @@
 
 namespace App\Domain\Todo;
 
-use App\Domain\Banks\StarlingSync;
 use App\Domain\Gmail\GmailClient;
+use App\Domain\Intel\Contracts\Detector;
 use App\Domain\Intel\Cycle\CycleContext;
+use App\Domain\Intel\DetectorLevels;
+use App\Domain\Intel\Detectors\Health;
 use App\Domain\Intel\Detectors\HmrcUnallocated;
+use App\Domain\Intel\Detectors\JobCloseout;
+use App\Domain\Intel\Detectors\Registry;
 use App\Domain\Intel\Detectors\TodoGroupsDetector;
 use App\Domain\Intel\Detectors\TravelUnclaimed;
 use App\Domain\Intel\Detectors\YearFiledDrift;
 use App\Domain\Intel\FindingDraft;
 use App\Domain\Intel\Grades;
 use App\Domain\Intel\Ranker;
+use App\Domain\Intel\ReceiptMatch;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\Opportunities;
@@ -67,9 +72,9 @@ use Throwable;
 final class TodoList
 {
     public const GROUPS = [
-        'health' => 'Something isn’t working', 'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'checks' => 'Failed checks', 'deadline' => 'Tax return', 'penalties' => 'Fines and interest',
+        'health' => 'Something isn’t working', 'gmail' => 'Gmail', 'imports' => 'Statements held', 'income' => 'Unpaid invoices', 'revenue' => 'Money you may be owed', 'closeout' => 'Jobs to close out', 'checks' => 'Failed checks', 'deadline' => 'Tax return', 'penalties' => 'Fines and interest',
         'tax' => 'Tax records to check', 'offers' => 'Work to answer', 'bookings' => 'Booked with no job yet', 'invoice' => 'Invoices to send', 'claims' => 'Expenses you could claim', 'jobs' => 'Possible jobs', 'transfers' => 'Transfers between your accounts', 'payments' => 'Payments to decide', 'rules' => 'Make it automatic', 'duplicates' => 'Possible duplicate charges', 'stays' => 'Stays and travel to decide',
-        'no_po' => 'Jobs with no PO', 'reconcile' => 'Accounts that don’t match the bank', 'missing' => 'Payments missing from statements', 'documents' => 'Documents held',
+        'no_po' => 'Jobs with no PO', 'reconcile' => 'Accounts that don’t match the bank', 'missing' => 'Payments missing from statements', 'records' => 'Records to tidy', 'documents' => 'Documents held',
     ];
 
     /** A filed return that differs from your records by this much or more is listed (Intel\Detectors\YearFiledDrift). */
@@ -102,6 +107,9 @@ final class TodoList
     /** The last list's total, for the menu badge (see badge()). */
     public const BADGE_KEY = 'todo_badge';
 
+    /** Where what was last found below the fold is kept (see belowFold()). */
+    public const BELOW_KEY = 'todo_below';
+
     /** The longest a kept list is used for, even if nothing it's made from seems to have changed. */
     private const KEEP_SECONDS = 1800;
 
@@ -116,8 +124,8 @@ final class TodoList
      * found for finished jobs and the background work that failed).
      */
     private const WATCHED = [
-        'accounts', 'allocations', 'bank_transactions', 'calendar_job_links', 'categories', 'clients', 'document_facts', 'documents', 'failed_jobs', 'import_batches',
-        'invoices', 'job_candidates', 'job_days', 'manual_expenses', 'merchant_rules', 'mileage_trips', 'opportunities', 'places', 'statement_balances', 'tax_submissions', 'tax_years', 'travel_items',
+        'accounts', 'allocations', 'bank_transactions', 'calendar_job_links', 'categories', 'clients', 'document_facts', 'documents', 'failed_jobs', 'gmail_messages', 'import_batches',
+        'invoice_lines', 'invoices', 'job_candidates', 'job_days', 'manual_expenses', 'merchant_rules', 'mileage_trips', 'opportunities', 'places', 'statement_balances', 'tax_submissions', 'tax_years', 'travel_items',
         'vehicles', 'verifications', 'work_jobs',
     ];
 
@@ -140,11 +148,13 @@ final class TodoList
 
     /**
      * The settings it reads: the Gmail connection, merchants you said no to a rule for, your Making Tax Digital status
-     * (penalties), your home postcode and mileage settings, and how the nightly audit check, Starling and the
-     * calendar last went.
+     * (penalties), your home postcode and mileage settings, how the nightly audit check, Starling, the calendar and
+     * the forwarding mailbox last went, how prominent each kind of finding is, and whether the nightly cycle is on
+     * (it decides whether reads refused at the AI cap are read again on their own).
      */
     private const WATCHED_SETTINGS = ['google_client_id', 'google_client_secret', 'gmail_refresh_token', 'gmail_last_result', 'rule_offers_declined', 'mtd_volunteer_from', 'mtd_exempt', 'mtd_exempt_from', 'mtd_exempt_never_required',
-        'home_postcode', 'mileage_threshold_scope', self::AUDIT_RESULT, 'starling_token', 'starling_last_result', 'calendar_ics_url', 'calendar_synced_at'];
+        'home_postcode', 'mileage_threshold_scope', self::AUDIT_RESULT, 'starling_token', 'starling_last_result', 'calendar_ics_url', 'calendar_synced_at',
+        Health::MAILBOX_RESULT, 'imap_host', DetectorLevels::SETTING, 'intel_receipt_threshold_pence', 'intel_cycle'];
 
     /** This process has written to what the list is made from since it last built it (see watch()). */
     private static bool $changed = false;
@@ -154,9 +164,12 @@ final class TodoList
 
     /**
      * The list, built now. Counts and the total cover everything (less what you snoozed or marked not relevant),
-     * whatever $perGroup is; only the items shown are limited to the first $perGroup of each kind.
+     * whatever $perGroup is; only the items shown are limited to the first $perGroup of each kind. Items of a kind shown
+     * below the fold (Intel\DetectorLevels: a new detector, or one demoted by its false positives) are apart, in
+     * 'below' with its own 'below_counts', and left out of the total, the dashboard and Telegram; the new detectors'
+     * own findings are worked out apart again (belowFold()), so the list never waits for them.
      *
-     * @return array{items:list<array>, counts:array<string,int>, total:int}
+     * @return array{items:list<array>, below:list<array>, counts:array<string,int>, below_counts:array<string,int>, total:int}
      */
     public static function build(int $perGroup = 15): array
     {
@@ -195,7 +208,7 @@ final class TodoList
      */
     public static function scan(bool $withDetectors = true): array
     {
-        $list = self::compute(self::KEEP_PER_GROUP, TodoDismissal::activeKeys(), true, $withDetectors);
+        $list = self::compute(self::KEEP_PER_GROUP, TodoDismissal::activeKeys(), true, $withDetectors, true);
 
         return ['items' => $list['items'], 'failed' => $list['failed'], 'capped' => $list['capped'], 'checked' => $list['checked']];
     }
@@ -252,6 +265,7 @@ final class TodoList
     {
         Cache::forget(self::CACHE_KEY);
         Cache::forget(self::TOTAL_KEY);
+        Cache::forget(self::BELOW_KEY);
     }
 
     /**
@@ -342,13 +356,77 @@ final class TodoList
     }
 
     /**
+     * What new detectors found that's shown below the fold (Intel\DetectorLevels: a new detector, or one demoted by
+     * its false positives), apart from the list: the to-do page loads it after the list, so building the list (for the
+     * page, the dashboard, the menu badge and Telegram) never waits for checks whose findings aren't in it. Ranked and
+     * cut as the list is, less what you snoozed or marked not relevant. What it found is kept until anything it's
+     * made from changes (the list's fingerprint, the audit trail and every setting: belowStamp()), or for KEEP_SECONDS
+     * at most, so opening the to-do page again doesn't work it all out again.
+     *
+     * @return array{items:list<array>, counts:array<string,int>}
+     */
+    public static function belowFold(int $perGroup = 15): array
+    {
+        $hidden = TodoDismissal::activeKeys();
+        $stamp = self::belowStamp($hidden);
+        $kept = Cache::get(self::BELOW_KEY);
+        if (is_array($kept) && ($kept['stamp'] ?? null) === $stamp && is_array($kept['items'] ?? null)) {
+            $items = $kept['items'];
+        } else {
+            $items = self::workOutBelow($hidden);
+            Cache::put(self::BELOW_KEY, ['stamp' => $stamp, 'items' => $items], self::KEEP_SECONDS);
+        }
+        $cut = self::cut(['items' => $items, 'counts' => [], 'total' => 0], $perGroup);
+
+        return ['items' => $cut['below'], 'counts' => array_count_values(array_column($items, 'group'))];
+    }
+
+    /**
+     * A fingerprint of what the findings below the fold are made from: the list's (stamp()), and the audit trail and
+     * every setting, which some of the newer checks read too (rules you changed, a year's lock, the tax savings review).
+     */
+    private static function belowStamp(array $hidden): string
+    {
+        return md5(self::stamp($hidden).'|'.DB::table('audit_events')->max('id').'|'.DB::table('settings')->count().'|'.DB::table('settings')->max('updated_at'));
+    }
+
+    /** @param  array<string, true>  $hidden  @return list<array> every item below the fold, ranked */
+    private static function workOutBelow(array $hidden): array
+    {
+        $levels = DetectorLevels::all();
+        $items = [];
+        $add = function (string $group, int $priority, string $key, string $title, ?string $detail, ?string $href, array $actions = [], array $extra = []) use (&$items) {
+            $items[] = ['key' => $key, 'group' => $group, 'priority' => $priority, 'title' => $title, 'detail' => $detail, 'href' => $href, 'actions' => $actions,
+                'snooze_only' => self::snoozeOnly($key)] + $extra;
+        };
+        foreach (self::otherDetectors() as $detector) {
+            if (! DetectorLevels::belowFold($detector->code(), $levels)) {
+                continue; // raised: it's in the list itself
+            }
+            try {
+                foreach ($detector->detect(new CycleContext) as $draft) {
+                    self::addDraft($add, $draft);
+                }
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
+        $items = array_values(array_filter($items, fn ($i) => collect([$i['key'], ...($i['hidden_under'] ?? [])])->first(fn ($k) => isset($hidden[$k])) === null));
+
+        return Ranker::sort(array_map(fn ($i) => Ranker::annotate(self::described($i) + ['below_fold' => true]), $items), array_flip(array_keys(self::GROUPS)));
+    }
+
+    /**
      * @param  array<string, true>  $hidden  keys you snoozed or marked not relevant
      * @param  bool  $complete  for everything(): no query limits, and hidden items kept and marked
      * @param  bool  $withDetectors  false: leave out the kinds with detectors of their own (TodoGroupsDetector::OWN_DETECTORS)
+     * @param  bool  $below  with the detectors shown below the fold (belowFold()): only for everything()
      * @return array{items:list<array>, counts:array<string,int>, total:int, per_group:int} every item, most urgent first
      */
-    private static function compute(int $limit, array $hidden, bool $complete = false, bool $withDetectors = true): array
+    private static function compute(int $limit, array $hidden, bool $complete = false, bool $withDetectors = true, bool $below = false): array
     {
+        // How prominent each kind is (Intel\DetectorLevels), worked out once.
+        $levels = DetectorLevels::all();
         if (! $complete) {
             self::$changed = false; // what's been written so far is in this list (which is kept)
         }
@@ -363,7 +441,7 @@ final class TodoList
         $cappedKeys = [];
         // What the new checks looked at, for the line under the list: so it's seen they ran, even when nothing's wrong
         // (null: the check went wrong this time).
-        $checked = ['hmrc' => null, 'jobs' => null, 'years' => null];
+        $checked = ['hmrc' => null, 'jobs' => null, 'years' => null, 'closeout' => null];
         // One check going wrong never stops the list: its items are left out this time, and the history keeps them open.
         $try = function (string $prefix, callable $check) use (&$notWorkedOut) {
             try {
@@ -374,9 +452,11 @@ final class TodoList
             }
         };
 
-        // Expend itself: the audit log altered, Starling or the calendar not updating, background work that failed,
-        // documents left unread at the AI spending cap.
-        $try('health:', fn () => self::health($add));
+        // Expend itself: the audit log altered, Starling, the calendar or the mailbox not updating, background work
+        // that failed, documents left unread at the AI spending cap (Intel\Detectors\Health, a detector of its own).
+        if ($withDetectors) {
+            $try('health:', fn () => self::fromDetector(new Health, $add));
+        }
 
         // Gmail access ended (Google's 7-day limit in Testing).
         if (GmailClient::configured() && ! GmailClient::connected() && (Setting::get('gmail_last_result')['ok'] ?? true) === false) {
@@ -423,8 +503,29 @@ final class TodoList
             }
         }
 
-        // Money you may be owed: an invoice for less than its PO, and costs to recharge to the client.
+        // Jobs to close out: for each finished job, what's short of its PO and the recharges not on its invoice, as one
+        // amount (Intel\Detectors\JobCloseout). It says what the two kinds below said for a finished job, so they're
+        // left to it there and nothing is counted twice; worked out even when its own findings are recorded apart, so
+        // the two always agree. If it goes wrong, the two kinds below are listed for every job, as before.
+        $subsumed = [];
+        $try('closeout:', function () use ($add, $withDetectors, &$subsumed, &$checked) {
+            $closeout = new JobCloseout;
+            $drafts = $closeout->detect(new CycleContext);
+            $subsumed = $closeout->subsumed();
+            $checked['closeout'] = $closeout->checked();
+            if ($withDetectors) {
+                foreach ($drafts as $d) {
+                    self::addDraft($add, $d);
+                }
+            }
+        });
+
+        // Money you may be owed: an invoice for less than its PO, and costs to recharge to the client (for a job
+        // still under way: a finished one's are in its close-out).
         foreach (Invoice::query()->whereIn('status', ['issued', 'draft'])->whereNotNull('po_total_minor')->whereColumn('total_minor', '<', 'po_total_minor')->get() as $i) {
+            if (array_key_exists('underbilled:'.$i->id, $subsumed)) {
+                continue;
+            }
             $money = fn (int $minor) => Money::format($minor, $i->currency ?: 'GBP');
             $add('revenue', 1, 'underbilled:'.$i->id, ($i->number ? "Invoice {$i->number}" : 'Draft invoice').' is '.$money($i->po_total_minor - $i->total_minor).' less than its PO',
                 'The PO authorises '.$money($i->po_total_minor).' and the invoice totals '.$money($i->total_minor).'. Check nothing was left off'.($i->status === 'issued' ? ' (an issued invoice can be voided and re-issued).' : '.'),
@@ -434,6 +535,9 @@ final class TodoList
         $onInvoice = Invoice::query()->whereIn('work_job_id', $recharges->pluck('work_job_id')->unique()->values())->whereIn('status', ['issued', 'paid'])
             ->orderByDesc('issue_date')->orderByDesc('id')->get()->unique('work_job_id')->keyBy('work_job_id');
         foreach ($recharges as $t) {
+            if (array_key_exists('recharge:'.$t->id, $subsumed)) {
+                continue;
+            }
             $invoice = $onInvoice[$t->work_job_id] ?? null;
             $add('revenue', 1, 'recharge:'.$t->id, 'Recharge '.$t->provider.' to the client', (TravelItem::KINDS[$t->kind] ?? 'Booking').' '.$t->starts_on->format('j M Y').' for '.$t->job?->title
                 .($invoice ? ": check it's on invoice {$invoice->number}." : ': add it to the invoice when you draft it.'), $invoice ? '/invoices/'.$invoice->id : '/jobs/'.$t->work_job_id, [],
@@ -820,91 +924,45 @@ final class TodoList
                 [self::action('doc_approve', $d->id, 'Approve')]);
         }
 
+        // Every other detector registered (M4's money discoveries, and any added since): each one going wrong never
+        // stops the list. The ones above have their own places in it. One shown below the fold is left to belowFold(),
+        // except for everything().
+        if ($withDetectors) {
+            foreach (self::otherDetectors() as $detector) {
+                if (! $below && DetectorLevels::belowFold($detector->code(), $levels)) {
+                    continue;
+                }
+                $try($detector->code(), function () use ($detector, $add) {
+                    foreach ($detector->detect(new CycleContext) as $draft) {
+                        self::addDraft($add, $draft);
+                    }
+                });
+            }
+        }
+
         // Hide what you snoozed or marked not relevant (or, for everything(), mark it), under its key or another it
         // may be kept under (a gap's dates and amount), count what's left, and rank it: within each priority, most at
-        // stake first (Intel\Ranker), each with what it's about in the shared vocabulary.
+        // stake first (Intel\Ranker), each with what it's about in the shared vocabulary. A kind shown below the fold
+        // (a new detector, or one demoted by its false positives: Intel\DetectorLevels) is info, counted apart; a
+        // close-out that says what items above the fold said before keeps their place.
         $by = fn (array $i) => collect([$i['key'], ...($i['hidden_under'] ?? [])])->first(fn ($k) => isset($hidden[$k]));
         $items = $complete
             ? array_map(fn ($i) => $i + ['hidden' => $by($i) !== null, 'hidden_by' => $by($i) ?? $i['key']], $items)
             : array_values(array_filter($items, fn ($i) => $by($i) === null));
-        $counts = array_count_values(array_column($items, 'group'));
+        $items = array_map(function ($i) use ($levels) {
+            $i = self::described($i);
+
+            return $i + ['below_fold' => isset($i['code']) && empty($i['subsumes']) && DetectorLevels::belowFold($i['code'], $levels)];
+        }, $items);
+        $above = array_filter($items, fn ($i) => ! $i['below_fold']);
+        $counts = array_count_values(array_column($above, 'group'));
         $counts['payments'] = $payments; // only the first few are listed
         $counts = array_filter($counts);
-        $items = Ranker::sort(array_map(fn ($i) => Ranker::annotate(self::described($i)), $items), array_flip(array_keys(self::GROUPS)));
+        $belowCounts = array_count_values(array_column(array_filter($items, fn ($i) => $i['below_fold']), 'group'));
+        $items = Ranker::sort(array_map(fn ($i) => Ranker::annotate($i), $items), array_flip(array_keys(self::GROUPS)));
 
-        return ['items' => $items, 'counts' => $counts, 'total' => array_sum($counts), 'per_group' => $limit,
+        return ['items' => $items, 'counts' => $counts, 'below_counts' => $belowCounts, 'total' => array_sum($counts), 'per_group' => $limit,
             'failed' => array_values(array_unique($notWorkedOut)), 'capped' => array_values(array_unique($cappedKeys)), 'checked' => $checked];
-    }
-
-    /**
-     * Expend itself not working as it should, each first on the list: the audit log altered (found by the nightly
-     * ledger:verify-audit), Starling's last import failing, the calendar not refreshed for over CALENDAR_STALE_HOURS
-     * hours, background work that failed in the last FAILED_JOBS_DAYS days, and documents left unread because the
-     * month's AI spending cap was reached. Each comes back under the same key for as long as it lasts, so it can be
-     * snoozed but not marked not relevant, except the failed work: that's kept by the newest failure, so "Not relevant"
-     * sets aside the failures you've looked at, and the next one brings it back.
-     *
-     * @param  callable  $add  TodoList::compute()'s
-     */
-    private static function health(callable $add): void
-    {
-        $london = fn (string $at) => CarbonImmutable::parse($at, config('app.timezone'))->setTimezone('Europe/London');
-
-        $chain = Setting::get(self::AUDIT_RESULT);
-        if (is_array($chain) && ($chain['ok'] ?? true) === false) {
-            $add('health', 1, 'health:audit', 'The audit log has been altered',
-                'The nightly check'.(isset($chain['at']) ? ' on '.$london($chain['at'])->format('j M Y') : '').' found that event '.($chain['broken_at'] ?? '?')
-                .' doesn’t follow on from the '.($chain['checked'] ?? 0).' before it, so something changed the records outside Expend. Nothing was changed because of it. '
-                .'Compare the records with a backup before you lock or file a year.', null);
-        }
-
-        $starling = Setting::get('starling_last_result');
-        if (is_array($starling) && StarlingSync::connected()) {
-            $failing = collect($starling['results'] ?? [])->filter(fn ($r) => ($r['ok'] ?? true) === false)->pluck('account')->filter()->unique()->values();
-            if ($failing->isNotEmpty()) {
-                $add('health', 1, 'health:starling', 'Starling import failed: '.$failing->implode(', '),
-                    'The automatic import'.(isset($starling['at']) ? ' on '.$london($starling['at'])->format('j M Y, H:i') : '').' didn’t finish, so the newest payments may be missing. '
-                    .'Check the connection in Settings › Integrations, or import the statement yourself.', '/settings/integrations');
-            }
-        }
-
-        if (Setting::get('calendar_ics_url')) {
-            $synced = Setting::get('calendar_synced_at');
-            $at = is_string($synced) && $synced !== '' ? $london($synced) : null;
-            if ($at === null || $at->lt(now()->subHours(self::CALENDAR_STALE_HOURS))) {
-                $add('health', 1, 'health:calendar', $at ? 'Calendar not updated since '.$at->format('j M, H:i') : 'Calendar not updated yet',
-                    'It’s read from your calendar link every hour, and jobs are found from it. Check the link in Settings › Ledger still works: calendar apps sometimes issue a new one.', '/settings/ledger');
-            }
-        }
-
-        // Failures from the last week (Expend never clears them, so older ones would stay for good), less the ones you
-        // set aside: up to the newest failure of an item you marked not relevant.
-        $aside = (int) TodoDismissal::query()->whereNull('until')->where('key', 'like', 'health:failed_jobs:%')->pluck('key')
-            ->map(fn (string $k) => (int) substr($k, strlen('health:failed_jobs:')))->max();
-        $recent = DB::table('failed_jobs')->where('id', '>', $aside)->where('failed_at', '>=', now()->subDays(self::FAILED_JOBS_DAYS));
-        $failedJobs = (clone $recent)->count();
-        if ($failedJobs > 0) {
-            $last = (clone $recent)->orderByDesc('id')->first(['id', 'payload', 'failed_at']);
-            $name = class_basename((string) (json_decode((string) $last->payload, true)['displayName'] ?? ''));
-            $what = ['ReadDocument' => 'reading a document', 'ReadTravelEmail' => 'reading a booking email', 'ScanGmail' => 'a Gmail search', 'FindJobs' => 'the job finder',
-                'SyncGmailLabels' => 'the Gmail labels', 'GatherFromGmail' => 'gathering a job’s emails', 'GatherForJob' => 'gathering a job’s records', 'HandleTelegramUpdate' => 'a Telegram message'][$name] ?? ($name ?: 'a task');
-            $add('health', 1, 'health:failed_jobs:'.$last->id, $failedJobs.' background '.($failedJobs === 1 ? 'task' : 'tasks').' failed in the last week',
-                'The newest: '.$what.($last->failed_at ? ', '.$london((string) $last->failed_at)->format('j M Y, H:i') : '').'. '
-                .'On the server, php artisan queue:failed lists them and php artisan ledger:check shows the newest error. '
-                .'Run one again (php artisan queue:retry and its ID) only if it’s still wanted: an old one can read a document or answer a Telegram message a second time. '
-                .'Clear the rest with php artisan queue:forget and its ID, or queue:flush for all of them. '
-                .'Once you’ve looked, mark this not relevant: it comes back if something else fails.', null);
-        }
-
-        // Refused at the cap, or because the read could have taken the month past it (AiUsage::guard: "nearly reached").
-        $capped = Document::query()->where('status', 'failed')->where('error', 'like', '%spending cap%')->pluck('error');
-        $unread = $capped->count();
-        if ($unread > 0) {
-            $nearly = $capped->every(fn ($e) => str_contains((string) $e, 'nearly reached'));
-            $add('health', 1, 'health:ai_cap', $unread.' '.($unread === 1 ? 'document' : 'documents').' not read: the AI spending cap was '.($nearly ? 'nearly reached' : 'reached'),
-                ($nearly ? 'Reading '.($unread === 1 ? 'it' : 'them').' could have taken this month past the cap. ' : '')
-                .'Raise this month’s cap in Settings › Integrations, or wait for next month, then press Read with AI on '.($unread === 1 ? 'it' : 'each').'.', '/documents?status=failed');
-        }
     }
 
     /**
@@ -912,13 +970,23 @@ final class TodoList
      *
      * @param  callable  $add  TodoList::compute()'s
      */
-    private static function fromDetector(HmrcUnallocated|YearFiledDrift $detector, callable $add): ?int
+    private static function fromDetector(Detector $detector, callable $add): ?int
     {
         foreach ($detector->detect(new CycleContext) as $draft) {
             self::addDraft($add, $draft);
         }
 
-        return $detector->checked();
+        return method_exists($detector, 'checked') ? $detector->checked() : null;
+    }
+
+    /** The detectors in its places above (the to-do list's own groups, M1's three, health and the close-out). */
+    private const OWN_PLACES = [TodoGroupsDetector::class, HmrcUnallocated::class, TravelUnclaimed::class, YearFiledDrift::class, Health::class, JobCloseout::class];
+
+    /** @return list<Detector> every other detector registered (Intel\Detectors\Registry), as each list is built */
+    private static function otherDetectors(): array
+    {
+        return array_values(array_map(fn (Detector $d) => clone $d, array_filter(app(Registry::class)->all(),
+            fn (Detector $d) => ! in_array($d::class, self::OWN_PLACES, true))));
     }
 
     /** @param  callable  $add  TodoList::compute()'s */
@@ -959,11 +1027,17 @@ final class TodoList
     /**
      * The key a snooze or "not relevant" is kept under for the item with this key: for a gap with the bank, the gap
      * as it is now (its dates and amount), so one that grows or shrinks comes back; for an account with nothing
-     * imported lately, its last line, so new lines bring it back. Every other item is kept under its own key, as is
-     * a gap or account that isn't there now.
+     * imported lately, its last line, so new lines bring it back; for a job's close-out, its parts as shown (what's
+     * short of the PO, and each recharge: JobCloseout), so a new part brings it back. Every other item is kept under
+     * its own key, as is a gap, account or close-out that isn't there now.
      */
     public static function dismissKeyFor(string $key): string
     {
+        if (preg_match('/^closeout:(\d+)$/', $key, $m)) {
+            $draft = collect((new JobCloseout([(int) $m[1]]))->detect(new CycleContext))->firstWhere('key', $key);
+
+            return $draft?->dismissKey ?? $key;
+        }
         if (! preg_match('/^(gap|stale):(\d+)(?::(\d{4}-\d{2}-\d{2})(:twice|:date)?)?$/', $key, $m) || ($m[1] === 'gap') !== isset($m[3])) {
             return $key;
         }
@@ -988,11 +1062,14 @@ final class TodoList
 
     /**
      * The finding a snooze or "not relevant" is about, by the key it's kept under: a gap's dates and amount (or the
-     * way gaps were kept before) are the gap kept by its first day; an account's last line is the account. Any
-     * other key is its own.
+     * way gaps were kept before) are the gap kept by its first day; an account's last line is the account; a
+     * close-out's parts are the job's close-out. Any other key is its own.
      */
     public static function findingKey(string $key): string
     {
+        if (preg_match('/^(closeout:\d+):.+$/', $key, $m)) {
+            return $m[1];
+        }
         $date = '\d{4}-\d{2}-\d{2}';
         if (preg_match('/^gap:(\d+):('.$date.'):'.$date.':-?\d+(:twice|:date)?$/', $key, $m)) {
             return 'gap:'.$m[1].':'.$m[2].($m[3] ?? '');
@@ -1173,17 +1250,26 @@ final class TodoList
         ]));
     }
 
-    /** The first $perGroup items of each kind, with the counts and total of everything. */
+    /**
+     * The first $perGroup items of each kind, above the fold and below it apart, with the counts and total of
+     * everything.
+     */
     private static function cut(array $list, int $perGroup): array
     {
-        $seen = [];
-        $items = array_values(array_filter($list['items'], function ($i) use (&$seen, $perGroup) {
-            $seen[$i['group']] = ($seen[$i['group']] ?? 0) + 1;
+        $first = function (array $items) use ($perGroup) {
+            $seen = [];
 
-            return $seen[$i['group']] <= $perGroup;
-        }));
+            return array_values(array_filter($items, function ($i) use (&$seen, $perGroup) {
+                $seen[$i['group']] = ($seen[$i['group']] ?? 0) + 1;
 
-        return ['items' => $items, 'counts' => $list['counts'], 'total' => $list['total'], 'checked' => $list['checked'] ?? ['hmrc' => null, 'jobs' => null, 'years' => null]];
+                return $seen[$i['group']] <= $perGroup;
+            }));
+        };
+        $below = array_values(array_filter($list['items'], fn ($i) => $i['below_fold'] ?? false));
+
+        return ['items' => $first(array_values(array_filter($list['items'], fn ($i) => ! ($i['below_fold'] ?? false)))), 'below' => $first($below),
+            'counts' => $list['counts'], 'below_counts' => $list['below_counts'] ?? [], 'total' => $list['total'],
+            'checked' => $list['checked'] ?? ['hmrc' => null, 'jobs' => null, 'years' => null, 'closeout' => null]];
     }
 
     private static function keep(array $list, string $stamp): void
@@ -1202,8 +1288,9 @@ final class TodoList
     private static function stamp(array $hidden): string
     {
         // This code and the detectors and ranking it uses: a new release builds the list afresh.
-        $code = array_map(fn (string $class) => filemtime((new \ReflectionClass($class))->getFileName()),
-            [self::class, HmrcUnallocated::class, YearFiledDrift::class, TravelUnclaimed::class, TodoGroupsDetector::class, Ranker::class, Grades::class]);
+        $classes = [self::class, Ranker::class, Grades::class, DetectorLevels::class, ReceiptMatch::class, FindingDraft::class, ...self::OWN_PLACES,
+            ...array_map(fn (Detector $d) => $d::class, app(Registry::class)->all())];
+        $code = array_map(fn (string $class) => filemtime((new \ReflectionClass($class))->getFileName()), array_values(array_unique($classes)));
 
         return md5(json_encode([today()->format('Y-m-d'), array_keys($hidden), $code, self::tableStamps(self::WATCHED, self::WATCHED_SETTINGS)]));
     }

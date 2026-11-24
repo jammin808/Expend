@@ -294,8 +294,9 @@ class FindingsLifecycleTest extends TestCase
 
     public function test_direction_grade_severity_and_scope_are_recorded(): void
     {
-        $job = WorkJob::query()->create(['title' => 'Arena show', 'starts_on' => '2025-06-01', 'ends_on' => '2025-06-01', 'status' => 'done']);
-        $stay = TravelItem::query()->create(['kind' => 'hotel', 'provider' => 'Premier Inn', 'status' => 'booked', 'starts_on' => '2025-05-31', 'ends_on' => '2025-06-01',
+        // A job still to come: a finished job's recharge is part of its close-out instead (M4, JobCloseoutTest).
+        $job = WorkJob::query()->create(['title' => 'Arena show', 'starts_on' => '2025-07-10', 'ends_on' => '2025-07-10', 'status' => 'booked']);
+        $stay = TravelItem::query()->create(['kind' => 'hotel', 'provider' => 'Premier Inn', 'status' => 'booked', 'starts_on' => '2025-07-09', 'ends_on' => '2025-07-10',
             'amount_minor' => 8900, 'currency' => 'EUR', 'source' => 'manual', 'evidence' => [], 'work_job_id' => $job->id, 'decision' => 'recharge', 'decided_at' => now()]);
         FindingsRegistry::sync();
         $f = Finding::query()->where('key', 'recharge:'.$stay->id)->sole();

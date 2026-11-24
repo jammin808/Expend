@@ -3,7 +3,10 @@
 namespace App\Domain\Ai;
 
 use App\Domain\Documents\Grounding;
+use App\Domain\Intel\Grades;
 use App\Domain\Intel\Provenance;
+use App\Domain\Intel\Ref;
+use App\Domain\Intel\RefResolver;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\Opportunities;
@@ -31,8 +34,11 @@ use App\Models\CalendarEvent;
 use App\Models\Category;
 use App\Models\Document;
 use App\Models\DocumentFact;
+use App\Models\Finding;
 use App\Models\Invoice;
 use App\Models\JobDay;
+use App\Models\ManualExpense;
+use App\Models\MileageTrip;
 use App\Models\Opportunity;
 use App\Models\Setting;
 use App\Models\TaxYear;
@@ -41,6 +47,7 @@ use App\Models\WorkJob;
 use App\Support\Money;
 use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use InvalidArgumentException;
 
 /**
@@ -55,8 +62,11 @@ use InvalidArgumentException;
  */
 final class AssistantTools
 {
-    /** Tools whose results hold other people's words (emails, documents, calendar entries): never instructions. */
-    public const UNTRUSTED = ['read_document', 'search_documents', 'job_sheet', 'calendar', 'list_opportunities', 'po_chase'];
+    /**
+     * Tools whose results hold other people's words (emails, documents, calendar entries): never instructions. The
+     * findings tools return labels, which can be an email's subject or a document's name.
+     */
+    public const UNTRUSTED = ['read_document', 'search_documents', 'job_sheet', 'calendar', 'list_opportunities', 'po_chase', 'findings', 'evidence_for'];
 
     /** What the owner asked, in this question: the only words a job can be created on. */
     private ?string $question = null;
@@ -173,6 +183,18 @@ final class AssistantTools
                     'reply_by' => $str + ['description' => 'YYYY-MM-DD'], 'status' => ['type' => 'string', 'enum' => ['enquiry', 'held', 'offered', 'confirmed']],
                     'hold_rank' => $int, 'po_number' => $str, 'note' => $str,
                 ], ['instruction'])],
+            ['name' => 'findings', 'description' => 'What Expend has found that may need the owner: open findings (money that may be owed to them or by them, missing from the records, '
+                .'at risk or claimable; checks that failed; things not working), for a tax year, a job or an account, or all of them. Each has its kind (code), title, money and which way it '
+                .'goes (direction: owed_to_you, owed_by_you, unrecorded, at_risk, claimable or none; never add amounts across directions or currencies), grade (how far it can be relied on, '
+                .'with its basis), severity, when it was first seen, and the evidence it rests on as refs with plain labels. No document or email text: use evidence_for on a ref for more, '
+                .'and the other tools for details. state=all includes ones dealt with, snoozed or set aside. For a tax year, everything that belongs to it: the year itself, '
+                .'its jobs, payments, invoices and trips (not an account as a whole, such as one with no statement lately: ask by account_id for those).',
+                'inputSchema' => $obj(['tax_year' => $str + ['description' => 'e.g. 2024-25'], 'job_id' => $int, 'account_id' => $int, 'code' => $str + ['description' => 'e.g. job.closeout'],
+                    'state' => ['type' => 'string', 'enum' => ['open', 'all']], 'limit' => $int])],
+            ['name' => 'evidence_for', 'description' => 'What one evidence ref (from findings, e.g. tx:381, inv:12, doc:55#f=po_total@ab12cd34, job:14, fnd:7, audit:9120@1a2b3c4d) points at: '
+                .'its label, whether it is still there, whether it has changed since it was relied on, and the latest double-check of it. For a finding (fnd:), also its evidence. '
+                .'Labels and check results only, never the text of a document or an email.',
+                'inputSchema' => $obj(['ref' => $str], ['ref'])],
             ['name' => 'propose_decision', 'description' => 'Suggest what one transaction is. It is saved as an unconfirmed AI suggestion for the owner to accept or change in the Inbox. Cannot change anything the owner has decided.',
                 'inputSchema' => $obj(['transaction_id' => $int, 'kind' => ['type' => 'string', 'enum' => array_keys(Allocation::KINDS)], 'category_code' => $str,
                     'job_id' => $int, 'business_pct' => $int, 'reason' => $str], ['transaction_id', 'kind', 'reason'])],
@@ -214,8 +236,139 @@ final class AssistantTools
             'create_job' => $this->createJob($input),
             'accept_opportunity' => $this->acceptOpportunity($input),
             'record_opportunity' => $this->recordOpportunity($input),
+            'findings' => $this->findings($input),
+            'evidence_for' => $this->evidenceFor((string) ($input['ref'] ?? '')),
             default => ['error' => "Unknown tool {$name}"],
         };
+    }
+
+    /**
+     * Open findings (or all, with state=all) for a year, a job or an account: what each is, its money and direction, its
+     * grade and the evidence refs with their labels. Never a finding's detail, which can quote an email's sender or a
+     * document; never document or email text.
+     */
+    private function findings(array $in): array
+    {
+        $year = empty($in['job_id']) && empty($in['account_id']) && ! empty($in['tax_year']) && preg_match('/^\d{4}-\d{2}$/', (string) $in['tax_year']) ? (string) $in['tax_year'] : null;
+        $scope = match (true) {
+            ! empty($in['job_id']) => Ref::make('job', (int) $in['job_id']),
+            ! empty($in['account_id']) => Ref::make('acct', (int) $in['account_id']),
+            $year !== null => Ref::make('year', $year),
+            default => null,
+        };
+        $limit = max(1, min(50, (int) ($in['limit'] ?? 25)));
+        $all = ($in['state'] ?? 'open') === 'all';
+        $q = Finding::query()->when(! $all, fn ($q) => $q->whereNull('resolved_at'))->when(! empty($in['code']), fn ($q) => $q->where('code', (string) $in['code']));
+        if ($year !== null) {
+            // A year's findings are the year's own and those about its jobs, payments, invoices and trips.
+            $q->whereIn('id', self::inYear((clone $q), $year) ?: [0]);
+        } elseif ($scope !== null) {
+            $q->where('scope_ref', $scope);
+        }
+        $total = (clone $q)->count();
+        $rows = $q->orderByRaw('resolved_at IS NOT NULL')->orderByDesc('last_seen_at')->orderByDesc('id')->limit($limit)->get();
+        $refs = RefResolver::resolveMany($rows->flatMap(fn (Finding $f) => [$f->subject_ref, $f->scope_ref, ...($f->evidence ?? [])])->filter()->unique()->values()->all());
+        $chip = fn (?string $ref) => $ref !== null && isset($refs[$ref]) ? ['ref' => $ref, 'label' => $refs[$ref]['label'], 'state' => $refs[$ref]['state']] + array_filter(['check' => $refs[$ref]['check']]) : null;
+
+        return [
+            'scope' => $scope ? $chip($scope) ?? ['ref' => $scope] : null,
+            'count' => $total,
+            'note' => 'Money is in pence with its currency; amounts are never added across directions or currencies. Grades: certain, strong, likely, possible, weak.',
+            'findings' => $rows->map(fn (Finding $f) => array_filter([
+                'ref' => 'fnd:'.$f->id, 'code' => $f->code, 'kind' => TodoList::GROUPS[$f->group] ?? $f->group, 'title' => $f->title, 'state' => $f->currentState(),
+                'money' => $f->amount_pence !== null ? self::money((int) $f->amount_pence, $f->currency ?: 'GBP') + ['currency' => $f->currency ?: 'GBP'] : null,
+                'direction' => $f->direction, 'grade' => $f->grade, 'grade_basis' => Grades::forCode($f->code)[1], 'severity' => $f->severity,
+                'first_seen' => $f->first_seen_at?->format('Y-m-d'), 'due_on' => $f->due_on?->format('Y-m-d'), 'your_reason' => $f->note,
+                'about' => $chip($f->subject_ref), 'scope' => $chip($f->scope_ref),
+                'evidence' => array_values(array_filter(array_map($chip, array_slice($f->evidence ?? [], 0, 10)))),
+            ], fn ($v) => $v !== null && $v !== []))->values()->all(),
+        ];
+    }
+
+    /**
+     * The findings (of those $q finds) that belong to a tax year: the year itself (as subject or scope), or a job with
+     * a day in it, a payment, expense or trip recorded in it, an invoice issued in it, or a booking starting in it.
+     * A few queries, one for each kind of record.
+     *
+     * @return list<int>
+     */
+    private static function inYear(Builder $q, string $label): array
+    {
+        $rows = $q->get(['id', 'subject_ref', 'scope_ref']);
+        $period = UkTaxYear::fromLabel($label);
+        [$from, $to] = [$period->startsOn()->format('Y-m-d'), $period->endsOn()->format('Y-m-d')];
+        $ids = [];
+        foreach ($rows as $f) {
+            foreach ([$f->subject_ref, $f->scope_ref] as $ref) {
+                $r = Ref::parse($ref);
+                if ($r !== null && ctype_digit($r['id'])) {
+                    $ids[$r['kind']][(int) $r['id']] = true;
+                }
+            }
+        }
+        $in = fn (string $kind) => array_keys($ids[$kind] ?? []) ?: [0];
+        $belongs = [
+            'year' => [$label => true],
+            'tx' => BankTransaction::query()->whereIn('id', $in('tx'))->where('tax_year', $label)->pluck('id')->flip()->all(),
+            'exp' => ManualExpense::query()->whereIn('id', $in('exp'))->where('tax_year', $label)->pluck('id')->flip()->all(),
+            'trip' => MileageTrip::query()->whereIn('id', $in('trip'))->where('tax_year', $label)->pluck('id')->flip()->all(),
+            'inv' => Invoice::query()->whereIn('id', $in('inv'))->whereDate('issue_date', '>=', $from)->whereDate('issue_date', '<=', $to)->pluck('id')->flip()->all(),
+            'travel' => TravelItem::query()->whereIn('id', $in('travel'))->whereDate('starts_on', '>=', $from)->whereDate('starts_on', '<=', $to)->pluck('id')->flip()->all(),
+            'job' => WorkJob::query()->whereIn('id', $in('job'))->whereDate('starts_on', '<=', $to)->whereDate('ends_on', '>=', $from)->pluck('id')->flip()->all(),
+        ];
+        $out = [];
+        foreach ($rows as $f) {
+            foreach ([$f->subject_ref, $f->scope_ref] as $ref) {
+                $r = Ref::parse($ref);
+                if ($r !== null && isset($belongs[$r['kind']][$r['kind'] === 'year' ? $r['id'] : (int) $r['id']])) {
+                    $out[] = (int) $f->id;
+                    break;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * What one ref points at: its label, whether it's still there and as it was relied on, and its latest check; for a
+     * finding, its evidence too. Labels and check results only. The findings about it, or resting on it, are found by
+     * the record it names, whatever part of it or version is cited (doc:55 finds doc:55#f=po_total@ab12cd34).
+     */
+    private function evidenceFor(string $ref): array
+    {
+        if (! Ref::valid($ref)) {
+            return ['error' => 'Not a ref Expend knows. Refs look like tx:381, inv:12, doc:55 or fnd:7.'];
+        }
+        $resolved = RefResolver::resolveMany([$ref])[$ref];
+        $out = ['ref' => $ref, 'label' => $resolved['label'], 'exists' => $resolved['exists'],
+            'state' => ['ok' => 'as it was', 'source_changed' => 'changed since it was relied on', 'source_missing' => 'no longer there'][$resolved['state']] ?? $resolved['state']]
+            + array_filter(['check' => $resolved['check'], 'link' => $resolved['href']]);
+        if (Ref::kind($ref) === 'fnd' && ($f = Finding::query()->find((int) Ref::parse($ref)['id']))) {
+            $evidence = RefResolver::resolveMany($f->evidence ?? []);
+            $out['finding'] = ['code' => $f->code, 'title' => $f->title, 'state' => $f->currentState(), 'grade' => $f->grade, 'grade_basis' => Grades::forCode($f->code)[1],
+                'evidence' => array_values(array_map(fn ($r) => ['ref' => $r['ref'], 'label' => $r['label'], 'state' => $r['state']] + array_filter(['check' => $r['check']]), $evidence))];
+        } else {
+            // The open findings it's about, or that rest on it: by the record (doc:55), whatever part or version of it
+            // they cite (doc:55#f=po_total@ab12cd34), checked exactly once found.
+            $p = Ref::parse($ref);
+            $base = $p['kind'].':'.$p['id'];
+            $same = fn (?string $r) => $r !== null && ($x = Ref::parse($r)) !== null && $base === $x['kind'].':'.$x['id'];
+            $out['open_findings'] = Finding::query()->whereNull('resolved_at')
+                ->where(function ($q) use ($base) {
+                    foreach (['subject_ref', 'scope_ref'] as $col) {
+                        $q->orWhere($col, $base)->orWhere($col, 'like', $base.'#%')->orWhere($col, 'like', $base.'@%');
+                    }
+                    foreach (['"', '#', '@'] as $end) {
+                        $q->orWhere('evidence', 'like', '%"'.$base.$end.'%');
+                    }
+                })
+                ->orderByDesc('id')->limit(200)->get(['id', 'code', 'title', 'subject_ref', 'scope_ref', 'evidence'])
+                ->filter(fn (Finding $f) => $same($f->subject_ref) || $same($f->scope_ref) || collect($f->evidence ?? [])->contains($same))
+                ->take(10)->map(fn (Finding $f) => ['ref' => 'fnd:'.$f->id, 'code' => $f->code, 'title' => $f->title])->values()->all();
+        }
+
+        return $out;
     }
 
     private function taxGuide(array $in): array
