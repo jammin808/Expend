@@ -28,7 +28,7 @@ export default function Rules({ rules }: { rules: Rule[] }) {
                 <div className="space-y-6">
                     <HeadingSmall
                         title="Merchant rules"
-                        description="Rules pre-fill a suggestion for new transactions from a merchant. They never change anything you've decided. Auto-confirm is off unless you turn it on for a rule."
+                        description="A rule fills in what new payments from a merchant are. It never changes anything you’ve decided. A rule you save with “Suggest this next time” only suggests, for you to confirm, unless you tick Confirm on its own. A rule made with “Always do this” confirms on its own: untick it to check each payment yourself."
                     />
                     <ul className="divide-y rounded-xl border text-sm">
                         {rules.map((r) => (
@@ -50,7 +50,7 @@ export default function Rules({ rules }: { rules: Rule[] }) {
                                                 router.patch(`/settings/rules/${r.id}`, { auto_confirm: !!v }, { preserveScroll: true })
                                             }
                                         />
-                                        Auto-confirm
+                                        Confirm on its own
                                     </label>
                                     <Button
                                         size="sm"
@@ -76,7 +76,9 @@ export default function Rules({ rules }: { rules: Rule[] }) {
                             </li>
                         ))}
                         {rules.length === 0 && (
-                            <li className="text-muted-foreground p-4">No rules yet. Tick “Suggest this next time” when you decide something.</li>
+                            <li className="text-muted-foreground p-4">
+                                No rules yet. Tick “Suggest this next time” when you decide something, or tap “Always do this” when Expend offers it.
+                            </li>
                         )}
                     </ul>
                 </div>

@@ -127,9 +127,10 @@ final class TravelMatcher
         return DB::transaction(function () use ($item, $decision, $jobId, $businessNights, $note, $nights, $payment) {
             $outcome = 'none';
             if ($payment && $decision === 'client_booked') {
-                // Booked and paid by the client: the payment isn't this stay's. Take back any automatic suggestion.
+                // Booked and paid by the client: the payment isn't this stay's. Take back any automatic suggestion:
+                // the matcher withdraws its own suggestion (your decision is the stay's, recorded below).
                 if ($payment->allocations()->get()->every(fn ($a) => ! $a->is_manual && $a->confirmed_at === null) && ! $this->isLocked($payment)) {
-                    $this->writer->clear($payment, 'Not this stay’s payment: booked by the client');
+                    $this->writer->clear($payment, 'Not this stay’s payment: booked by the client', 'matcher');
                 }
                 $item->bank_transaction_id = null;
                 $outcome = 'unlinked';

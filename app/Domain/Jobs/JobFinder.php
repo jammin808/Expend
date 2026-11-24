@@ -7,6 +7,7 @@ use App\Domain\Ai\DocumentReader;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\Grounding;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Travel\TravelMatcher;
 use App\Domain\Verification\Verifier;
 use App\Models\CalendarEvent;
@@ -73,9 +74,18 @@ final class JobFinder
     public function __construct(private AiClient $ai, private TravelMatcher $matcher) {}
 
     /**
+     * Link and propose what fits your jobs. Whoever started the run (the queue, the schedule, or you pressing "Find
+     * jobs now"), what it links, proposes and changes on its own is recorded as the matcher's, never as yours.
+     *
      * @return array{linked:int, proposed:int, ai_checked:int, ai_rejected:int, considered:int}
      */
     public function run(?string $taxYear = null, bool $useAi = true): array
+    {
+        return AuditContext::with('matcher', fn () => $this->search($taxYear, $useAi));
+    }
+
+    /** @return array{linked:int, proposed:int, ai_checked:int, ai_rejected:int, considered:int} */
+    private function search(?string $taxYear, bool $useAi): array
     {
         [$from, $to] = $this->window($taxYear);
         $this->clients = Client::query()->pluck('name', 'id')->filter()->all();

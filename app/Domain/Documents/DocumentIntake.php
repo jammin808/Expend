@@ -23,6 +23,9 @@ final class DocumentIntake
 {
     public const MAX_BYTES = 30 * 1024 * 1024;
 
+    /** Sources that bring documents in without you handing each one over: a Gmail search, the mailbox. */
+    private const ARRIVES_BY_ITSELF = ['gmail', 'email'];
+
     public function store(string $contents, string $name, ?string $mime, string $source, array $meta = [], ?int $parentId = null): Document
     {
         if (strlen($contents) > self::MAX_BYTES) {
@@ -65,7 +68,10 @@ final class DocumentIntake
             $document->update(['text' => $extracted['text'], 'text_status' => $extracted['status']]);
         }
 
-        AuditLog::record('document.received', $document, null, ['name' => $name, 'source' => $source, 'size' => strlen($contents)]);
+        // What arrives by itself (a Gmail search, the mailbox) is received by the system; what you upload or send in
+        // Telegram is yours.
+        AuditLog::record('document.received', $document, null, ['name' => $name, 'source' => $source, 'size' => strlen($contents)], null,
+            in_array($source, self::ARRIVES_BY_ITSELF, true) ? 'system' : null);
 
         if (($meta['held'] ?? false) === false && ! self::readByCaller($source, $parentId)) {
             if ($isEmail) {

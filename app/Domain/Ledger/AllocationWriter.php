@@ -3,6 +3,7 @@
 namespace App\Domain\Ledger;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Matching\TransferPairer;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -11,6 +12,7 @@ use App\Models\ManualExpense;
 use App\Models\TaxYear;
 use App\Support\Money;
 use App\Support\UkTaxYear;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
@@ -20,13 +22,20 @@ use InvalidArgumentException;
  *  - business lines have a category of the right kind;
  *  - automation never overwrites a decision you made or confirmed;
  *  - locked tax years can't change;
- *  - every change is audited.
+ *  - every change is audited, with who really made it: a decision names its maker, and confirming or clearing
+ *    takes the actor of the surrounding AuditContext ('you' outside one);
+ *  - two writers never decide the same line at once: the line and its allocations are locked while they are
+ *    checked and replaced, so the guard above always sees the latest decision.
+ *
+ * Deciding what a line already says changes nothing and records nothing (a nightly pass that comes to the same
+ * suggestion again leaves no trace).
  */
 final class AllocationWriter
 {
     /**
      * @param  list<array{kind:string, category_id?:?int, work_job_id?:?int, amount_pence:int, business_use_pct?:?int, note?:?string}>  $lines
-     * @return bool false when skipped because automation tried to touch a protected decision
+     * @return bool true when the line now says this (written now, or it already did); false when skipped because
+     *              automation tried to touch a protected decision
      */
     public function decide(
         BankTransaction|ManualExpense $source,
@@ -42,10 +51,13 @@ final class AllocationWriter
         $this->assertLines($lines, $amount);
 
         $done = DB::transaction(function () use ($source, $lines, $decidedBy, $confirm, $reason, $ruleId, $taxYear) {
-            $existing = $source->allocations()->get();
+            $existing = $this->lockedAllocations($source, $status);
 
             if ($decidedBy !== 'you' && $existing->contains(fn (Allocation $a) => $a->is_manual || $a->confirmed_at !== null)) {
                 return false;
+            }
+            if ($this->unchanged($status, $existing, $lines, $decidedBy, $confirm, $reason, $ruleId)) {
+                return true; // already says exactly this: nothing to write, nothing to record
             }
 
             $before = $existing->map(fn (Allocation $a) => $this->snapshot($a))->all();
@@ -105,38 +117,95 @@ final class AllocationWriter
         return $text !== null && mb_strlen($text) > $max ? mb_substr($text, 0, $max - 1).'…' : $text;
     }
 
-    /** Accept the current suggestion as it stands. */
-    public function confirm(BankTransaction|ManualExpense $source): void
+    /**
+     * Accept the current suggestion as it stands. Recorded as the surrounding AuditContext's actor: 'you' for your
+     * tap, 'matcher' when a matcher settles a line for you (the other side of a transfer you decided).
+     */
+    public function confirm(BankTransaction|ManualExpense $source, ?string $reason = null): void
     {
         $this->assertUnlocked($this->taxYearOf($source));
+        $actor = AuditContext::actor();
 
-        DB::transaction(function () use ($source) {
-            $allocations = $source->allocations()->get();
+        DB::transaction(function () use ($source, $reason, $actor) {
+            $allocations = $this->lockedAllocations($source);
             if ($allocations->isEmpty()) {
                 throw new InvalidArgumentException('There is nothing to confirm yet. Choose what this is first.');
             }
             $source->allocations()->whereNull('confirmed_at')->update(['confirmed_at' => now()]);
             $source->forceFill(['review_status' => 'confirmed'])->saveQuietly();
-            AuditLog::record('allocation.confirmed', $source, null, $allocations->map(fn ($a) => $this->snapshot($a))->all());
+            AuditLog::record('allocation.confirmed', $source, null, $allocations->map(fn ($a) => $this->snapshot($a))->all(), $reason, $actor);
         });
-        $this->afterYou($source);
+        // Only your own confirmation settles the other side of a pair; a matcher's never sets off another.
+        if ($actor === 'you') {
+            $this->afterYou($source);
+        }
     }
 
     /**
      * Remove the decision so the item goes back to the Inbox.
      *
-     * @param  string  $actor  who cleared it, for the history: 'you', or 'matcher' when an outdated suggestion is taken back
+     * @param  string|null  $actor  who cleared it, for the history: 'matcher' when an outdated suggestion is taken back;
+     *                              when not given, the surrounding AuditContext's actor ('you' outside one)
      */
-    public function clear(BankTransaction|ManualExpense $source, ?string $reason = null, string $actor = 'you'): void
+    public function clear(BankTransaction|ManualExpense $source, ?string $reason = null, ?string $actor = null): void
     {
         $this->assertUnlocked($this->taxYearOf($source));
+        $actor ??= AuditContext::actor();
 
         DB::transaction(function () use ($source, $reason, $actor) {
-            $before = $source->allocations()->get()->map(fn ($a) => $this->snapshot($a))->all();
+            $before = $this->lockedAllocations($source)->map(fn ($a) => $this->snapshot($a))->all();
             $source->allocations()->delete();
             $source->forceFill(['review_status' => 'unreviewed'])->saveQuietly();
             AuditLog::record('allocation.cleared', $source, $before ?: null, null, $reason, $actor);
         });
+    }
+
+    /**
+     * The line's allocations, read afresh with the line and its allocations locked until the surrounding transaction
+     * ends, so another writer waits rather than deciding from what it read before.
+     *
+     * @param  string|null  $status  set to the line's review status as stored
+     * @return EloquentCollection<int, Allocation>
+     */
+    private function lockedAllocations(BankTransaction|ManualExpense $source, ?string &$status = null): EloquentCollection
+    {
+        $status = $source->newQuery()->whereKey($source->getKey())->lockForUpdate()->value('review_status');
+
+        return $source->allocations()->lockForUpdate()->get();
+    }
+
+    /**
+     * Whether the line already says exactly this: the same lines, by the same maker, with the same reason and rule,
+     * confirmed or not alike, and the line's status to match. The Categoriser's marker isn't compared: it's set after
+     * the write, from the reason.
+     *
+     * @param  EloquentCollection<int, Allocation>  $existing
+     */
+    private function unchanged(?string $status, EloquentCollection $existing, array $lines, string $decidedBy, bool $confirm, ?string $reason, ?int $ruleId): bool
+    {
+        if ($existing->isEmpty() || $existing->count() !== count($lines) || $status !== ($confirm ? 'confirmed' : 'suggested')) {
+            return false;
+        }
+        $int = fn ($v) => $v === null ? null : (int) $v;
+        $key = fn (array $l) => json_encode([
+            $l['kind'], $int($l['category_id']), $int($l['work_job_id']), $int($l['invoice_id']), (int) $l['amount_pence'],
+            $int($l['business_use_pct']), $l['note'], $l['decided_by'], (bool) $l['is_manual'], (bool) $l['confirmed'],
+            $int($l['merchant_rule_id']), $l['reason'],
+        ]);
+        $have = $existing->map(fn (Allocation $a) => $key([
+            'kind' => $a->kind, 'category_id' => $a->category_id, 'work_job_id' => $a->work_job_id, 'invoice_id' => $a->invoice_id,
+            'amount_pence' => $a->amount_pence, 'business_use_pct' => $a->business_use_pct, 'note' => $a->note, 'decided_by' => $a->decided_by,
+            'is_manual' => $a->is_manual, 'confirmed' => $a->confirmed_at !== null, 'merchant_rule_id' => $a->merchant_rule_id, 'reason' => $a->reason,
+        ]))->sort()->values()->all();
+        $want = collect($lines)->map(fn (array $l) => $key([
+            'kind' => $l['kind'],
+            'category_id' => in_array($l['kind'], Allocation::NEEDS_CATEGORY, true) ? ($l['category_id'] ?? null) : null,
+            'work_job_id' => $l['work_job_id'] ?? null, 'invoice_id' => $l['invoice_id'] ?? null, 'amount_pence' => $l['amount_pence'],
+            'business_use_pct' => $l['business_use_pct'] ?? null, 'note' => self::fit($l['note'] ?? null), 'decided_by' => $decidedBy,
+            'is_manual' => $decidedBy === 'you', 'confirmed' => $confirm, 'merchant_rule_id' => $ruleId, 'reason' => self::fit($reason),
+        ]))->sort()->values()->all();
+
+        return $have === $want;
     }
 
     /**

@@ -4,6 +4,7 @@ namespace App\Domain\Jobs;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Gmail\GmailClient;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\OwnAccounts;
@@ -59,9 +60,18 @@ final class JobGatherer
     public function __construct(private JobFinder $finder, private AllocationWriter $writer, private Suggester $suggester) {}
 
     /**
+     * Find and link what belongs to the job. However it was started (a new job, "Search again", the Gmail search
+     * that follows), what it links, suggests and takes back on its own is recorded as the matcher's, never as yours.
+     *
      * @return array{linked:int, possible:int, gmail:string, summary:string}
      */
     public function gather(WorkJob $job, bool $searchGmail = true): array
+    {
+        return AuditContext::with('matcher', fn () => $this->gatherNow($job, $searchGmail));
+    }
+
+    /** @return array{linked:int, possible:int, gmail:string, summary:string} */
+    private function gatherNow(WorkJob $job, bool $searchGmail): array
     {
         $job = $job->fresh(['client', 'days']); // its days are read for every item checked: loaded once
         OwnAccounts::flush();

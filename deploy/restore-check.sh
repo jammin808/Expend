@@ -7,16 +7,18 @@
 #       and has the tables that hold your records, and counts the uploaded files; then deletes the decrypted copy.
 #
 #   bash restore-check.sh ledger-<stamp>.tar ledger-backup-private.pem --load <empty database>
-#       also loads the dump into that database (it must exist and be empty) and counts the rows in the main tables.
+#       also loads the dump into that database (it must exist and be empty), counts the rows in the main tables, and
+#       checks the audit trail's chain in the loaded copy, event by event, as `php artisan ledger:verify-audit` does.
 #       Connection: RESTORE_DB_HOST (default 127.0.0.1), RESTORE_DB_PORT (3306), RESTORE_DB_USER, and the password in
-#       MYSQL_PWD. Use a throwaway local database, never the live one.
+#       MYSQL_PWD; RESTORE_DB_TZ is the live database's time zone (default +00:00, UTC, as on the server). Needs
+#       MariaDB 10.2+ or MySQL 8. Use a throwaway local database, never the live one.
 #
 #   --keep <folder>   keep the decrypted database.sql and private/ files there instead of deleting them.
 #
 # Exit code 0 means every check passed.
 set -euo pipefail
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [ $# -ge 2 ] || usage
 BACKUP="$1"; KEY="$2"; shift 2
 LOAD=""; KEEP=""
@@ -74,6 +76,30 @@ files="$(find "$WORK/out/private" -type f 2>/dev/null | wc -l | tr -d ' ')"
 size="$(du -sh "$WORK/out/private" 2>/dev/null | cut -f1)"
 [ -d "$WORK/out/private" ] && ok "uploaded files: $files (${size:-0})" || bad "no private/ folder of uploaded files"
 
+# The audit trail in the loaded copy, checked as AuditLog::verify() does (keep the two in step): every event's hash is
+# the SHA-256 of its fields as AuditLog::hashFor() joins them, each event names the one before it, and the chain's head
+# points at the last event. Times are read in the live database's time zone, as the app wrote them.
+check_audit_chain() {
+    local tz="${RESTORE_DB_TZ:-+00:00}" result total broken head good
+    result="$(q "SET time_zone = '${tz//\'/}';
+        SELECT COUNT(*), COALESCE(MIN(CASE WHEN ok = 1 THEN NULL ELSE id END), 0),
+            (SELECT COUNT(*) FROM audit_heads h WHERE h.id = 1
+                AND NOT (h.hash <=> (SELECT e.hash FROM audit_events e ORDER BY e.id DESC LIMIT 1)))
+        FROM (SELECT id, (prev_hash <=> LAG(hash) OVER (ORDER BY id)) AND hash = SHA2(CONCAT_WS('|',
+                COALESCE(prev_hash, ''), DATE_FORMAT(occurred_at, '%Y-%m-%d %H:%i:%s'), actor, action, subject_type,
+                COALESCE(subject_id, ''), COALESCE(\`before\`, 'null'), COALESCE(\`after\`, 'null'), COALESCE(reason, '')), 256) AS ok
+            FROM audit_events) checked")" || { bad "couldn't check the audit trail's chain (see the error above)"; return; }
+    read -r total broken head <<< "$result"
+    if [ "$broken" != "0" ]; then
+        good="$(q "SELECT COUNT(*) FROM audit_events WHERE id < $broken")"
+        bad "audit trail's chain broken at event $broken after $good good events: an event was changed, added or removed"
+    elif [ "$head" != "0" ]; then
+        bad "audit trail's chain doesn't end at its last event ($total events): events were removed from the end"
+    else
+        ok "audit trail's chain intact ($total events)"
+    fi
+}
+
 if [ -n "$LOAD" ]; then
     HOST="${RESTORE_DB_HOST:-127.0.0.1}"; PORT="${RESTORE_DB_PORT:-3306}"; USER="${RESTORE_DB_USER:?set RESTORE_DB_USER (and the password in MYSQL_PWD)}"
     q() { mysql -h "$HOST" -P "$PORT" -u "$USER" -N -B "$LOAD" -e "$1"; }
@@ -87,6 +113,7 @@ if [ -n "$LOAD" ]; then
             echo "        $t: $(q "SELECT COUNT(*) FROM \`$t\`") rows"
         done
         echo "        latest migration: $(q "SELECT migration FROM migrations ORDER BY id DESC LIMIT 1")"
+        check_audit_chain
     else
         bad "loading the dump into $LOAD failed (see the error above)"
     fi

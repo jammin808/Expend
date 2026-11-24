@@ -14,7 +14,8 @@ use Throwable;
 
 /**
  * Puts a green "✓ Invoiced" label on the PO email in Gmail once the job is invoiced (issued or paid), and
- * takes it off again if the invoice is voided. It only ever adds or removes this one label.
+ * takes it off again if the invoice is voided. It only ever adds or removes this one label. It follows the invoice's
+ * status on its own, so its changes are recorded as the system's, never as yours.
  *
  * The PO email is found, most certain first:
  *   1. the email itself came from a Gmail search;
@@ -65,7 +66,7 @@ final class GmailLabeller
                 ]);
             }
             $added += count($found['ids']);
-            AuditLog::record('gmail.labelled', $job, null, ['label' => self::LABEL, 'messages' => count($found['ids']), 'found_by' => $found['how']]);
+            AuditLog::record('gmail.labelled', $job, null, ['label' => self::LABEL, 'messages' => count($found['ids']), 'found_by' => $found['how']], null, 'system');
         }
 
         // Take the label off where the job is no longer invoiced (its invoice was voided).
@@ -76,7 +77,7 @@ final class GmailLabeller
             $this->modify($stale->pluck('message_id')->all(), 'removeLabelIds', $labelId);
             $removed = $stale->count();
             GmailLabel::query()->whereKey($stale->pluck('id'))->delete();
-            AuditLog::record('gmail.unlabelled', 'Settings', null, ['label' => self::LABEL, 'messages' => $removed]);
+            AuditLog::record('gmail.unlabelled', 'Settings', null, ['label' => self::LABEL, 'messages' => $removed], null, 'system');
         }
 
         if (! $jobId) {

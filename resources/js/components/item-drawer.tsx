@@ -13,7 +13,8 @@ import { Fragment, useEffect, useState } from 'react';
 
 interface Detail {
     item: Item & { import?: string | null; raw?: Record<string, string> };
-    history: { at: string; actor: string; action: string; reason: string | null }[];
+    /** label: the event in plain words, where it has them (a check of the line) */
+    history: { at: string; actor: string; action: string; label?: string; reason: string | null }[];
     events: CalendarEntry[];
     jobs_near: JobRef[];
     links?: { type: string; label: string; detail: string | null; href: string | null }[];
@@ -266,7 +267,7 @@ export function ItemDrawer({
                                     {detail.history.map((h, i) => (
                                         <li key={i}>
                                             <span className="tabular-nums">{h.at}</span> ·{' '}
-                                            {h.action.replace('allocation.', '').replace('import.', 'import ')} by {h.actor}
+                                            {h.label ?? `${h.action.replace('allocation.', '').replace('import.', 'import ')} by ${h.actor}`}
                                             {h.reason ? ` · ${h.reason}` : ''}
                                         </li>
                                     ))}

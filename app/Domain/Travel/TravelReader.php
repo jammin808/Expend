@@ -235,7 +235,8 @@ final class TravelReader
 
         if (! $existing) {
             $item = TravelItem::query()->create($data + ['document_id' => $document->id, 'source_sent_at' => $sentAt]);
-            AuditLog::record('travel.found', $item, null, ['kind' => $item->kind, 'provider' => $item->provider, 'starts_on' => $data['starts_on']]);
+            // Found in an email by Expend, never by you (a Gmail search, or reading the email again).
+            AuditLog::record('travel.found', $item, null, ['kind' => $item->kind, 'provider' => $item->provider, 'starts_on' => $data['starts_on']], null, 'system');
         } else {
             $older = $sentAt && $existing->source_sent_at && $sentAt->lt($existing->source_sent_at);
             if (! $older) {

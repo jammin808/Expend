@@ -109,6 +109,32 @@ final class Telegram
         return $sent;
     }
 
+    /**
+     * The alarm when the nightly check finds the audit log altered (ledger:verify-audit), sent at once to your paired
+     * chat. It says only what was found and where to look: no amounts, names or account details.
+     *
+     * @param  array{checked:int, broken_at:int|null}  $result  AuditLog::verify()'s
+     * @return bool whether Telegram took it
+     */
+    public static function auditAlarm(array $result): bool
+    {
+        $chat = Setting::get('telegram_chat_id');
+        if (! $chat || ! self::token()) {
+            return false;
+        }
+        try {
+            $sent = self::api('sendMessage', ['chat_id' => $chat, 'disable_web_page_preview' => true,
+                'text' => '⚠ Expend’s nightly check found the audit log altered: event '.($result['broken_at'] ?? '?').' doesn’t follow on from the '.$result['checked']
+                    .' before it, so something changed the records outside the app. Nothing was changed because of it. Compare the records with a backup before you lock or file a year: '.url('/todo')]);
+        } catch (Throwable $e) {
+            report($e);
+
+            return false;
+        }
+
+        return (bool) ($sent['ok'] ?? false);
+    }
+
     /** A button press: only from your paired chat, and only the to-do actions. */
     public static function handleButton(array $query, TodoActions $actions): void
     {

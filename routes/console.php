@@ -5,6 +5,7 @@ use App\Domain\Banks\StarlingSync;
 use App\Domain\Calendar\CalendarSync;
 use App\Domain\Gmail\GmailClient;
 use App\Domain\Gmail\GmailScanner;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\Opportunities;
@@ -13,6 +14,7 @@ use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\TransferPairer;
 use App\Domain\Telegram\Telegram;
 use App\Domain\Todo\FindingsRegistry;
+use App\Domain\Todo\TodoList;
 use App\Domain\Verification\Verifier;
 use App\Jobs\FindJobs;
 use App\Jobs\ScanGmail;
@@ -21,6 +23,7 @@ use App\Models\BankTransaction;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\Setting;
+use App\Models\TodoDismissal;
 use App\Models\User;
 use App\Support\Money;
 use App\Support\UkTaxYear;
@@ -31,17 +34,29 @@ use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('ledger:verify-audit', function () {
+    // Safe while events are being written: AuditLog::verify() checks the events against the chain's head as it read it.
     $result = AuditLog::verify();
+    $before = Setting::get(TodoList::AUDIT_RESULT);
+    // Kept for the to-do list, which puts a broken chain first (TodoList::health()) until a check finds it intact.
+    $kept = ['ok' => $result['ok'], 'checked' => $result['checked'], 'broken_at' => $result['broken_at'], 'at' => now()->toIso8601String()];
     if ($result['ok']) {
+        Setting::put(TodoList::AUDIT_RESULT, $kept);
         $this->info("Audit log intact ({$result['checked']} events).");
 
         return 0;
     }
     Log::critical('Audit log chain is broken', $result);
+    // Told on Telegram at once, once for each break: the same break found again the next night is already on the
+    // to-do list. A message that couldn't be sent (Telegram not paired) is tried again at the next check.
+    $known = is_array($before) && ($before['ok'] ?? true) === false && ($before['broken_at'] ?? null) === $result['broken_at'];
+    $kept['alerted_at'] = $known && ! empty($before['alerted_at']) ? $before['alerted_at']
+        : (Telegram::auditAlarm($result) ? now()->toIso8601String() : null);
+    Setting::put(TodoList::AUDIT_RESULT, $kept);
+    TodoList::forget();
     $this->error("Audit log chain broken at event {$result['broken_at']} after {$result['checked']} good events.");
 
     return 1;
-})->purpose('Check the audit log has not been altered');
+})->purpose('Check the audit log has not been altered (a break goes first on the to-do list, and to Telegram at once)');
 
 Artisan::command('ledger:sync-calendar', function (CalendarSync $sync) {
     if (! Setting::get('calendar_ics_url')) {
@@ -101,8 +116,11 @@ Artisan::command('ledger:invoice-nudges', function () {
     }
     Telegram::allowButtons();
     $n = 0;
+    // Not about one you snoozed or marked not relevant on the to-do list: it's the same invoice_overdue item there.
+    $hidden = TodoDismissal::activeKeys();
     $overdue = Invoice::query()->where('status', 'issued')->whereNotNull('due_date')->whereDate('due_date', '<', today())
-        ->where(fn ($q) => $q->whereNull('overdue_nudged_at')->orWhere('overdue_nudged_at', '<', now()->subDays(7)))->get();
+        ->where(fn ($q) => $q->whereNull('overdue_nudged_at')->orWhere('overdue_nudged_at', '<', now()->subDays(7)))->get()
+        ->reject(fn (Invoice $i) => isset($hidden['invoice_overdue:'.$i->id]))->values();
     // What has come in for each, counted as the to-do list counts it (payments linked to it, income for its job).
     $received = InvoicePayments::received($overdue);
     foreach ($overdue as $invoice) {
@@ -161,6 +179,10 @@ Artisan::command('ledger:reset-link', function () {
 Artisan::command('ledger:findings', function () {
     $r = FindingsRegistry::sync();
     $this->info("Findings: {$r['new']} new, {$r['resolved']} resolved, {$r['open']} open.");
+    if (! empty($r['failed'])) {
+        // Their findings are kept open until the check works again (see FindingsRegistry).
+        $this->warn('Not worked out this time (see the log): '.implode(', ', array_map(fn ($p) => rtrim($p, ':'), $r['failed'])).'.');
+    }
 })->purpose('Record what the to-do list finds and what has been dealt with since');
 
 Artisan::command('ledger:categorise', function (Categoriser $categoriser) {
@@ -178,28 +200,30 @@ Artisan::command('ledger:transfers', function (TransferPairer $pairer) {
     $pairs = $pairer->pairAll();
     $one = $pairer->suggestOneSided();
     $this->info("Paired {$pairs} transfers; suggested {$one} more from your names and accounts."
-        .($pairer->cleared ? " Took back {$pairer->cleared} earlier suggestions that no longer hold." : ''));
+        .($pairer->cleared ? " Took back {$pairer->cleared} earlier suggestions that no longer hold." : '')
+        .($pairer->ambiguous ? " {$pairer->ambiguous} ".($pairer->ambiguous === 1 ? 'line' : 'lines').' left for you: which partner is right isn’t clear.' : ''));
 })->purpose('Find money moving between your own accounts, so it is never counted as spending or income');
 
+// The nightly work runs on London time, so it stays in the same quiet hours (and in order) all year round.
 Schedule::command('ledger:sync-calendar')->hourly()->withoutOverlapping();
-Schedule::command('ledger:verify-audit')->dailyAt('03:10');
+Schedule::command('ledger:verify-audit')->dailyAt('03:10')->timezone('Europe/London');
 Schedule::command('ledger:fetch-email')->everyFiveMinutes()->withoutOverlapping();
-// Starling statements, every morning (if connected).
+// Starling statements, every morning (if connected). Imported by the system, not by you, so its history says so.
 Schedule::call(function () {
     if (StarlingSync::connected()) {
-        app(StarlingSync::class)->sync();
+        AuditContext::with('system', fn () => app(StarlingSync::class)->sync(), 'schedule');
     }
 })->dailyAt('06:41')->timezone('Europe/London')->name('starling-import')->withoutOverlapping();
 // What needs you, on Telegram every Monday morning; overdue invoices each weekday.
 Schedule::command('ledger:telegram-digest')->weeklyOn(1, '08:47')->timezone('Europe/London');
 Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('Europe/London');
 // The job finder and the double-check of AI findings, every night; scans get a few second reads a night.
-Schedule::command('ledger:transfers')->dailyAt('04:07')->withoutOverlapping();
-Schedule::command('ledger:categorise')->dailyAt('04:12')->withoutOverlapping();
-Schedule::command('ledger:find-jobs')->dailyAt('04:17')->withoutOverlapping();
-Schedule::command('ledger:opportunities')->dailyAt('04:27')->withoutOverlapping();
-Schedule::command('ledger:recheck')->dailyAt('04:47')->withoutOverlapping();
-Schedule::command('ledger:findings')->dailyAt('05:07')->withoutOverlapping();
+Schedule::command('ledger:transfers')->dailyAt('04:07')->timezone('Europe/London')->withoutOverlapping();
+Schedule::command('ledger:categorise')->dailyAt('04:12')->timezone('Europe/London')->withoutOverlapping();
+Schedule::command('ledger:find-jobs')->dailyAt('04:17')->timezone('Europe/London')->withoutOverlapping();
+Schedule::command('ledger:opportunities')->dailyAt('04:27')->timezone('Europe/London')->withoutOverlapping();
+Schedule::command('ledger:recheck')->dailyAt('04:47')->timezone('Europe/London')->withoutOverlapping();
+Schedule::command('ledger:findings')->dailyAt('05:07')->timezone('Europe/London')->withoutOverlapping();
 // Re-run the Gmail searches weekly for this tax year (and last year until the 31 January deadline), so new,
 // changed and cancelled bookings and POs are picked up. Emails already read are skipped.
 Schedule::call(function () {
@@ -215,7 +239,7 @@ Schedule::call(function () {
             ScanGmail::dispatch($search, $year);
         }
     }
-})->weeklyOn(0, '05:23')->name('gmail-rescan');
+})->weeklyOn(0, '05:23')->timezone('Europe/London')->name('gmail-rescan');
 // Catch-up for the Gmail "✓ Invoiced" label (POs linked after invoicing, or a run that failed).
 Schedule::job(new SyncGmailLabels)->hourly()->name('gmail-labels')->withoutOverlapping();
 // Shared hosting has no long-running worker: process queued work (document reading, Telegram) every minute.

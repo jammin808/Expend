@@ -680,7 +680,8 @@ Interfaces:
 
 Interfaces and code that changes:
 
-- **`Intel\AuditContext::with(actor, channel, correlation, runId, fn)`.** It is set by:
+- **`Intel\AuditContext::with(actor, fn, channel, correlation, runId)`** (built in M2 with the work second; pass
+  the rest by name). It is set by:
   - a web middleware (`app/Http/Middleware/AuditChannel.php` **(new)**, registered in `bootstrap/app.php`);
   - `Telegram::handleButton`;
   - the cycle runner;
@@ -723,8 +724,9 @@ Interfaces and code that changes:
   Locking with a failing check or unreviewed acts needs a reason. Today the event is bare.
 - **The seal:** one `cycle.completed` audit event per run, actor `system`, carrying the run id, its counts and the
   findings digest, written inside the transaction that ends the run.
-- **`deploy/restore-check.sh`** (M2): with `--load`, also runs `php artisan ledger:verify-audit` against the loaded
-  copy (`DB_DATABASE=$LOAD`). Today it only loads the dump.
+- **`deploy/restore-check.sh`** (M2): with `--load`, also checks the audit chain of the loaded copy, in SQL, the
+  way `AuditLog::verify()` does. It never runs `ledger:verify-audit` there: that command writes a setting and sends
+  the Telegram alarm, and a restored copy holds the owner's Telegram token.
 
 ---
 
@@ -1169,7 +1171,8 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
   - TodoList gains a `health` group: chain broken, `starling_last_result` failed, `calendar_synced_at` over
     2 hours, `failed_jobs` present, documents failed on the AI cap.
 - **Timezones:** nightly schedules pinned to Europe/London.
-- **Restore check:** `deploy/restore-check.sh --load` runs `ledger:verify-audit` on the loaded copy.
+- **Restore check:** `deploy/restore-check.sh --load` checks the audit chain of the loaded copy in SQL (never
+  `ledger:verify-audit`, which writes and sends the Telegram alarm).
 - **Rules page:** `settings/rules.tsx` wording corrected.
 
 **Files.**

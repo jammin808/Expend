@@ -8,6 +8,7 @@ use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\ImportBatch;
+use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -16,7 +17,8 @@ use Tests\TestCase;
 
 /**
  * The backup really restores: deploy/backup.sh run in a copy of the server's folder layout, then deploy/restore-check.sh
- * with the private key loads it into an empty database, and every table matches the original row for row.
+ * with the private key loads it into an empty database, every table matches the original row for row, and the audit
+ * trail's chain is checked in the loaded copy (a changed event fails the check).
  *
  * Runs only against MySQL/MariaDB with the command-line tools installed, and needs rights to create databases named
  * ledger_restore_*. It uses its own scratch databases, never the test database.
@@ -78,26 +80,21 @@ class BackupRestoreTest extends TestCase
             'description' => 'ALEX SMITH EVENTS — café “PO-1”', 'merchant_key' => 'ALEX SMITH EVENTS', 'amount_pence' => 123_456, 'raw' => ['note' => 'ünïcode ✓'], 'fingerprint' => md5('x'), 'occurrence' => 1]);
         app(AllocationWriter::class)->decide($tx, AllocationWriter::lines(123_456, 'business_income', Category::query()->where('code', 'turnover')->value('id')));
         AuditLog::record('test.backup', 'Test', null, ['ok' => true]);
+        // What the chain check has to read exactly as the app wrote it: accents, quotes, slashes, decimals, no subject id.
+        AuditLog::record('test.backup', 'Test', ['rate' => 1.5, 'path' => 'a/b'], ['note' => 'café “PO-1” ✓', 'nested' => ['x' => [1, 2]], 'empty' => []], 'Checked by Alex Smith', 'system');
         DB::setDefaultConnection('mysql');
     }
 
-    /** @return array<string, string|null> table => checksum */
-    private function checksums(string $db): array
+    /**
+     * Back up the source database the way the server does, then check the backup with restore-check.sh, loading it
+     * into $dst.
+     *
+     * @return array{0:ProcessResult, 1:string} the check's result, and the backup file
+     */
+    private function backUpAndCheck(string $src, string $dst, string $name): array
     {
-        $tables = collect(DB::connection($db)->select('SHOW FULL TABLES WHERE Table_type = "BASE TABLE"'))->map(fn ($r) => array_values((array) $r)[0])->sort()->values();
-
-        return $tables->mapWithKeys(fn ($t) => [$t => (string) (DB::connection($db)->selectOne("CHECKSUM TABLE `{$t}`")->Checksum ?? '')])->all();
-    }
-
-    public function test_a_backup_made_on_the_server_restores_completely(): void
-    {
-        $this->requirements();
-        $src = $this->scratch('src');
-        $dst = $this->scratch('dst');
-        $this->fill($src);
-
         // The server's layout: app/current -> releases/r1, with the .env, the public key and uploads in app/shared.
-        $this->dir = sys_get_temp_dir().'/ledger-backup-test-'.getmypid();
+        $this->dir = sys_get_temp_dir().'/ledger-backup-'.$name.'-'.getmypid();
         File::deleteDirectory($this->dir);
         $app = $this->dir.'/domain/app';
         File::ensureDirectoryExists($app.'/releases/r1/deploy');
@@ -118,16 +115,43 @@ class BackupRestoreTest extends TestCase
         $this->assertTrue($backup->successful(), $backup->errorOutput().$backup->output());
         $file = glob($this->dir.'/backups/ledger-*.tar')[0] ?? null;
         $this->assertNotNull($file);
+
+        $check = Process::env(['RESTORE_DB_HOST' => $c['host'], 'RESTORE_DB_PORT' => (string) $c['port'], 'RESTORE_DB_USER' => $c['username'], 'MYSQL_PWD' => $c['password']])
+            ->run(['bash', base_path('deploy/restore-check.sh'), $file, $keys.'/private.pem', '--load', $dst, '--keep', $this->dir.'/restored']);
+
+        return [$check, $file];
+    }
+
+    /** @return array<string, string|null> table => checksum */
+    private function checksums(string $db): array
+    {
+        $tables = collect(DB::connection($db)->select('SHOW FULL TABLES WHERE Table_type = "BASE TABLE"'))->map(fn ($r) => array_values((array) $r)[0])->sort()->values();
+
+        return $tables->mapWithKeys(fn ($t) => [$t => (string) (DB::connection($db)->selectOne("CHECKSUM TABLE `{$t}`")->Checksum ?? '')])->all();
+    }
+
+    public function test_a_backup_made_on_the_server_restores_completely(): void
+    {
+        $this->requirements();
+        $src = $this->scratch('src');
+        $dst = $this->scratch('dst');
+        $this->fill($src);
+        DB::setDefaultConnection($src);
+        $this->assertTrue(AuditLog::verify()['ok']);
+        DB::setDefaultConnection('mysql');
+
+        [$check, $file] = $this->backUpAndCheck($src, $dst, 'test');
         $this->assertFileExists($file.'.sha256');
         // The server can't read its own backups: nothing in the archive is plain text.
         $this->assertStringNotContainsString('ALEX SMITH EVENTS', (string) file_get_contents($file));
 
-        $check = Process::env(['RESTORE_DB_HOST' => $c['host'], 'RESTORE_DB_PORT' => (string) $c['port'], 'RESTORE_DB_USER' => $c['username'], 'MYSQL_PWD' => $c['password']])
-            ->run(['bash', base_path('deploy/restore-check.sh'), $file, $keys.'/private.pem', '--load', $dst, '--keep', $this->dir.'/restored']);
         $this->assertSame(0, $check->exitCode(), $check->output().$check->errorOutput());
         $this->assertStringContainsString('Backup restores correctly.', $check->output());
         $this->assertStringContainsString('checksum matches', $check->output());
         $this->assertStringContainsString('uploaded files: 1', $check->output());
+        $events = DB::connection($src)->table('audit_events')->count();
+        $this->assertGreaterThanOrEqual(3, $events);
+        $this->assertStringContainsString("audit trail's chain intact ({$events} events)", $check->output());
 
         // Every table, row for row.
         $before = $this->checksums($src);
@@ -135,6 +159,27 @@ class BackupRestoreTest extends TestCase
         $this->assertSame($before, $this->checksums($dst));
         $this->assertSame(123_456, (int) DB::connection($dst)->table('bank_transactions')->value('amount_pence'));
         $this->assertSame("Date,Amount\n2025-06-10,1234.56\n", File::get($this->dir.'/restored/private/statements/statement.csv'));
+    }
+
+    public function test_a_changed_audit_event_fails_the_check_on_the_restored_copy(): void
+    {
+        $this->requirements();
+        $src = $this->scratch('tsrc');
+        $dst = $this->scratch('tdst');
+        $this->fill($src);
+        // Somebody edits a recorded reason straight in the database (the app itself never updates an event).
+        $tampered = (int) DB::connection($src)->table('audit_events')->where('action', 'allocation.decided')->value('id');
+        DB::connection($src)->table('audit_events')->where('id', $tampered)->update(['reason' => 'Changed afterwards']);
+        $good = DB::connection($src)->table('audit_events')->where('id', '<', $tampered)->count();
+
+        [$check] = $this->backUpAndCheck($src, $dst, 'tamper');
+
+        $this->assertNotSame(0, $check->exitCode(), $check->output());
+        $this->assertStringContainsString("FAIL  audit trail's chain broken at event {$tampered} after {$good} good events", $check->output());
+        $this->assertStringContainsString('Backup check FAILED.', $check->output());
+        // The app's own check of the copy agrees.
+        DB::setDefaultConnection($dst);
+        $this->assertSame(['ok' => false, 'checked' => $good, 'broken_at' => $tampered], AuditLog::verify());
     }
 
     public function test_a_wrong_key_or_a_damaged_file_is_reported(): void

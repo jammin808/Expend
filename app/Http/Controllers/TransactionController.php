@@ -11,6 +11,7 @@ use App\Models\Document;
 use App\Models\JobFind;
 use App\Models\ManualExpense;
 use App\Models\TravelItem;
+use App\Models\Verification;
 use App\Support\Money;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
@@ -72,6 +73,22 @@ class TransactionController extends Controller
         ]);
     }
 
+    /**
+     * A check of the line (verification.*, by the checker) in plain words for its history: what the check found, as
+     * the Checks page words it, with its summary as the reason. Nothing for any other event.
+     *
+     * @return array{label?:string, reason?:?string}
+     */
+    private static function checkWords(AuditEvent $e): array
+    {
+        if (! str_starts_with($e->action, 'verification.')) {
+            return [];
+        }
+        $status = substr($e->action, strlen('verification.'));
+
+        return ['label' => Verification::LABELS[$status] ?? ucfirst(str_replace('_', ' ', $status)), 'reason' => $e->reason ?? ($e->after['summary'] ?? null)];
+    }
+
     /** Detail for the side panel: history and what was on that day. */
     public function show(string $source, int $id): JsonResponse
     {
@@ -81,7 +98,8 @@ class TransactionController extends Controller
 
         $history = AuditEvent::query()->where('subject_type', class_basename($item))->where('subject_id', $item->id)
             ->orderByDesc('id')->limit(50)->get()
-            ->map(fn (AuditEvent $e) => ['at' => $e->occurred_at->format('Y-m-d H:i'), 'actor' => $e->actor, 'action' => $e->action, 'reason' => $e->reason, 'after' => $e->after]);
+            ->map(fn (AuditEvent $e) => self::checkWords($e)
+                + ['at' => $e->occurred_at->format('Y-m-d H:i'), 'actor' => $e->actor, 'action' => $e->action, 'reason' => $e->reason, 'after' => $e->after]);
 
         $date = $item instanceof BankTransaction ? $item->effectiveDate()->format('Y-m-d') : $item->spent_on->format('Y-m-d');
 

@@ -45,6 +45,12 @@ use ZBateson\MailMimeParser\MailMimeParser;
  */
 final class Verifier
 {
+    /** Each kind of check's subject as the audit trail names it (the model's name, as AuditLog records a model). */
+    private const AUDIT_SUBJECTS = [
+        'document' => 'Document', 'travel_item' => 'TravelItem', 'job_candidate' => 'JobCandidate',
+        'calendar_link' => 'CalendarJobLink', 'transaction' => 'BankTransaction',
+    ];
+
     /** "PO", "P.O.", "P/O" or "purchase order". */
     private const PO_WORD = '(?:P(?:\.\s?|\s?\/\s?)?O\.?|purchase\s+order)';
 
@@ -412,7 +418,7 @@ final class Verifier
                 if ($ok && in_array($field, ['starts_on', 'ends_on'], true) && $values[$field]) {
                     $ok = Grounding::dateInQuote($values[$field], $quote);
                 } elseif ($ok && $field === 'amount' && $values['amount'] !== null) {
-                    $ok = Grounding::amountInQuote($values['amount'], $quote);
+                    $ok = Grounding::amountInQuote($values['amount'], $quote) && Grounding::amountInText($text, $quote, $values['amount']);
                 } elseif ($ok && $field === 'reference' && $values['reference']) {
                     $ok = Grounding::quoteFound($quote, $values['reference']);
                 }
@@ -632,7 +638,9 @@ final class Verifier
             'status' => $status, 'method' => $method, 'checks' => array_slice($checks, 0, 80), 'summary' => mb_substr($summary, 0, 300), 'checked_at' => now(),
         ]);
         if (! $previous || $previous->status !== $status) {
-            AuditLog::record('verification.'.$status, $type, null, ['id' => $id, 'method' => $method, 'summary' => $v->summary], null, 'checker');
+            // Recorded against the thing checked (as its model is named in the audit trail), so it shows in its history.
+            AuditLog::record('verification.'.$status, self::AUDIT_SUBJECTS[$type] ?? $type, null,
+                ['check' => $type, 'id' => $id, 'method' => $method, 'summary' => $v->summary], null, 'checker', $id);
         }
 
         return $v;

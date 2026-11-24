@@ -3,6 +3,7 @@
 namespace App\Domain\Matching;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Ledger\AllocationWriter;
 use App\Models\Account;
 use App\Models\Allocation;
@@ -50,15 +51,21 @@ final class TransferPairer
     /** Suggestions of this class that a run took back because they no longer hold (for a message). */
     public int $cleared = 0;
 
+    /**
+     * Lines a run left unpaired because two partners fitted equally well (as sure, as near), or because the partner
+     * that fitted them best was caught up in such a tie: which pairing is right is for you to say, so none is guessed.
+     */
+    public int $ambiguous = 0;
+
     /** @var array<int, bool> */
     private array $namesAnother = [];
 
     public function __construct(private AllocationWriter $writer) {}
 
     /**
-     * Pair both sides where they're both imported. After an import, only around the new statements' dates; a full
-     * run (nightly, after a deploy, after you change your names) first takes back pairs of its own that no longer
-     * hold.
+     * Pair both sides where they're both imported. After an import, only around the new statements' dates (with the
+     * lines those could pair with, whatever their dates); a full run (nightly, after a deploy, after you change your
+     * names) first takes back pairs of its own that no longer hold.
      *
      * @param  list<int>|null  $batchIds  the imports just made, or null for everything
      * @return int pairs made
@@ -82,8 +89,21 @@ final class TransferPairer
         }
 
         // Light rows first, so only lines with a possible partner are loaded in full.
-        $slim = $this->pairable($locked)->when($window, fn ($q) => $q->whereBetween('posted_on', $window))
-            ->toBase()->get(['id', 'account_id', 'amount_pence', 'posted_on']);
+        $columns = ['id', 'account_id', 'amount_pence', 'posted_on'];
+        $slim = $this->pairable($locked)->when($window, fn ($q) => $q->whereBetween('posted_on', $window))->toBase()->get($columns);
+        $seeds = null;
+        if ($window) {
+            // The lines around the new statements are paired just as a full run would pair them. A partner, or a
+            // rival for one, can be just outside the window, and a tie can reach further through a chain of lines,
+            // so every line of the same amounts is looked at, whatever its date; only the chains that reach a line
+            // in the window are paired here.
+            $seeds = array_fill_keys($slim->pluck('id')->map(fn ($id) => (int) $id)->all(), true);
+            $amounts = $slim->map(fn ($r) => abs((int) $r->amount_pence))->unique()->values();
+            $slim = collect();
+            foreach ($amounts->chunk(200) as $chunk) {
+                $slim = $slim->merge($this->pairable($locked)->whereIn('amount_pence', [...$chunk->all(), ...$chunk->map(fn ($p) => -$p)->all()])->toBase()->get($columns));
+            }
+        }
         $day = fn ($r) => intdiv((int) strtotime(substr((string) $r->posted_on, 0, 10).' 00:00:00 UTC'), 86400);
         $outs = $slim->where('amount_pence', '<', 0)->groupBy(fn ($r) => -$r->amount_pence);
         $pairs = [];
@@ -94,6 +114,16 @@ final class TransferPairer
                     $pairs[] = [(int) $in->id, (int) $out->id, $days];
                 }
             }
+        }
+        if ($seeds !== null) {
+            $group = self::groups($pairs);
+            $reached = [];
+            foreach ($group as $id => $root) {
+                if (isset($seeds[$id])) {
+                    $reached[$root] = true;
+                }
+            }
+            $pairs = array_values(array_filter($pairs, fn ($p) => isset($reached[$group[$p[0]]])));
         }
         if (! $pairs) {
             return 0;
@@ -117,17 +147,119 @@ final class TransferPairer
         }
         usort($scored, fn ($a, $b) => [$b[0], $a[1], $a[2], $a[3]] <=> [$a[0], $b[1], $b[2], $b[3]]);
 
-        $used = [];
+        // Equally good pairs (as sure, as near) are taken together, joined where they share a line. A pair on its own
+        // is made. Where lines have more than one equally good partner, none is guessed and every line joined to
+        // them is left for you: so is a line whose best partner left is one of those (it would have had it, had the
+        // tie gone the other way), and no weaker partner is guessed for any of them instead. The one exception is
+        // lines that are all alike (the same accounts, the same days, each fitting each): which pairs with which
+        // changes nothing, so they're paired in the order they came.
+        $linked = [];
+        $left = [];
         $paired = 0;
-        foreach ($scored as [, , $inId, $outId]) {
-            if (isset($used[$inId]) || isset($used[$outId])) {
-                continue;
+        foreach (self::levels($scored) as $level) {
+            $open = array_values(array_filter($level, fn ($p) => ! isset($linked[$p[2]]) && ! isset($linked[$p[3]])));
+            $group = self::groups(array_map(fn ($p) => [$p[2], $p[3]], $open));
+            $parts = [];
+            foreach ($open as $p) {
+                $parts[$group[$p[2]]][] = $p;
             }
-            $used[$inId] = $used[$outId] = true;
-            $paired += (int) $this->link($rows[$inId], $rows[$outId]);
+            foreach ($parts as $part) {
+                $lines = array_values(array_unique([...array_column($part, 2), ...array_column($part, 3)]));
+                $clear = ! array_filter($lines, fn ($id) => isset($left[$id]));
+                if ($clear && (count($part) === 1 || $this->alike($part, $rows))) {
+                    foreach ($part as [, , $inId, $outId]) {
+                        if (! isset($linked[$inId]) && ! isset($linked[$outId])) {
+                            $linked[$inId] = $linked[$outId] = true;
+                            $paired += (int) $this->link($rows[$inId], $rows[$outId]);
+                        }
+                    }
+
+                    continue;
+                }
+                foreach ($lines as $id) {
+                    $this->ambiguous += (int) ! isset($left[$id]);
+                    $left[$id] = true;
+                }
+            }
         }
 
         return $paired;
+    }
+
+    /**
+     * Scored pairs, already in order, in runs of the same strength and days apart.
+     *
+     * @param  list<array{0:int, 1:int, 2:int, 3:int}>  $scored  [strength, days, in id, out id]
+     * @return list<list<array{0:int, 1:int, 2:int, 3:int}>>
+     */
+    private static function levels(array $scored): array
+    {
+        $levels = [];
+        $at = null;
+        foreach ($scored as $p) {
+            if ($at !== [$p[0], $p[1]]) {
+                $at = [$p[0], $p[1]];
+                $levels[] = [];
+            }
+            $levels[array_key_last($levels)][] = $p;
+        }
+
+        return $levels;
+    }
+
+    /**
+     * Lines joined into groups through the given links (directly or through other lines): line id => the group.
+     *
+     * @param  iterable<array{0:int, 1:int}>  $links
+     * @return array<int, int>
+     */
+    private static function groups(iterable $links): array
+    {
+        $parent = [];
+        $find = function (int $id) use (&$parent): int {
+            $parent[$id] ??= $id;
+            while ($parent[$id] !== $id) {
+                $id = $parent[$id] = $parent[$parent[$id]];
+            }
+
+            return $id;
+        };
+        foreach ($links as [$a, $b]) {
+            [$ra, $rb] = [$find((int) $a), $find((int) $b)];
+            if ($ra !== $rb) {
+                $parent[max($ra, $rb)] = min($ra, $rb);
+            }
+        }
+        $groups = [];
+        foreach (array_keys($parent) as $id) {
+            $groups[$id] = $find($id);
+        }
+
+        return $groups;
+    }
+
+    /**
+     * Equally good pairs whose lines are all alike: the money in all on one account on one day, the money out all on
+     * one account on one day, and each fitting each. Which pairs with which changes nothing in your books.
+     *
+     * @param  list<array{0:int, 1:int, 2:int, 3:int}>  $part
+     * @param  Collection<int, BankTransaction>  $rows
+     */
+    private function alike(array $part, Collection $rows): bool
+    {
+        $ins = array_values(array_unique(array_column($part, 2)));
+        $outs = array_values(array_unique(array_column($part, 3)));
+        if (count($part) !== count($ins) * count($outs)) {
+            return false;
+        }
+        foreach ([$ins, $outs] as $side) {
+            $where = fn (int $id) => $rows[$id]->account_id.'|'.$rows[$id]->posted_on?->format('Y-m-d');
+            if (count(array_unique(array_map($where, $side))) !== 1) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** Link the two sides and suggest each as a transfer, unless it's already decided as one. */
@@ -303,7 +435,8 @@ final class TransferPairer
             $partnerWhole = $partner->allocations->every(fn (Allocation $a) => $a->kind === 'transfer');
             if ($partnerSuggested && $partnerWhole && ! in_array($partnerYear, self::lockedYears(), true)) {
                 try {
-                    $this->writer->confirm($partner);
+                    // The matcher settles its own suggestion because of your decision: recorded as the matcher's.
+                    AuditContext::with('matcher', fn () => $this->writer->confirm($partner, 'Its other side was decided as a transfer'));
                 } catch (InvalidArgumentException) {
                     // locked since: left as it is
                 }
@@ -325,7 +458,8 @@ final class TransferPairer
             AuditLog::record('transfer.unpaired', $tx, ['transfer_pair_id' => $partner->id], ['transfer_pair_id' => null], 'You decided it isn’t a transfer');
             AuditLog::record('transfer.unpaired', $partner, ['transfer_pair_id' => $tx->id], ['transfer_pair_id' => null], 'You decided its other side isn’t a transfer');
             if ($partnerSuggested) {
-                $this->writer->clear($partner, 'Its other side was decided as not a transfer');
+                // The matcher takes back its own suggestion because of your decision: recorded as the matcher's.
+                $this->writer->clear($partner, 'Its other side was decided as not a transfer', 'matcher');
             }
         });
     }

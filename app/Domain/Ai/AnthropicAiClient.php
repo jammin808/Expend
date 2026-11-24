@@ -30,35 +30,42 @@ final class AnthropicAiClient implements AiClient
             throw new RuntimeException('Add your Claude API key in Settings › AI first.');
         }
 
-        AiUsage::guard();
         $client = new Client(apiKey: $key, requestOptions: $this->requestOptions);
         $request = $params + [
             'model' => AiConfig::model(),
             'betas' => ['server-side-fallback-2026-07-01'],
             'fallbacks' => 'default',
         ];
+        // The most this call could cost is set aside first, so it can't take the month past the cap.
+        $reservation = AiUsage::guard(AiUsage::estimate($request));
 
         $webOff = false;
         try {
-            $message = $client->beta->messages->create(...$request);
-        } catch (BadRequestException $e) {
-            if (! self::hasServerTools($request['tools'] ?? [])) {
-                throw $e;
-            }
-            $apiMessage = trim((string) ($e->getAPIMessage() ?? $e->getMessage()));
-            if (! self::webToolsSwitchedOff($apiMessage, self::domainsIn($request['tools']))) {
-                if (preg_match('/web[_ ]?(search|fetch)|server tool|allowed_domains|blocked_domains/i', $apiMessage)) {
-                    // A real problem with the web tools (a domain the organisation blocks, a bad setting): say what the API said.
-                    throw new RuntimeException('Web search couldn’t run: '.rtrim($apiMessage, '.').'. Check the web search settings on the Claude Console (Settings › Capabilities), or turn off “Let the assistant check the law online” in Settings › Integrations.', 0, $e);
+            try {
+                $message = $client->beta->messages->create(...$request);
+            } catch (BadRequestException $e) {
+                if (! self::hasServerTools($request['tools'] ?? [])) {
+                    throw $e;
                 }
+                $apiMessage = trim((string) ($e->getAPIMessage() ?? $e->getMessage()));
+                if (! self::webToolsSwitchedOff($apiMessage, self::domainsIn($request['tools']))) {
+                    if (preg_match('/web[_ ]?(search|fetch)|server tool|allowed_domains|blocked_domains/i', $apiMessage)) {
+                        // A real problem with the web tools (a domain the organisation blocks, a bad setting): say what the API said.
+                        throw new RuntimeException('Web search couldn’t run: '.rtrim($apiMessage, '.').'. Check the web search settings on the Claude Console (Settings › Capabilities), or turn off “Let the assistant check the law online” in Settings › Integrations.', 0, $e);
+                    }
 
-                throw $e;
+                    throw $e;
+                }
+                // An admin can switch web search or fetch off for the organisation (Claude Console › Settings › Capabilities).
+                // Answer from the law library instead of failing; Assistant stops offering the web tools for the rest of the question.
+                $request['tools'] = array_values(array_filter($request['tools'], fn ($t) => ! self::isServerTool($t)));
+                $message = $client->beta->messages->create(...$request);
+                $webOff = true;
             }
-            // An admin can switch web search or fetch off for the organisation (Claude Console › Settings › Capabilities).
-            // Answer from the law library instead of failing; Assistant stops offering the web tools for the rest of the question.
-            $request['tools'] = array_values(array_filter($request['tools'], fn ($t) => ! self::isServerTool($t)));
-            $message = $client->beta->messages->create(...$request);
-            $webOff = true;
+        } catch (\Throwable $e) {
+            AiUsage::release($reservation); // no answer came back, so nothing is owed for it
+
+            throw $e;
         }
 
         // Count the call first, so a response the app can't read is still added to the monthly cap.
@@ -67,7 +74,7 @@ final class AnthropicAiClient implements AiClient
         $in = (int) (self::field($usage, 'inputTokens') ?? 0);
         $out = (int) (self::field($usage, 'outputTokens') ?? 0);
         $searches = (int) (self::field(self::field($usage, 'serverToolUse'), 'webSearchRequests') ?? 0);
-        AiUsage::record($model, $in, $out, $searches);
+        AiUsage::record($model, $in, $out, $searches, $reservation);
 
         $blocks = [];
         $sources = [];
