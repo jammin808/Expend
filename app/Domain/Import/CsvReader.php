@@ -4,12 +4,15 @@ namespace App\Domain\Import;
 
 use RuntimeException;
 
-/** Reads a bank CSV into headers + associative rows. Handles BOMs, delimiters and blank lines. */
+/** Reads a bank CSV (or an Excel .xlsx file) into headers + associative rows. Handles BOMs, delimiters and blank lines. */
 final class CsvReader
 {
     /** @return array{headers: list<string>, rows: list<array<string,string>>} */
     public static function read(string $path): array
     {
+        if (XlsxReader::isXlsx($path)) {
+            return XlsxReader::read($path);
+        }
         $content = file_get_contents($path);
         if ($content === false) {
             throw new RuntimeException("Couldn't read the uploaded file.");

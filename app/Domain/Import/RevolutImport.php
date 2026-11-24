@@ -72,8 +72,21 @@ final class RevolutImport
         $pairs = array_filter($legs, fn ($ix) => count($ix) === 2 && $lines[$ix[0]]['currency'] !== $lines[$ix[1]]['currency']
             && ($lines[$ix[0]]['total'] < 0) !== ($lines[$ix[1]]['total'] < 0));
 
+        // A personal statement covers one currency, so the other side of an exchange is often in a statement imported
+        // before: find it among this account's pockets (same start time or ID, the other currency, the opposite way).
+        $paired = array_merge(...array_values($pairs ?: [[]]));
+        $existing = [];
+        foreach ($lines as $i => $l) {
+            if ($l['exchange'] && ! in_array($i, $paired, true) && ($tx = $this->existingLeg($base, $l))) {
+                $existing[$i] = $tx;
+            }
+        }
+
         // Sterling for every line.
         foreach ($lines as $i => &$l) {
+            if (isset($existing[$i])) {
+                $l['exchange'] = 'db:'.$existing[$i]->id;
+            }
             if ($l['currency'] === 'GBP') {
                 $l['pence'] = $l['total'];
 
@@ -85,9 +98,14 @@ final class RevolutImport
                     $other = $lines[$ix[0] === $i ? $ix[1] : $ix[0]];
                 }
             }
+            $earlier = $existing[$i] ?? null;
             try {
                 if ($other && $other['currency'] === 'GBP') {
                     $l['pence'] = -$other['total'];
+                    $l['fx'] = ['source' => 'exchange', 'date' => $l['date']->format('Y-m-d')];
+                } elseif ($earlier && ! $earlier->original_currency) {
+                    // The pounds side was imported already: this side counts as exactly those pounds.
+                    $l['pence'] = -$earlier->amount_pence;
                     $l['fx'] = ['source' => 'exchange', 'date' => $l['date']->format('Y-m-d')];
                 } elseif ($l['orig_currency'] === 'GBP' && $l['orig_minor']) {
                     $l['pence'] = $l['total'] < 0 ? -abs($l['orig_minor']) : abs($l['orig_minor']);
@@ -333,6 +351,30 @@ final class RevolutImport
         return mb_substr($base->name.' '.$label, 0, 80);
     }
 
+    /**
+     * The other side of an exchange, already imported into this account or one of its pockets: same start time (or
+     * Revolut Business ID), the other currency, money moving the other way, not yet paired.
+     */
+    private function existingLeg(Account $base, array $l): ?BankTransaction
+    {
+        $family = Account::query()->where('id', $base->id)->orWhere('parent_account_id', $base->id)->get()->keyBy('id');
+        $started = (string) ($l['raw']['Started Date'] ?? '');
+        $id = (string) ($l['raw']['ID'] ?? '');
+
+        return BankTransaction::query()->whereIn('account_id', $family->keys())->whereNull('transfer_pair_id')
+            ->where('amount_pence', $l['total'] < 0 ? '>' : '<', 0)
+            ->whereBetween('posted_on', [$l['posted']->subDays(4)->format('Y-m-d'), $l['posted']->addDays(4)->format('Y-m-d')])
+            ->get()
+            ->first(function (BankTransaction $t) use ($family, $l, $started, $id) {
+                $currency = strtoupper($family[$t->account_id]->currency ?: 'GBP');
+                $raw = $t->raw ?? [];
+                $type = (string) ($raw['Type'] ?? '');
+
+                return $currency !== $l['currency'] && preg_match('/^exchange$/i', $type)
+                    && (($started !== '' && ($raw['Started Date'] ?? null) === $started) || ($id !== '' && ($raw['ID'] ?? null) === $id));
+            });
+    }
+
     /** @param list<array{batch:ImportBatch, account:Account, rows:list<NormalizedRow>}> $batches */
     private function pairExchanges(array $batches): void
     {
@@ -343,12 +385,19 @@ final class RevolutImport
                     $tx = BankTransaction::withoutGlobalScope('active')->where('account_id', $b['account']->id)->where('fingerprint', $row->fingerprint($b['account']->id))->orderByDesc('id')->first();
                     if ($tx && ! $tx->transfer_pair_id) {
                         $found[$row->exchangeKey][] = $tx;
+                        if (str_starts_with($row->exchangeKey, 'db:') && ($earlier = BankTransaction::query()->find((int) substr($row->exchangeKey, 3))) && ! $earlier->transfer_pair_id) {
+                            $found[$row->exchangeKey][] = $earlier;
+                        }
                     }
                 }
             }
         }
-        foreach ($found as $txs) {
-            if (count($txs) !== 2 || $txs[0]->account_id === $txs[1]->account_id || $txs[0]->amount_pence !== -$txs[1]->amount_pence) {
+        foreach ($found as $key => $txs) {
+            // Two sides of the same exchange. Within one file they count as the same pounds; across files the side
+            // imported first may have been converted at HMRC's rate, so the pounds can differ slightly.
+            $sameFile = ! str_starts_with((string) $key, 'db:');
+            if (count($txs) !== 2 || $txs[0]->account_id === $txs[1]->account_id || ($txs[0]->amount_pence < 0) === ($txs[1]->amount_pence < 0)
+                || ($sameFile && $txs[0]->amount_pence !== -$txs[1]->amount_pence)) {
                 continue;
             }
             [$a, $b] = $txs;

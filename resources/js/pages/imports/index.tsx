@@ -209,7 +209,7 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                         <input
                             ref={fileRef}
                             type="file"
-                            accept=".csv,text/csv"
+                            accept=".csv,text/csv,.xlsx"
                             className="hidden"
                             onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
                         />

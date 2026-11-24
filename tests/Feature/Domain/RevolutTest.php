@@ -4,6 +4,7 @@ namespace Tests\Feature\Domain;
 
 use App\Domain\Import\RevolutImport;
 use App\Domain\Ledger\Reconciler;
+use App\Domain\Matching\OwnAccounts;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\ExchangeRate;
@@ -115,5 +116,82 @@ class RevolutTest extends TestCase
 
         // The exchange (both sides), the top-up from another bank and the move to savings: all your own money moving.
         $this->get('/transactions')->assertInertia(fn ($p) => $p->where('totals.transfer_count', 4));
+    }
+
+    private function file(string $csv): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'rv').'.csv';
+        file_put_contents($path, $csv);
+
+        return $path;
+    }
+
+    public function test_an_exchange_split_across_two_currency_statements_is_paired_in_either_order(): void
+    {
+        $head = "Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\n";
+        $gbp = $this->file($head."Topup,Current,2026-03-01 09:00:00,2026-03-01 09:00:00,Top-up by *4821,300.00,0.00,GBP,COMPLETED,300.00\nExchange,Current,2026-03-04 10:00:00,2026-03-04 10:00:00,Exchanged to EUR,-100.00,0.00,GBP,COMPLETED,200.00\n");
+        $eur = $this->file($head."Exchange,Current,2026-03-04 10:00:00,2026-03-04 10:00:00,Exchanged to EUR,115.20,0.00,EUR,COMPLETED,115.20\nCard Payment,Current,2026-03-06 19:30:22,2026-03-07 06:00:00,Brasserie du Port,-42.00,0.00,EUR,COMPLETED,73.20\n");
+
+        // Pounds first, then euros: the euro side counts as exactly the £100 it was bought with.
+        app(RevolutImport::class)->commit($this->revolut, $gbp, 'gbp.csv');
+        app(RevolutImport::class)->commit($this->revolut->fresh(), $eur, 'eur.csv');
+        $out = BankTransaction::query()->where('amount_pence', -10000)->sole();
+        $in = BankTransaction::query()->where('original_currency', 'EUR')->where('original_amount_minor', 11520)->sole();
+        $this->assertSame([10000, 'exchange', $out->id, $in->id], [$in->amount_pence, $in->fx_source, $in->transfer_pair_id, $out->fresh()->transfer_pair_id]);
+        $this->assertSame('transfer', $in->allocations()->value('kind'));
+
+        // A fresh account, euros first: the euro side is converted at HMRC's rate, and the pounds side pairs with it later.
+        BankTransaction::query()->update(['transfer_pair_id' => null]);
+        $other = Account::query()->create(['name' => 'Revolut 2', 'kind' => 'bank', 'provider' => 'revolut', 'currency' => 'GBP']);
+        app(RevolutImport::class)->commit($other, $eur, 'eur.csv');
+        app(RevolutImport::class)->commit($other->fresh(), $gbp, 'gbp.csv');
+        $in2 = BankTransaction::query()->whereHas('account', fn ($q) => $q->where('parent_account_id', $other->id))->where('original_amount_minor', 11520)->sole();
+        $out2 = BankTransaction::query()->where('account_id', $other->id)->where('amount_pence', -10000)->sole();
+        $this->assertSame([10017, 'hmrc_monthly'], [$in2->amount_pence, $in2->fx_source]);
+        $this->assertSame($out2->id, $in2->fresh()->transfer_pair_id);
+        $this->assertSame('transfer', $out2->allocations()->value('kind'));
+    }
+
+    public function test_an_excel_statement_is_read_like_the_csv(): void
+    {
+        $rows = array_map(fn ($l) => str_getcsv($l, ',', '"', ''), array_filter(explode("\n", (string) file_get_contents($this->fixture('revolut_personal.csv')))));
+        $path = tempnam(sys_get_temp_dir(), 'rv').'.xlsx';
+        $zip = new \ZipArchive;
+        $zip->open($path, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+        $strings = [];
+        $sheet = '';
+        foreach ($rows as $r => $cells) {
+            $sheet .= '<row r="'.($r + 1).'">';
+            foreach ($cells as $c => $v) {
+                $ref = chr(65 + $c).($r + 1);
+                if ($v !== '' && is_numeric($v) && $c !== 2 && $c !== 3) {
+                    $sheet .= '<c r="'.$ref.'"><v>'.$v.'</v></c>';
+                } elseif ($v !== '') {
+                    $strings[] = htmlspecialchars($v, ENT_XML1);
+                    $sheet .= '<c r="'.$ref.'" t="s"><v>'.(count($strings) - 1).'</v></c>';
+                }
+            }
+            $sheet .= '</row>';
+        }
+        $zip->addFromString('xl/workbook.xml', '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Statement" sheetId="1" r:id="rId1"/></sheets></workbook>');
+        $zip->addFromString('xl/_rels/workbook.xml.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
+        $zip->addFromString('xl/worksheets/sheet1.xml', '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'.$sheet.'</sheetData></worksheet>');
+        $zip->addFromString('xl/sharedStrings.xml', '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'.implode('', array_map(fn ($t) => '<si><t>'.$t.'</t></si>', $strings)).'</sst>');
+        $zip->close();
+
+        $read = app(RevolutImport::class)->read($this->revolut, $path);
+        $this->assertSame('personal', $read['kind']);
+        $this->assertSame(7, array_sum(array_column($read['pockets'], 'new')));
+        $this->assertSame(['passed', 'passed', 'not_available'], array_map(fn ($p) => $p['balance']['status'], $read['pockets']));
+    }
+
+    public function test_moves_to_and_from_savings_and_pockets_are_your_own_money(): void
+    {
+        foreach (['To EUR Savings', 'From EUR Family Savings', 'To pocket GBP Holiday from GBP', 'Pocket Withdrawal', 'To GBP Rainy Day Vault'] as $text) {
+            $this->assertMatchesRegularExpression(OwnAccounts::OWN_PATTERN, $text, $text);
+        }
+        foreach (['To Euro Car Hire', 'Pocket Money Toys Ltd', 'From EUR'] as $text) {
+            $this->assertDoesNotMatchRegularExpression(OwnAccounts::OWN_PATTERN, $text, $text);
+        }
     }
 }

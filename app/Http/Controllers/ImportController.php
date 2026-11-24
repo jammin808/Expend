@@ -88,7 +88,7 @@ class ImportController extends Controller
     public function preview(Request $request): RedirectResponse
     {
         $data = $request->validate([
-            'file' => 'nullable|file|mimes:csv,txt|max:20480',
+            'file' => 'nullable|file|mimes:csv,txt,xlsx|max:20480',
             'account_id' => 'required|integer|exists:accounts,id',
             'profile' => 'nullable|array',
         ]);
