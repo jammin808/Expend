@@ -215,7 +215,8 @@ class IntegrationSettingsErrorsTest extends TestCase
     {
         $year = (string) file_get_contents(resource_path('js/pages/years/show.tsx'));
         $lock = $this->calls($year, 'router.post(`/years/${year.label}/lock`');
-        $this->assertCount(2, $lock);
+        // Unlock, lock with failing checks (a reason is asked for), and lock: each says why when it's refused.
+        $this->assertCount(3, $lock);
         foreach ($lock as $call) {
             $this->assertStringContainsString('onError', $call, $call);
         }
