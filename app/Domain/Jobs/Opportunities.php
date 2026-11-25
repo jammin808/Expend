@@ -18,6 +18,7 @@ use App\Support\Money;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use InvalidArgumentException;
 use Throwable;
 
@@ -158,7 +159,7 @@ final class Opportunities
         $opportunity = Opportunity::query()->create([
             'status' => $status, 'hold_rank' => isset($fields['hold_rank']) ? max(1, min(9, (int) $fields['hold_rank'])) : null,
             'title' => $title, 'client_id' => $clientId ?: self::clientIdFor($clientName), 'client_name' => $clientName,
-            'contact_name' => self::text($fields['contact_name'] ?? null, 120), 'contact_email' => self::email($fields['contact_email'] ?? null),
+            'contact_name' => self::text($fields['contact_name'] ?? null, 120), 'contact_email' => self::contactEmail($fields['contact_email'] ?? null),
             'role' => self::text($fields['role'] ?? null, 120), 'venue' => self::text($fields['venue'] ?? null, 200),
             'postcode' => ($p = self::text($fields['postcode'] ?? null, 10)) ? strtoupper($p) : null,
             'starts_on' => $dates[0]['date'] ?? null, 'ends_on' => $dates ? $dates[count($dates) - 1]['date'] : null, 'dates' => $dates ?: null,
@@ -676,7 +677,7 @@ final class Opportunities
         // Who's asking: the contact the reader found, or else the email's sender (not you).
         $contact = is_array($block['contact'] ?? null) ? $block['contact'] : null;
         $name = self::text(is_string($contact['name'] ?? null) ? $contact['name'] : (is_string($contact['value'] ?? null) ? $contact['value'] : null), 120);
-        $email = self::email($contact['email'] ?? null);
+        $email = self::contactEmail($contact['email'] ?? null);
         if ($email !== null && isset(self::ownAddresses()[$email])) {
             [$name, $email] = [null, null]; // that's you
         }
@@ -685,9 +686,9 @@ final class Opportunities
             $ok = $grounded($quote, $contact['verified'] ?? null, fn (string $q) => ($email === null || self::inQuote($email, $q)) && ($name === null || self::inQuote($name, $q)));
             [$out['contact_name'], $out['contact_email'], $out['verified']['contact']] = [$name, $email, $ok];
             $note('contact', trim(($name ?? '').($email ? ' <'.$email.'>' : '')), $quote, $ok);
-        } elseif ($sender = self::senderOf($document->parent_id ? $top : $document, self::ownAddresses())) {
+        } elseif (($sender = self::senderOf($document->parent_id ? $top : $document, self::ownAddresses())) && ($sender['name'] !== null || $sender['email'] !== null)) {
             [$out['contact_name'], $out['contact_email'], $out['verified']['contact']] = [$sender['name'], $sender['email'], $sender['verified']];
-            $out['evidence'][] = ['type' => 'document', 'id' => $top->id, 'field' => 'contact', 'value' => trim(($sender['name'] ?? '').' <'.$sender['email'].'>'),
+            $out['evidence'][] = ['type' => 'document', 'id' => $top->id, 'field' => 'contact', 'value' => trim(($sender['name'] ?? '').($sender['email'] ? ' <'.$sender['email'].'>' : '')),
                 'quote' => mb_substr($sender['quote'], 0, 400), 'verified' => $sender['verified']];
         }
 
@@ -1366,10 +1367,11 @@ final class Opportunities
 
     /**
      * Who sent an email (or, for one you forwarded, who sent the original): the first "From:" in it that isn't you
-     * or a machine. The quote is that line as it is in the email's text.
+     * or a machine. The quote is that line as it is in the email's text. An address the edit form wouldn't accept
+     * (contactEmail()) isn't kept: then it's the sender's name alone, or neither (still someone other than you).
      *
      * @param  array<string, true>  $own  your own addresses
-     * @return array{name: ?string, email: string, quote: string, verified: bool}|null
+     * @return array{name: ?string, email: ?string, quote: string, verified: bool}|null
      */
     public static function senderOf(Document $doc, ?array $own = null): ?array
     {
@@ -1383,18 +1385,36 @@ final class Opportunities
         if ($doc->email_from) {
             $lines[] = ['raw' => $doc->email_from, 'quote' => $doc->email_from, 'text' => false];
         }
-        foreach ($lines as $line) {
-            if (! preg_match('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', $line['raw'], $em)) {
-                continue;
-            }
-            $email = strtolower($em[0]);
-            if (isset($own[$email]) || self::machine($email)) {
-                continue;
-            }
-            $name = trim(preg_replace('/\s+/', ' ', preg_replace('/<[^>]*>|\[[^\]]*\]|mailto:\S+|"/i', ' ', str_ireplace($em[0], ' ', $line['raw'])) ?? '') ?? '', " \t'<>(),;:");
+        $address = '/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i';
+        $nameIn = function (string $raw, string $found): ?string {
+            $name = trim(preg_replace('/\s+/', ' ', preg_replace('/<[^>]*>|\[[^\]]*\]|mailto:\S+|"/i', ' ', str_ireplace($found, ' ', $raw)) ?? '') ?? '', " \t'<>(),;:");
 
+            return $name !== '' ? mb_substr($name, 0, 120) : null;
+        };
+        foreach ($lines as $i => $line) {
+            if (! preg_match($address, $line['raw'], $em)) {
+                continue;
+            }
+            $found = strtolower($em[0]);
+            if (isset($own[$found]) || self::machine($found)) {
+                continue;
+            }
+            $email = self::contactEmail($found);
+            $name = $nameIn($line['raw'], $em[0]);
+            // An address that isn't kept can't be used to find the name later ("alex@…" in the text, "Alex Smith
+            // <alex@…>" in the email's own From header), so the name is taken here from another line with that address.
+            foreach (array_slice($lines, $i + 1) as $other) {
+                if ($name !== null || $email !== null) {
+                    break;
+                }
+                if (preg_match($address, $other['raw'], $again) && strtolower($again[0]) === $found) {
+                    $name = $nameIn($other['raw'], $again[0]);
+                }
+            }
+
+            // Still this sender (not someone further down a forwarded thread), even when their address isn't kept.
             return [
-                'name' => $name !== '' ? mb_substr($name, 0, 120) : null, 'email' => mb_substr($email, 0, 200), 'quote' => mb_substr($line['quote'], 0, 400),
+                'name' => $name, 'email' => $email, 'quote' => mb_substr($line['quote'], 0, 400),
                 'verified' => $doc->text_status === 'extracted' && Grounding::quoteFound($doc->text, $line['quote']),
             ];
         }
@@ -1481,9 +1501,18 @@ final class Opportunities
         return $value !== '' ? mb_substr($value, 0, $max) : null;
     }
 
-    private static function email(mixed $value): ?string
+    /**
+     * A contact's email address as it's kept, or null: one address the edit form takes (your browser's own check of
+     * an email box, and OpportunityController's), with a "mailto:" in front dropped and capitals lowered. The reader
+     * keeps only these and the form accepts only these, so a contact read from an email never stops the form saving.
+     */
+    public static function contactEmail(mixed $value): ?string
     {
-        return is_string($value) && preg_match('/^[^@\s<>]+@[^@\s<>]+\.[a-z]{2,}$/i', trim($value)) ? mb_substr(strtolower(trim($value)), 0, 200) : null;
+        $email = is_string($value) ? strtolower(trim(preg_replace('/^\s*mailto:/i', '', $value) ?? '')) : '';
+        // The browser's rule for an email box (the HTML standard's), with a proper ending (".co.uk", not "@localhost").
+        $box = '/^[a-z0-9.!#$%&\'*+\/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,}$/';
+
+        return preg_match($box, $email) && Validator::make(['email' => $email], ['email' => 'email|max:200'])->passes() ? $email : null;
     }
 
     private static function ymd(mixed $value): ?string

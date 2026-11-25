@@ -64,13 +64,28 @@ class InvoiceController extends Controller
             // An address the invoice can actually be emailed to ('filter' as well as 'rfc': the RFC alone lets
             // accounts@client, with no ending, through), checked the same way as when it's sent.
             'bill_to_name' => 'nullable|string|max:200', 'bill_to_address' => 'nullable|string|max:1000', 'bill_to_email' => 'nullable|email:rfc,filter|max:200',
-            'po_number' => 'nullable|string|max:60', 'currency' => 'required|string|size:3', 'notes' => 'nullable|string|max:2000',
+            // The same limit as a job's or an opportunity's PO number, and what a PO's reading is cut to (DocumentReader).
+            'po_number' => 'nullable|string|max:100', 'currency' => 'required|string|size:3', 'notes' => 'nullable|string|max:2000',
             'work_job_id' => 'nullable|integer|exists:work_jobs,id', 'client_id' => 'nullable|integer|exists:clients,id',
             'lines' => 'array', 'lines.*.description' => 'required|string|max:500', 'lines.*.quantity' => 'required|numeric|min:0.01',
             'lines.*.unit_price' => 'required|string', 'lines.*.source_quote' => 'nullable|string',
         ], [
+            'bill_to_name.max' => '“Bill to” is too long (200 characters at most).',
+            'bill_to_address.max' => 'The address is too long (1,000 characters at most).',
             'bill_to_email.email' => 'That email address doesn’t look right. Use one address, like accounts@client.co.uk.',
             'bill_to_email.max' => 'That email address is too long.',
+            'po_number.max' => 'The PO number is too long (100 characters at most).',
+            'notes.max' => 'The notes are too long (2,000 characters at most).',
+            // Chosen from the page's lists: gone only if deleted since the page was opened.
+            'work_job_id.exists' => 'That job no longer exists. Choose another, or None.',
+            'client_id.exists' => 'That client no longer exists. Choose another, or None.',
+            // The page shows the first of these as a message, so each says which line.
+            'lines.*.description.required' => 'Line :position needs a description.',
+            'lines.*.description.max' => 'The description on line :position is too long (500 characters at most).',
+            'lines.*.quantity.required' => 'Line :position needs a quantity, like 1 or 0.5.',
+            'lines.*.quantity.numeric' => 'The quantity on line :position must be a number, like 1 or 0.5.',
+            'lines.*.quantity.min' => 'The quantity on line :position must be 0.01 or more.',
+            'lines.*.unit_price.required' => 'Line :position needs a price, like 450.00.',
         ]);
         $lines = $data['lines'] ?? [];
         unset($data['lines']);
@@ -98,7 +113,12 @@ class InvoiceController extends Controller
 
     public function void(Request $request, Invoice $invoice): RedirectResponse
     {
-        $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
+        // Typed into the page's prompt, and shown with the voided invoice and in the audit log.
+        $data = $request->validate(['reason' => 'required|string|min:3|max:250'], [
+            'reason.required' => 'Say why you are voiding this invoice, in a few words.',
+            'reason.min' => 'Say why you are voiding this invoice in a few more words (3 characters at least).',
+            'reason.max' => 'The reason is too long (250 characters at most).',
+        ]);
         try {
             $this->invoices->void($invoice, $data['reason']);
         } catch (InvalidArgumentException $e) {

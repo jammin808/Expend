@@ -1,4 +1,5 @@
 import { NativeSelect } from '@/components/native-select';
+import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import AppLayout from '@/layouts/app-layout';
@@ -31,6 +32,18 @@ interface AccountRow {
     };
     balances: { id: number; as_of: string; balance_pence: number; note: string | null }[];
 }
+
+/**
+ * Show what the server refused, in plain words, so a button never seems to do nothing. A name kept as the bank
+ * gave it can be longer than an account's details save with.
+ */
+const failed = (errors: Record<string, string>) =>
+    toast(
+        errors.name
+            ? 'This account’s name is longer than 255 characters, so the change can’t be saved.'
+            : (Object.values(errors)[0] ?? 'That didn’t save. Try again.'),
+        'error',
+    );
 
 /** Whether the account matches the bank's own figures, the gaps if not, and the statement balances you've entered. */
 function Reconcile({ a }: { a: AccountRow }) {
@@ -121,7 +134,7 @@ function Reconcile({ a }: { a: AccountRow }) {
                                     <Button
                                         size="sm"
                                         variant="ghost"
-                                        onClick={() => router.delete(`/accounts/${a.id}/balances/${b.id}`, { preserveScroll: true })}
+                                        onClick={() => router.delete(`/accounts/${a.id}/balances/${b.id}`, { preserveScroll: true, onError: failed })}
                                     >
                                         Remove
                                     </Button>
@@ -168,7 +181,7 @@ export default function Accounts({ accounts }: { accounts: AccountRow[] }) {
                                     router.patch(
                                         `/accounts/${a.id}`,
                                         { ...a, last4: a.last4 ?? '', is_active: !a.is_active },
-                                        { preserveScroll: true },
+                                        { preserveScroll: true, onError: failed },
                                     )
                                 }
                             >

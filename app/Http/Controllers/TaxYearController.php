@@ -129,6 +129,7 @@ class TaxYearController extends Controller
             'deferred_to' => 'nullable|date|after:'.$year->period()->endsOn()->format('Y-m-d'),
             'told_hmrc_by_5_october' => 'nullable|boolean',
         ], [
+            'hmrc_reference.max' => 'The HMRC reference can’t be longer than 60 characters.',
             'notice_date.after' => 'A notice to file for '.$label.' comes after the year ends ('.$year->period()->endsOn()->format('j F Y').').',
             'filing_date_override.after' => 'The deadline on HMRC’s notice is after the year ends.',
             'deferred_to.after' => 'A deferred deadline is after the year ends.',
@@ -160,8 +161,21 @@ class TaxYearController extends Controller
             }
         }
 
-        if ($year->isLocked() && collect(['filed_turnover', 'filed_expenses', 'filed_profit', 'payments_on_account_paid'])->contains(fn ($f) => $request->has($f))) {
-            return back()->with('error', "{$label} is locked. Unlock it before changing its figures.");
+        // The return's figures (a loss can be below zero). A locked year's can't change, but the Edit form sends them
+        // back as they are along with the status, filed date and reference: only a figure that differs is refused.
+        $locked = "{$label} is locked. Unlock it before changing its figures.";
+        $figures = [];
+        foreach (['filed_turnover', 'filed_expenses', 'filed_profit', 'payments_on_account_paid'] as $field) {
+            if ($request->has($field)) {
+                try {
+                    $figures[$field.'_pence'] = Money::parse($data[$field] ?? null) ?? ($field === 'payments_on_account_paid' ? 0 : null);
+                } catch (\InvalidArgumentException $e) {
+                    return back()->with('error', $year->isLocked() ? $locked : $e->getMessage());
+                }
+            }
+        }
+        if ($year->isLocked() && collect($figures)->contains(fn ($pence, $column) => $pence !== $year->{$column})) {
+            return back()->with('error', $locked);
         }
 
         $before = $year->toArray();
@@ -188,10 +202,8 @@ class TaxYearController extends Controller
             // No request, no plan.
             $year->fill(['plan_agreed' => null, 'plan_ends_on' => null, 'plan_broken_on' => null, 'plan_notice_on' => null, 'plan_amount_pence' => null]);
         }
-        foreach (['filed_turnover', 'filed_expenses', 'filed_profit', 'payments_on_account_paid'] as $field) {
-            if ($request->has($field)) {
-                $year->{$field.'_pence'} = Money::parse($data[$field] ?? null) ?? ($field === 'payments_on_account_paid' ? 0 : null);
-            }
+        foreach ($figures as $column => $pence) {
+            $year->{$column} = $pence;
         }
         $year->save();
         AuditLog::record('tax_year.updated', $year, $before, $year->fresh()->toArray());
@@ -245,7 +257,11 @@ class TaxYearController extends Controller
     {
         $year = TaxYear::query()->where('label', $label)->firstOrFail();
         if ($year->isLocked()) {
-            $request->validate(['reason' => 'required|string|min:3|max:250'], ['reason.required' => 'Say why you are unlocking this year.']);
+            $request->validate(['reason' => 'required|string|min:3|max:250'], [
+                'reason.required' => 'Say why you are unlocking this year.',
+                'reason.min' => 'Say why you are unlocking this year in a few more words (3 characters at least).',
+                'reason.max' => 'The reason is too long (250 characters at most).',
+            ]);
             $year->update(['locked_at' => null, 'status' => $year->status === 'filed' ? 'amending' : $year->status]);
             AuditLog::record('tax_year.unlocked', $year, null, null, $request->string('reason'));
 

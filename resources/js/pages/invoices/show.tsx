@@ -119,7 +119,14 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                 onClick={() => {
                                     if (form.isDirty) return window.alert('Save your changes first.');
                                     if (window.confirm('Issue this invoice? It gets the next number and can’t be edited afterwards.'))
-                                        router.post(`/invoices/${invoice.id}/issue`);
+                                        router.post(
+                                            `/invoices/${invoice.id}/issue`,
+                                            {},
+                                            {
+                                                onError: (errors) =>
+                                                    toast(Object.values(errors)[0] ?? 'The invoice wasn’t issued. Check it and try again.', 'error'),
+                                            },
+                                        );
                                 }}
                             >
                                 Issue invoice
@@ -158,7 +165,21 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                 variant="ghost"
                                 onClick={() => {
                                     const reason = window.prompt('Why are you voiding this invoice?');
-                                    if (reason) router.post(`/invoices/${invoice.id}/void`, { reason });
+                                    // Cancel does nothing; OK with no reason gets the server's "Say why" message rather than nothing.
+                                    if (reason !== null)
+                                        router.post(
+                                            `/invoices/${invoice.id}/void`,
+                                            { reason },
+                                            {
+                                                preserveScroll: true,
+                                                // A reason that's too short comes back as a form error, which this page has no field to show.
+                                                onError: (errors) =>
+                                                    toast(
+                                                        errors.reason ?? Object.values(errors)[0] ?? 'The invoice wasn’t voided. Try again.',
+                                                        'error',
+                                                    ),
+                                            },
+                                        );
                                 }}
                             >
                                 Void
@@ -169,7 +190,12 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                 variant="ghost"
                                 size="icon"
                                 aria-label="Delete draft"
-                                onClick={() => window.confirm('Delete this draft?') && router.delete(`/invoices/${invoice.id}`)}
+                                onClick={() =>
+                                    window.confirm('Delete this draft?') &&
+                                    router.delete(`/invoices/${invoice.id}`, {
+                                        onError: (errors) => toast(Object.values(errors)[0] ?? 'The draft wasn’t deleted. Try again.', 'error'),
+                                    })
+                                }
                             >
                                 <Trash2 />
                             </Button>
@@ -208,7 +234,12 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                         </div>
                         <div className="space-y-1.5">
                             <Label>PO number</Label>
-                            <Input value={form.data.po_number} onChange={(e) => form.setData('po_number', e.target.value)} />
+                            <Input
+                                value={form.data.po_number}
+                                onChange={(e) => form.setData('po_number', e.target.value)}
+                                aria-invalid={!!form.errors.po_number}
+                            />
+                            {form.errors.po_number && <p className="text-sm text-rose-600">{form.errors.po_number}</p>}
                         </div>
                         <div className="space-y-1.5">
                             <Label>Currency</Label>

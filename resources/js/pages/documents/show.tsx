@@ -233,19 +233,63 @@ export default function DocumentShow({ document: d, jobs, kinds, aiReady }: Prop
                         className="space-y-3 rounded-xl border border-sky-300 p-4"
                         onSubmit={(e) => {
                             e.preventDefault();
-                            newJob.post(`/documents/${d.id}/job`);
+                            // Kept in place when it's refused, so the reasons below are in view.
+                            newJob.post(`/documents/${d.id}/job`, { preserveScroll: 'errors' });
                         }}
                     >
                         <p className="font-medium">This looks like a new job. Check the details, then create it.</p>
                         <div className="grid gap-2 sm:grid-cols-3">
-                            <Input value={newJob.data.title} onChange={(e) => newJob.setData('title', e.target.value)} placeholder="Job" />
-                            <Input value={newJob.data.client} onChange={(e) => newJob.setData('client', e.target.value)} placeholder="Client" />
-                            <Input value={newJob.data.location} onChange={(e) => newJob.setData('location', e.target.value)} placeholder="Venue" />
-                            <Input type="date" value={newJob.data.starts_on} onChange={(e) => newJob.setData('starts_on', e.target.value)} />
-                            <Input type="date" value={newJob.data.ends_on} onChange={(e) => newJob.setData('ends_on', e.target.value)} />
-                            <Input value={newJob.data.postcode} onChange={(e) => newJob.setData('postcode', e.target.value)} placeholder="Postcode" />
+                            <Input
+                                value={newJob.data.title}
+                                onChange={(e) => newJob.setData('title', e.target.value)}
+                                placeholder="Job"
+                                aria-label="Job"
+                                aria-invalid={!!newJob.errors.title}
+                            />
+                            <Input
+                                value={newJob.data.client}
+                                onChange={(e) => newJob.setData('client', e.target.value)}
+                                placeholder="Client"
+                                aria-label="Client"
+                                aria-invalid={!!newJob.errors.client}
+                            />
+                            <Input
+                                value={newJob.data.location}
+                                onChange={(e) => newJob.setData('location', e.target.value)}
+                                placeholder="Venue"
+                                aria-label="Venue"
+                                aria-invalid={!!newJob.errors.location}
+                            />
+                            <Input
+                                type="date"
+                                value={newJob.data.starts_on}
+                                onChange={(e) => newJob.setData('starts_on', e.target.value)}
+                                aria-label="Starts"
+                                aria-invalid={!!newJob.errors.starts_on}
+                            />
+                            <Input
+                                type="date"
+                                value={newJob.data.ends_on}
+                                onChange={(e) => newJob.setData('ends_on', e.target.value)}
+                                aria-label="Ends"
+                                aria-invalid={!!newJob.errors.ends_on}
+                            />
+                            <Input
+                                value={newJob.data.postcode}
+                                onChange={(e) => newJob.setData('postcode', e.target.value)}
+                                placeholder="Postcode"
+                                aria-label="Postcode"
+                                aria-invalid={!!newJob.errors.postcode}
+                            />
                         </div>
-                        <Button size="sm">Create job and link</Button>
+                        {Object.entries(newJob.errors).map(([k, e]) => (
+                            <p key={k} className="text-sm text-rose-600">
+                                {e}
+                            </p>
+                        ))}
+                        <Button size="sm" disabled={newJob.processing}>
+                            Create job and link
+                        </Button>
                     </form>
                 )}
 

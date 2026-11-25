@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import AppLayout from '@/layouts/app-layout';
 import { day, londonToday, money } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { fitEntry } from '@/pages/jobs/calendar';
 import { type Lookups, type SharedData } from '@/types';
 import { Head, Link, router, usePage } from '@inertiajs/react';
 import {
@@ -219,6 +220,8 @@ export default function Connections({ nodes, edges, attention, range, jobs, clie
 
     const sel = selected ? byId[selected] : null;
     const today = londonToday();
+    // A title or venue longer than a job's is shortened, with the whole text in the notes.
+    const fitted = makeJob ? fitEntry(makeJob.label, makeJob.data.location ?? null) : null;
 
     return (
         <AppLayout breadcrumbs={[{ title: 'Connections', href: '/connections' }]}>
@@ -518,7 +521,12 @@ export default function Connections({ nodes, edges, attention, range, jobs, clie
                     <DialogHeader>
                         <DialogTitle>Make this calendar entry a job</DialogTitle>
                     </DialogHeader>
-                    {makeJob && (
+                    {fitted?.notes && (
+                        <p className="text-muted-foreground text-sm">
+                            The entry’s title or venue is too long for a job, so it’s shortened here; the whole text is in the notes.
+                        </p>
+                    )}
+                    {makeJob && fitted && (
                         <JobForm
                             key={makeJob.id}
                             clients={clients}
@@ -526,17 +534,17 @@ export default function Connections({ nodes, edges, attention, range, jobs, clie
                             submitLabel="Add job and link the entry"
                             extra={{ key: makeJob.data.key, date: makeJob.date }}
                             job={{
-                                title: makeJob.label,
+                                title: fitted.title,
                                 client_id: null,
                                 starts_on: makeJob.date,
                                 ends_on: makeJob.end ?? makeJob.date,
                                 start_time: makeJob.data.time,
                                 end_time: makeJob.data.end_time,
-                                location: makeJob.data.location,
+                                location: fitted.location,
                                 postcode: null,
                                 fee_pence: null,
                                 status: (makeJob.end ?? makeJob.date) < today ? 'done' : 'booked',
-                                notes: null,
+                                notes: fitted.notes,
                             }}
                             onDone={() => setMakeJob(null)}
                         />

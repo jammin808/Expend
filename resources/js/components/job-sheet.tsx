@@ -1,5 +1,6 @@
 import { type DocRow } from '@/components/doc-line';
 import { type JobData } from '@/components/job-form';
+import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { router } from '@inertiajs/react';
 import { AlertTriangle, CheckCircle2 } from 'lucide-react';
@@ -39,33 +40,30 @@ const jobField: Record<string, keyof JobData> = {
     end_date: 'ends_on',
 };
 
+/**
+ * What a fact puts in the job, or null when the job can't take it: a time or date the AI couldn't read as one
+ * ("7am call", "the weekend") would never save, so it gets no "Use in job".
+ */
+function jobValue(f: SheetFact): string | null {
+    const field = jobField[f.field];
+    if (field === 'start_time' || field === 'end_time') return f.at_time;
+    if (field === 'starts_on' || field === 'ends_on') return f.on_date;
+    return field ? f.value : null;
+}
+
 export function JobSheet({ job, facts, documents }: { job: JobData & { id: number }; facts: SheetFact[]; documents: DocRow[] }) {
     const applyFact = (f: SheetFact) => {
         const field = jobField[f.field];
-        const value =
-            field === 'start_time' || field === 'end_time'
-                ? (f.at_time ?? f.value)
-                : field === 'starts_on' || field === 'ends_on'
-                  ? (f.on_date ?? f.value)
-                  : f.value;
-        router.patch(
-            `/jobs/${job.id}`,
-            {
-                title: job.title,
-                client_id: job.client_id,
-                starts_on: job.starts_on,
-                ends_on: job.ends_on,
-                start_time: job.start_time,
-                end_time: job.end_time,
-                location: job.location,
-                postcode: job.postcode,
-                fee: job.fee_pence ? (job.fee_pence / 100).toFixed(2) : '',
-                status: job.status,
-                notes: job.notes,
-                [field]: value,
-            } as never,
-            { preserveScroll: true },
-        );
+        const value = jobValue(f);
+        if (!field || value === null) return;
+        // Only what the job needs to save and the one detail: the job keeps its PO number, fee and everything else.
+        const body: Record<string, string> = { title: job.title, starts_on: job.starts_on, ends_on: job.ends_on, [field]: value };
+        // A start after the job's end is refused with the reason: moving the job's dates is done on the job form,
+        // which keeps each day's kind and times in view.
+        router.patch(`/jobs/${job.id}`, body, {
+            preserveScroll: true,
+            onError: (errors) => toast(Object.values(errors)[0] ?? 'That wasn’t saved. Try again.', 'error'),
+        });
     };
 
     if (facts.length === 0) {
@@ -123,7 +121,7 @@ export function JobSheet({ job, facts, documents }: { job: JobData & { id: numbe
                                                 ) : (
                                                     <span>older version</span>
                                                 ))}
-                                            {jobField[f.field] && f.verified && (
+                                            {f.verified && jobValue(f) !== null && (
                                                 <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => applyFact(f)}>
                                                     Use in job
                                                 </Button>

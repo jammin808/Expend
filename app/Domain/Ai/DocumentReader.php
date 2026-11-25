@@ -114,11 +114,13 @@ final class DocumentReader
             $stated = $data['po']['total']['amount_minor'] ?? null;
             $totalCheck = is_int($stated) ? Grounding::check($text, $status, (string) ($data['po']['total']['quote'] ?? ''), $stated) : ['verified' => false, 'note' => 'No total stated.'];
             $sum = array_sum(array_column($lines, 'amount_minor'));
+            // Cut to what the draft invoice form takes (a PO number as long as on jobs), so a draft made from it saves.
+            // The email address is kept as read: the draft checks it's one usable address (InvoiceService).
             $po = [
-                'po_number' => $data['po']['po_number'] ?? null,
-                'bill_to_name' => $data['po']['bill_to_name'] ?? null,
-                'bill_to_address' => $data['po']['bill_to_address'] ?? null,
-                'bill_to_email' => $data['po']['bill_to_email'] ?? null,
+                'po_number' => self::clip($data['po']['po_number'] ?? null, 100),
+                'bill_to_name' => self::clip($data['po']['bill_to_name'] ?? null, 200),
+                'bill_to_address' => self::clip($data['po']['bill_to_address'] ?? null, 1000, true),
+                'bill_to_email' => self::clip($data['po']['bill_to_email'] ?? null, 200),
                 'currency' => preg_match('/^[A-Z]{3}$/', (string) ($data['po']['currency'] ?? '')) ? $data['po']['currency'] : 'GBP',
                 'payment_terms_days' => is_int($data['po']['payment_terms_days'] ?? null) ? $data['po']['payment_terms_days'] : null,
                 'lines' => $lines,
@@ -344,22 +346,76 @@ final class DocumentReader
         }
     }
 
+    /**
+     * The job a document books, to fill "This looks like a new job". Each detail fits the form (DocumentController::
+     * createJob), so it creates the job as it loads: an end date before the start, or too far after it for one job,
+     * isn't kept (it's a one-day job until you say otherwise).
+     */
     private function newJob(?array $job, ?string $text, string $status): ?array
     {
-        if (! $job || empty($job['title']) || empty($job['starts_on'])) {
+        $title = self::clip($job['title'] ?? null, 150);
+        if (! $job || $title === null || empty($job['starts_on'])) {
             return null;
+        }
+        $starts = self::date($job['starts_on']);
+        $ends = self::date($job['ends_on'] ?? null) ?? $starts;
+        if ($starts !== null && $ends !== null && ($ends < $starts
+            || (int) CarbonImmutable::parse($starts)->diffInDays(CarbonImmutable::parse($ends)) + 1 > JobDays::MAX_DAYS)) {
+            $ends = $starts;
         }
 
         return [
-            'title' => mb_substr($job['title'], 0, 150),
-            'client' => $job['client'] ?? null,
-            'starts_on' => self::date($job['starts_on']),
-            'ends_on' => self::date($job['ends_on'] ?? null) ?? self::date($job['starts_on']),
-            'venue' => $job['venue'] ?? null,
-            'postcode' => $job['postcode'] ?? null,
+            'title' => $title,
+            'client' => self::clip($job['client'] ?? null, 120),
+            'starts_on' => $starts,
+            'ends_on' => $ends,
+            'venue' => self::clip($job['venue'] ?? null, 200),
+            'postcode' => self::postcode($job['postcode'] ?? null),
             'quote' => $job['quote'] ?? null,
             'verified' => ! empty($job['quote']) && Grounding::check($text, $status, $job['quote'])['verified'],
         ];
+    }
+
+    /**
+     * Text the AI read, made to fit the box it fills: spaces tidied (line breaks kept only where asked, as in an
+     * address) and, when it's too long, cut to $max characters at the end of a word, without a comma or dash left
+     * hanging. Null when there's nothing.
+     */
+    public static function clip(mixed $value, int $max, bool $lines = false): ?string
+    {
+        if (! is_scalar($value) || is_bool($value)) {
+            return null;
+        }
+        $text = str_replace("\r", '', (string) $value);
+        $text = trim((string) ($lines ? preg_replace(['/[^\S\n]+/u', '/ *\n */u', '/\n{3,}/u'], [' ', "\n", "\n\n"], $text) : preg_replace('/\s+/u', ' ', $text)));
+        if ($text === '' || mb_strlen($text) <= $max) {
+            return $text === '' ? null : $text;
+        }
+        $cut = mb_substr($text, 0, $max);
+        $space = max((int) mb_strrpos($cut, ' '), (int) mb_strrpos($cut, "\n"));
+        if (! preg_match('/^\s/u', mb_substr($text, $max, 1)) && $space >= $max * 0.6) {
+            $cut = mb_substr($cut, 0, $space); // don't end on half a word
+        }
+        $cut = trim((string) preg_replace('/[\s,;:\/–-]+$/u', '', $cut));
+
+        return $cut === '' ? null : $cut;
+    }
+
+    /**
+     * A postcode for the job: the UK postcode in what was read ("SE10 0DX, London" gives SE10 0DX), or what was read
+     * when it's short enough to be one; never 10 characters cut from a longer place name.
+     */
+    private static function postcode(mixed $value): ?string
+    {
+        $text = self::clip($value, 200);
+        if ($text === null) {
+            return null;
+        }
+        if (preg_match('/\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/i', $text, $m)) {
+            return strtoupper($m[1].' '.$m[2]);
+        }
+
+        return mb_strlen($text) <= 10 ? $text : null;
     }
 
     private function receipt(?array $receipt, ?string $text, string $status): ?array

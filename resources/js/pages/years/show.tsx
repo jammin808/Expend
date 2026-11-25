@@ -123,7 +123,10 @@ export default function YearShow({
 }: Props) {
     const [group, setGroup] = useState<Props['groups'][number] | null>(null);
     const [decision, setDecision] = useState<Decision>({ kind: 'business_expense', business_pct: 100 });
-    const [poa, setPoa] = useState((year.payments_on_account_paid_pence / 100).toFixed(2));
+    // Locking the year keeps this page's state, so an amount typed but not saved would still show: a locked year's
+    // box shows what's saved.
+    const savedPoa = (year.payments_on_account_paid_pence / 100).toFixed(2);
+    const [poa, setPoa] = useState(savedPoa);
     const left = progress.unreviewed_count + progress.suggested_count;
 
     const openGroup = (g: Props['groups'][number]) => {
@@ -143,6 +146,14 @@ export default function YearShow({
         router.post('/decisions/bulk', { ...decision, merchant_key: group.merchant_key, tax_year: year.label } as never, {
             preserveScroll: true,
             onSuccess: () => setGroup(null),
+            // A refused decision (business use of 50.5%, say) comes back only as an error: say so, or Save seems to do nothing.
+            onError: (errors) =>
+                toast(
+                    errors.business_pct
+                        ? 'Type the business use as a whole number from 1 to 100.'
+                        : (Object.values(errors)[0] ?? 'That didn’t save. Try again.'),
+                    'error',
+                ),
         });
     };
 
@@ -186,6 +197,7 @@ export default function YearShow({
                         <Button
                             variant="outline"
                             onClick={() => {
+                                // A reason that's too short is refused: say so, or the button seems to do nothing.
                                 const failed = (errors: Record<string, string>) =>
                                     toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error');
                                 if (year.locked) {
@@ -502,27 +514,40 @@ export default function YearShow({
                             {bill && (
                                 <div>
                                     <h3 className="mb-2 text-sm font-medium">What HMRC is likely to ask for</h3>
-                                    <div className="mb-3 flex items-center gap-2 text-sm">
+                                    <div className={cn('flex items-center gap-2 text-sm', year.locked ? 'mb-1' : 'mb-3')}>
                                         <label htmlFor="poa" className="text-muted-foreground">
                                             Payments on account already paid for {year.label}
                                         </label>
                                         <Input
                                             id="poa"
                                             inputMode="decimal"
-                                            className="h-8 w-28"
-                                            value={poa}
+                                            className={cn('h-8 w-28', year.locked && 'bg-muted text-muted-foreground cursor-not-allowed')}
+                                            value={year.locked ? savedPoa : poa}
                                             onChange={(e) => setPoa(e.target.value)}
+                                            readOnly={year.locked}
+                                            aria-describedby={year.locked ? 'poa-locked' : undefined}
                                         />
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() =>
-                                                router.patch(`/years/${year.label}`, { payments_on_account_paid: poa }, { preserveScroll: true })
-                                            }
-                                        >
-                                            Save
-                                        </Button>
+                                        {!year.locked && (
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() =>
+                                                    router.patch(`/years/${year.label}`, { payments_on_account_paid: poa }, { preserveScroll: true })
+                                                }
+                                            >
+                                                Save
+                                            </Button>
+                                        )}
                                     </div>
+                                    {year.locked && (
+                                        <p id="poa-locked" className="mb-3 flex gap-1.5 text-xs">
+                                            <Lock className="mt-0.5 size-3.5 shrink-0" />
+                                            <span>
+                                                This year is locked, so this amount can’t change. To change it, unlock the year at the top of this
+                                                page.
+                                            </span>
+                                        </p>
+                                    )}
                                     <ul className="divide-y text-sm">
                                         {bill.due.map((d) => (
                                             <li key={d.date} className="flex justify-between gap-3 py-1.5">

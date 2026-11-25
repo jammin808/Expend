@@ -137,6 +137,17 @@ class DocumentController extends Controller
         $data = $request->validate([
             'title' => 'required|string|max:150', 'client' => 'nullable|string|max:120', 'starts_on' => 'required|date',
             'ends_on' => 'required|date|after_or_equal:starts_on', 'location' => 'nullable|string|max:200', 'postcode' => 'nullable|string|max:10',
+        ], [
+            'title.required' => 'Give the job a title.',
+            'title.max' => 'The title is too long (150 characters at most).',
+            'client.max' => 'The client’s name is too long (120 characters at most).',
+            'location.max' => 'The venue is too long (200 characters at most).',
+            'postcode.max' => 'A postcode is 10 characters at most, like SE10 0DX.',
+            'starts_on.required' => 'Add the date the job starts.',
+            'starts_on.date' => 'The start date isn’t a date.',
+            'ends_on.required' => 'Add the date the job ends (the same date for a one-day job).',
+            'ends_on.date' => 'The end date isn’t a date.',
+            'ends_on.after_or_equal' => 'The job can’t end before it starts.',
         ]);
         try {
             $job = DB::transaction(function () use ($data, $document, $new) {
@@ -162,8 +173,13 @@ class DocumentController extends Controller
         } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
+        // An email address the PO gives that isn't one the invoice can be sent to is left off the draft: say so.
+        $read = DocumentReader::clip($document->extraction['po']['bill_to_email'] ?? null, 200);
+        $note = $read !== null && $invoice->bill_to_email === null
+            ? " The PO gives “{$read}” as the email for invoices. That isn’t one address an invoice can be sent to, so it was left out: add the right one before you email it."
+            : '';
 
-        return to_route('invoices.show', $invoice)->with('success', 'Draft invoice created from the PO. Check it, then issue it.');
+        return to_route('invoices.show', $invoice)->with('success', 'Draft invoice created from the PO. Check it, then issue it.'.$note);
     }
 
     public function download(Document $document): StreamedResponse

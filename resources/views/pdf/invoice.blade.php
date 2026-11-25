@@ -15,6 +15,11 @@
     .num { text-align: right; white-space: nowrap; }
     .total td { font-weight: bold; font-size: 12pt; border-top: 2px solid #111; padding-top: 8pt; }
     .box { margin-top: 18pt; }
+    /* The dates and PO number: labels stay on one line, and a long PO number (up to 100 characters) wraps,
+       mid-word if it has to, so it never pushes the dates off the page. */
+    .facts td { vertical-align: top; }
+    .facts .muted { white-space: nowrap; }
+    .facts .po { white-space: normal; overflow-wrap: anywhere; padding-left: 8pt; }
 </style>
 </head>
 <body>
@@ -40,11 +45,11 @@
             {!! nl2br(e($invoice->bill_to_address)) !!}
         </td>
         <td style="vertical-align: top">
-            <table>
+            <table class="facts">
                 <tr><td class="muted">Issue date</td><td class="num">{{ $invoice->issue_date?->format('j M Y') }}</td></tr>
                 <tr><td class="muted">Due date</td><td class="num">{{ $invoice->due_date?->format('j M Y') }}</td></tr>
                 @if ($invoice->po_number)
-                    <tr><td class="muted">PO number</td><td class="num">{{ $invoice->po_number }}</td></tr>
+                    <tr><td class="muted">PO number</td><td class="num po">{{ $invoice->po_number }}</td></tr>
                 @endif
             </table>
         </td>

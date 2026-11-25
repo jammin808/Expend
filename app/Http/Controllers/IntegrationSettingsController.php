@@ -47,7 +47,8 @@ class IntegrationSettingsController extends Controller
             ],
             'email' => [
                 'host' => Setting::get('imap_host'), 'port' => Setting::get('imap_port'), 'username' => Setting::get('imap_username'),
-                'password_set' => Setting::get('imap_password') !== null, 'allowed' => implode(', ', (array) Setting::get('allowed_senders')),
+                // Joined the way updateEmail splits it, so the list saves again exactly as shown and never grows.
+                'password_set' => Setting::get('imap_password') !== null, 'allowed' => implode(',', (array) Setting::get('allowed_senders')),
             ],
             'gmail' => [
                 'configured' => GmailClient::configured(), 'connected' => GmailClient::connected(), 'account' => Setting::get('gmail_account'),
@@ -83,7 +84,7 @@ class IntegrationSettingsController extends Controller
 
     public function connectStarling(Request $request, StarlingSync $starling): RedirectResponse
     {
-        $token = trim($request->validate(['token' => 'required|string|min:20|max:4000'])['token']);
+        $token = trim($request->validate(['token' => 'required|string|min:20|max:4000'], [], ['token' => 'Starling token'])['token']);
         try {
             $map = $starling->connect($token);
         } catch (Throwable $e) {
@@ -103,7 +104,11 @@ class IntegrationSettingsController extends Controller
 
     public function syncStarling(Request $request, StarlingSync $starling): RedirectResponse
     {
-        $from = $request->validate(['from' => 'nullable|date|before:today|after:2015-01-01'])['from'] ?? null;
+        $from = $request->validate(['from' => 'nullable|date|before:today|after:2015-01-01'], [
+            'from.date' => 'Type the date to import from as YYYY-MM-DD, for example 2025-04-06.',
+            'from.before' => 'The date to import from must be before today.',
+            'from.after' => 'The date to import from must be after 1 January 2015.',
+        ])['from'] ?? null;
         try {
             $results = $starling->sync($from);
         } catch (Throwable $e) {
@@ -180,7 +185,9 @@ class IntegrationSettingsController extends Controller
             'api_key' => 'nullable|string|max:300', 'model' => ['required', Rule::in(array_keys(AiConfig::MODELS))],
             'effort' => 'required|in:low,medium,high,xhigh', 'cap_usd' => 'required|numeric|min:0|max:10000',
             'suggestions' => 'boolean', 'extraction' => 'required|in:off,on_demand,on', 'web_research' => 'boolean',
-        ]);
+        ], [
+            'cap_usd.numeric' => 'Type the monthly spending cap as a number of dollars, for example 40.',
+        ], ['api_key' => 'Claude API key', 'cap_usd' => 'monthly spending cap', 'extraction' => 'reading documents']);
         if (! empty($data['api_key'])) {
             Setting::put('anthropic_api_key', trim($data['api_key']));
         }
@@ -202,7 +209,10 @@ class IntegrationSettingsController extends Controller
         $data = $request->validate([
             'name' => 'nullable|string|max:200', 'address' => 'nullable|string|max:1000', 'email' => 'nullable|email|max:200',
             'bank' => 'nullable|string|max:500', 'prefix' => 'required|string|max:12|regex:/^[A-Za-z0-9\-\/]+$/', 'terms' => 'required|integer|min:0|max:120',
-        ]);
+        ], [
+            'prefix.regex' => 'The invoice number prefix can only use letters, numbers, - and /, with no spaces.',
+            'terms.integer' => 'Type the payment terms as a whole number of days, for example 30.',
+        ], ['name' => 'business name', 'bank' => 'payment details', 'prefix' => 'invoice number prefix', 'terms' => 'payment terms']);
         foreach (['name' => 'business_name', 'address' => 'business_address', 'email' => 'business_email', 'bank' => 'business_bank_details', 'prefix' => 'invoice_prefix', 'terms' => 'invoice_terms_days'] as $field => $key) {
             Setting::put($key, $data[$field] ?? null);
         }
@@ -216,7 +226,9 @@ class IntegrationSettingsController extends Controller
         $data = $request->validate([
             'host' => 'nullable|string|max:200', 'port' => 'nullable|integer', 'username' => 'nullable|string|max:200',
             'password' => 'nullable|string|max:300', 'allowed' => 'nullable|string|max:1000', 'test' => 'boolean',
-        ]);
+        ], [
+            'port.integer' => 'The port is a number, usually 993.',
+        ], ['host' => 'IMAP server', 'username' => 'mailbox address', 'password' => 'mailbox password', 'allowed' => 'sending addresses']);
         Setting::put('imap_host', $data['host'] ?? null);
         Setting::put('imap_port', $data['port'] ?? 993);
         Setting::put('imap_username', $data['username'] ?? null);
@@ -241,7 +253,7 @@ class IntegrationSettingsController extends Controller
 
     public function connectTelegram(Request $request): RedirectResponse
     {
-        $data = $request->validate(['token' => 'required|string|max:1000']);
+        $data = $request->validate(['token' => 'required|string|max:1000'], [], ['token' => 'bot token']);
         // Accept the whole BotFather message pasted in: the token is the "digits:letters" part.
         if (! preg_match('/\b\d{5,}:[A-Za-z0-9_-]{30,}\b/', $data['token'], $m)) {
             return back()->with('error', 'That doesn’t look like a bot token. In @BotFather send /mybots, choose your bot, then API Token, and copy the line that looks like 123456789:AA….');

@@ -27,6 +27,15 @@ use Inertia\Response;
  */
 class JobCalendarController extends Controller
 {
+    /** Plain words for a day that can't be saved: the job page shows them as they are. */
+    private const DAY_MESSAGES = [
+        'date.required' => 'Pick the day to add.', 'date.date' => 'The day to add isn’t a date.',
+        'kind.required' => 'Pick what kind of day it is.', 'kind.in' => 'Pick what kind of day it is.',
+        'start_time.date_format' => 'The start time needs hours and minutes, like 07:30.',
+        'end_time.date_format' => 'The finish time needs hours and minutes, like 18:00.',
+        'note.max' => 'A note on a day is 200 characters at most.',
+    ];
+
     public function index(Request $request, JobFinder $finder): Response
     {
         $month = preg_match('/^\d{4}-\d{2}$/', (string) $request->query('m')) ? CarbonImmutable::parse($request->query('m').'-01') : CarbonImmutable::today()->startOfMonth();
@@ -86,7 +95,7 @@ class JobCalendarController extends Controller
     public function addDay(Request $request, WorkJob $job, JobGatherer $gatherer): RedirectResponse
     {
         $data = $request->validate(['date' => 'required|date', 'kind' => 'required|in:'.implode(',', array_keys(JobDay::KINDS)),
-            'start_time' => 'nullable|date_format:H:i', 'end_time' => 'nullable|date_format:H:i', 'note' => 'nullable|string|max:200']);
+            'start_time' => 'nullable|date_format:H:i', 'end_time' => 'nullable|date_format:H:i', 'note' => 'nullable|string|max:200'], self::DAY_MESSAGES);
         $date = CarbonImmutable::parse($data['date'])->format('Y-m-d');
         // Measured from the job's nearest day, so a long job (a season) can have a day added near its end.
         $first = $job->starts_on->format('Y-m-d');
@@ -105,7 +114,7 @@ class JobCalendarController extends Controller
 
     public function updateDay(Request $request, JobDay $day): RedirectResponse
     {
-        $data = $request->validate(['kind' => 'required|in:'.implode(',', array_keys(JobDay::KINDS)), 'start_time' => 'nullable|date_format:H:i', 'end_time' => 'nullable|date_format:H:i', 'note' => 'nullable|string|max:200']);
+        $data = $request->validate(['kind' => 'required|in:'.implode(',', array_keys(JobDay::KINDS)), 'start_time' => 'nullable|date_format:H:i', 'end_time' => 'nullable|date_format:H:i', 'note' => 'nullable|string|max:200'], self::DAY_MESSAGES);
         $before = $day->only(['kind', 'start_time', 'end_time', 'note']);
         $day->update($data + ['source' => 'you']);
         AuditLog::record('job.day_updated', $day->job, $before, $day->only(['kind', 'start_time', 'end_time', 'note']));

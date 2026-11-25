@@ -1,3 +1,4 @@
+import InputError from '@/components/input-error';
 import { StatusPill } from '@/components/status-pill';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -5,6 +6,7 @@ import { Progress } from '@/components/ui/progress';
 import AppLayout from '@/layouts/app-layout';
 import { day, money } from '@/lib/format';
 import { Head, Link, router, useForm } from '@inertiajs/react';
+import { Lock } from 'lucide-react';
 import { useState } from 'react';
 
 interface YearRow {
@@ -54,22 +56,47 @@ function YearEditor({ year, statuses }: { year: YearRow; statuses: Record<string
                         </option>
                     ))}
                 </select>
+                <InputError message={form.errors.status} />
             </label>
             <label className="space-y-1 text-sm">
                 <span className="text-muted-foreground">Filed on</span>
                 <Input type="date" value={form.data.filed_on} onChange={(e) => form.setData('filed_on', e.target.value)} />
+                <InputError message={form.errors.filed_on} />
             </label>
             <label className="space-y-1 text-sm">
                 <span className="text-muted-foreground">HMRC submission reference</span>
                 <Input value={form.data.hmrc_reference} onChange={(e) => form.setData('hmrc_reference', e.target.value)} />
+                <InputError message={form.errors.hmrc_reference} />
             </label>
-            <p className="text-muted-foreground text-xs sm:col-span-3">
-                If this year was filed outside the app, enter its figures to compare with the next year.
-            </p>
+            {year.locked ? (
+                <p id={`${year.label}-locked`} className="flex gap-1.5 text-xs sm:col-span-3">
+                    <Lock className="mt-0.5 size-3.5 shrink-0" />
+                    <span>
+                        This year is locked, so its filed figures can’t change. You can still save its status, filed date and HMRC reference. To
+                        change a figure,{' '}
+                        <Link href={`/years/${year.label}`} className="underline underline-offset-2">
+                            unlock {year.label} on its own page
+                        </Link>
+                        .
+                    </span>
+                </p>
+            ) : (
+                <p className="text-muted-foreground text-xs sm:col-span-3">
+                    If this year was filed outside the app, enter its figures to compare with the next year.
+                </p>
+            )}
             {(['filed_turnover', 'filed_expenses', 'filed_profit'] as const).map((f) => (
                 <label key={f} className="space-y-1 text-sm">
                     <span className="text-muted-foreground">{f.replace('filed_', 'Filed ')}</span>
-                    <Input inputMode="decimal" value={form.data[f]} onChange={(e) => form.setData(f, e.target.value)} />
+                    <Input
+                        inputMode="decimal"
+                        value={form.data[f]}
+                        onChange={(e) => form.setData(f, e.target.value)}
+                        readOnly={year.locked}
+                        aria-describedby={year.locked ? `${year.label}-locked` : undefined}
+                        className={year.locked ? 'bg-muted text-muted-foreground cursor-not-allowed' : undefined}
+                    />
+                    <InputError message={form.errors[f]} />
                 </label>
             ))}
             <div className="sm:col-span-3">
@@ -200,6 +227,11 @@ export default function YearsIndex({
                                     {y.label}
                                 </Link>
                                 <StatusPill status={y.status} />
+                                {y.locked && (
+                                    <span className="text-muted-foreground flex items-center gap-1 text-sm">
+                                        <Lock className="size-3.5" /> Locked
+                                    </span>
+                                )}
                                 <span className="text-muted-foreground text-sm">{y.deadline ? `Due ${day(y.deadline)}` : 'No notice to file'}</span>
                                 {!y.has_rates && <span className="text-xs text-amber-700">No tax rates loaded</span>}
                                 <div className="ml-auto flex min-w-48 flex-1 items-center gap-3 sm:max-w-xs">

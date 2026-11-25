@@ -1,3 +1,4 @@
+import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { router, useForm } from '@inertiajs/react';
@@ -19,6 +20,9 @@ const label = (d: string) =>
 
 const hhmm = (t: string | null) => (t ? t.slice(0, 5) : '');
 
+/** A change that wasn't saved says why, rather than doing nothing. */
+const refused = (errors: Record<string, string>) => toast(Object.values(errors)[0] ?? 'That wasn’t saved. Try again.', 'error');
+
 /**
  * A day's own start or finish time, saved when you leave the box (a de-rig finishing at 13:00 while the show ran to
  * 23:00). Once you set it, it's yours: a calendar entry or the job's own times no longer change it.
@@ -34,7 +38,8 @@ function DayTime({ day: d, field, label: aria }: { day: JobDayRow; field: 'start
             aria-label={aria}
             defaultValue={saved}
             onBlur={(e) => {
-                const value = e.target.value;
+                const box = e.target;
+                const value = box.value;
                 if (value === saved) return;
                 router.patch(
                     `/job-days/${d.id}`,
@@ -45,7 +50,13 @@ function DayTime({ day: d, field, label: aria }: { day: JobDayRow; field: 'start
                         note: d.note,
                         [field]: value || null,
                     },
-                    { preserveScroll: true },
+                    {
+                        preserveScroll: true,
+                        onError: (errors) => {
+                            box.value = saved; // the box shows the time that's kept, not one that wasn't saved
+                            refused(errors);
+                        },
+                    },
                 );
             }}
         />
@@ -58,7 +69,7 @@ function DayTime({ day: d, field, label: aria }: { day: JobDayRow; field: 'start
  */
 export function JobDays({ jobId, days, kinds }: { jobId: number; days: JobDayRow[]; kinds: Record<string, string> }) {
     const form = useForm({ date: '', kind: 'work', start_time: '', end_time: '' });
-    const opts = { preserveScroll: true };
+    const opts = { preserveScroll: true, onError: refused };
     const gaps = days.filter((d, i) => i > 0 && (Date.parse(d.date) - Date.parse(days[i - 1].date)) / 86_400_000 > 1).length;
 
     return (

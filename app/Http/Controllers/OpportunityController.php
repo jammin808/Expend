@@ -104,7 +104,7 @@ class OpportunityController extends Controller
             'opportunity_day_kinds' => array_intersect_key(JobDay::KINDS, array_flip(Opportunity::DAY_KINDS)),
             'rate_units' => self::RATE_UNITS,
             'statuses' => Opportunity::STATUSES,
-            'edit_statuses' => array_intersect_key(Opportunity::STATUSES, array_flip(self::EDIT_STATUSES)),
+            'edit_statuses' => array_intersect_key(Opportunity::STATUSES, array_flip(self::editStatuses($o))),
         ]);
     }
 
@@ -134,7 +134,7 @@ class OpportunityController extends Controller
         if (in_array($opportunity->status, Opportunity::YOURS, true)) {
             return back()->with('error', 'You’ve closed this one. Reopen it first to change it.');
         }
-        $data = $this->validated($request, true);
+        $data = $this->validated($request, true, $opportunity);
         $fields = self::fields($data);
         try {
             $changes = self::changes($opportunity, $fields, $data);
@@ -147,11 +147,17 @@ class OpportunityController extends Controller
 
         DB::transaction(function () use ($opportunity, $changes) {
             $o = Opportunity::query()->lockForUpdate()->findOrFail($opportunity->id);
+            // Picking an open stage for one that's closed (passed with no answer, or went elsewhere) reopens it, as Reopen
+            // does (Opportunities::reopen), so the nightly run doesn't close it again for a date that had already passed.
+            // When isn't a detail of yours.
+            if (in_array($o->status, ['expired', 'lost'], true) && in_array($changes['status'] ?? null, Opportunity::OPEN, true)) {
+                $changes['reopened_at'] = now();
+            }
             $before = [];
             foreach (array_keys($changes) as $field) {
                 $before[$field] = self::plain($o->{$field});
             }
-            $details = array_map(fn ($f) => Opportunity::DETAIL_OF[$f] ?? $f, array_keys(array_diff_key($changes, ['note' => true])));
+            $details = array_map(fn ($f) => Opportunity::DETAIL_OF[$f] ?? $f, array_keys(array_diff_key($changes, ['note' => true, 'reopened_at' => true])));
             $o->update($changes + ['owner_fields' => array_values(array_unique([...($o->owner_fields ?? []), ...$details]))]);
             $after = [];
             foreach (array_keys($changes) as $field) {
@@ -363,7 +369,7 @@ class OpportunityController extends Controller
         $fields = array_fill_keys($owner, true);
         foreach ($history as $e) {
             if ($e->action === 'opportunity.edited') {
-                foreach (array_keys($e->after ?? []) as $f) {
+                foreach (array_keys(array_diff_key($e->after ?? [], ['reopened_at' => true])) as $f) {
                     $fields[match ($f) {
                         'client_name', 'client_id' => 'client', 'contact_name', 'contact_email' => 'contact',
                         'starts_on', 'ends_on', 'dates' => 'dates', 'rate_minor', 'rate_currency', 'rate_unit' => 'rate', default => $f,
@@ -424,15 +430,31 @@ class OpportunityController extends Controller
 
     // ---------------------------------------------------------------- editing
 
-    private function validated(Request $request, bool $editing): array
+    /**
+     * The stages the edit form offers: one that passed with no answer stays so until you pick another stage (it's
+     * never set from the form; the nightly run does that).
+     *
+     * @return list<string>
+     */
+    private static function editStatuses(?Opportunity $o = null): array
+    {
+        return $o?->status === 'expired' ? [...self::EDIT_STATUSES, 'expired'] : self::EDIT_STATUSES;
+    }
+
+    private function validated(Request $request, bool $editing, ?Opportunity $opportunity = null): array
     {
         return $request->validate([
             'title' => ($editing ? 'required' : 'nullable').'|string|max:150',
-            'status' => [$editing ? 'required' : 'nullable', Rule::in(self::EDIT_STATUSES)],
+            'status' => [$editing ? 'required' : 'nullable', Rule::in(self::editStatuses($opportunity))],
             'hold_rank' => 'nullable|integer|min:1|max:9',
             'client_name' => 'nullable|string|max:120',
             'contact_name' => 'nullable|string|max:120',
-            'contact_email' => 'nullable|email|max:200',
+            // The same rule the reader keeps a contact's email by (Opportunities::contactEmail), so one it kept always saves.
+            'contact_email' => ['nullable', 'bail', 'string', 'email', 'max:200', function (string $attribute, mixed $value, \Closure $fail) {
+                if (Opportunities::contactEmail($value) === null) {
+                    $fail('Give one email address, like name@example.co.uk.');
+                }
+            }],
             'role' => 'nullable|string|max:120',
             'venue' => 'nullable|string|max:200',
             'postcode' => 'nullable|string|max:10',
@@ -482,16 +504,19 @@ class OpportunityController extends Controller
             throw new InvalidArgumentException('Work can cover at most 400 days.');
         }
         $clientName = $fields['client_name'];
+        // The page shows the linked client's own name: sent back as it was shown, the client stays as it is.
+        $sameClient = $clientName !== null && $o->client_id !== null && $clientName === $o->client?->name;
         $rate = $fields['rate'];
 
         $wanted = [
             'title' => mb_substr((string) $fields['title'], 0, 150),
             'status' => $data['status'],
-            'hold_rank' => in_array($data['status'], ['held', 'offered', 'confirmed'], true) ? $fields['hold_rank'] : null,
-            'client_name' => $clientName,
-            'client_id' => $clientName === null ? null : (self::clientIdFor($clientName) ?? ($o->client_name === $clientName ? $o->client_id : null)),
+            // The rank is in the form only for a hold, an offer or a booking: otherwise it's kept, unless you change the stage.
+            'hold_rank' => in_array($data['status'], ['held', 'offered', 'confirmed'], true) ? $fields['hold_rank'] : ($data['status'] === $o->status ? $o->hold_rank : null),
+            'client_name' => $sameClient ? $o->client_name : $clientName,
+            'client_id' => $sameClient ? $o->client_id : ($clientName === null ? null : (self::clientIdFor($clientName) ?? ($o->client_name === $clientName ? $o->client_id : null))),
             'contact_name' => $fields['contact_name'],
-            'contact_email' => $fields['contact_email'] !== null ? mb_strtolower($fields['contact_email']) : null,
+            'contact_email' => Opportunities::contactEmail($fields['contact_email']),
             'role' => $fields['role'], 'venue' => $fields['venue'],
             'postcode' => $fields['postcode'] !== null ? mb_strtoupper($fields['postcode']) : null,
             'dates' => $dates ?: null,

@@ -24,6 +24,13 @@ use Throwable;
 
 class ImportController extends Controller
 {
+    /** A reason typed into the page's prompt (kept in the audit log), refused in plain words. */
+    private const REASON_MESSAGES = [
+        'reason.required' => 'Say why, in a few words. It’s kept in the audit log.',
+        'reason.min' => 'Say why in a few more words (3 characters at least). It’s kept in the audit log.',
+        'reason.max' => 'The reason is too long (250 characters at most).',
+    ];
+
     public function __construct(private Importer $importer, private ExchangeRates $rates) {}
 
     public function index(Request $request): Response
@@ -115,6 +122,11 @@ class ImportController extends Controller
             'rates.*.month' => 'required|date_format:Y-m',
             'rates.*.units_per_gbp' => 'required|numeric|gt:0|max:100000000',
             'main_pocket' => 'nullable|string|max:300',
+        ], [
+            'file.uploaded' => 'That file didn’t upload. Try again, or choose a smaller file.',
+            'file.file' => 'That file didn’t upload. Try again, or choose a smaller file.',
+            'file.mimes' => 'Expend can’t read that kind of file. Choose a statement saved as CSV or Excel (.xlsx).',
+            'file.max' => 'That file is too big (20 MB at most).',
         ]);
         $account = Account::query()->findOrFail($data['account_id']);
         $pending = $request->session()->get('import');
@@ -222,7 +234,7 @@ class ImportController extends Controller
 
     public function revert(Request $request, ImportBatch $batch): RedirectResponse
     {
-        $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
+        $data = $request->validate(['reason' => 'required|string|min:3|max:250'], self::REASON_MESSAGES);
         try {
             $this->importer->revert($batch, $data['reason']);
         } catch (\RuntimeException $e) {
@@ -234,7 +246,7 @@ class ImportController extends Controller
 
     public function accept(Request $request, ImportBatch $batch): RedirectResponse
     {
-        $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
+        $data = $request->validate(['reason' => 'required|string|min:3|max:250'], self::REASON_MESSAGES);
         try {
             $count = $this->importer->accept($batch, $data['reason']);
         } catch (\RuntimeException $e) {
@@ -247,7 +259,7 @@ class ImportController extends Controller
 
     public function discard(Request $request, ImportBatch $batch): RedirectResponse
     {
-        $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
+        $data = $request->validate(['reason' => 'required|string|min:3|max:250'], self::REASON_MESSAGES);
         try {
             $this->importer->discard($batch, $data['reason']);
         } catch (\RuntimeException $e) {
@@ -259,7 +271,7 @@ class ImportController extends Controller
 
     public function restore(Request $request, ImportBatch $batch): RedirectResponse
     {
-        $data = $request->validate(['reason' => 'required|string|min:3|max:250']);
+        $data = $request->validate(['reason' => 'required|string|min:3|max:250'], self::REASON_MESSAGES);
         try {
             $count = $this->importer->restore($batch, $data['reason']);
         } catch (\RuntimeException $e) {

@@ -104,7 +104,8 @@ class AccountController extends Controller
     private function validated(Request $request): array
     {
         return $request->validate([
-            'name' => 'required|string|max:80',
+            // Long enough for the names a bank's own connection gives ("Starling " and the account's name there).
+            'name' => 'required|string|max:255',
             'kind' => 'required|in:bank,credit_card',
             'provider' => 'nullable|in:starling,amex,capital_one,revolut,monzo,wise,paypal,other',
             'last4' => 'nullable|digits:4',

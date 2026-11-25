@@ -2,6 +2,7 @@ import { CheckBadge, type Check } from '@/components/check-badge';
 import { JobsTabs } from '@/components/jobs-tabs';
 import { Money } from '@/components/money';
 import { NativeSelect } from '@/components/native-select';
+import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -102,6 +103,9 @@ const logStatus: Record<string, string> = {
     failed: 'Couldn’t be read',
 };
 
+/** Show the first thing the server refused, so a button never seems to do nothing. */
+const failed = (errors: Record<string, string>) => toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error');
+
 function when(i: Item): string {
     const d = (s: string) =>
         new Date(s + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
@@ -135,7 +139,23 @@ function ItemCard({
         router.post(
             `/travel/${item.id}/decide`,
             { decision, job_id: jobId ? Number(jobId) : null, business_nights: decision === 'mixed' ? Number(nights) : null, note: note || null },
-            { preserveScroll: true, onSuccess: () => setEditing(false) },
+            {
+                preserveScroll: true,
+                onSuccess: () => setEditing(false),
+                // A refused decision (the nights box left empty or typed as 1.5, a note that's too long) comes back
+                // only as an error: say so, or the button seems to do nothing.
+                onError: (errors) =>
+                    toast(
+                        errors.business_nights
+                            ? 'Type how many nights were for work, as a whole number.'
+                            : errors.note
+                              ? 'Keep the note to 500 characters or fewer.'
+                              : errors.job_id
+                                ? 'That job isn’t there any more. Reload the page and pick the job again.'
+                                : (Object.values(errors)[0] ?? 'That didn’t save. Try again.'),
+                        'error',
+                    ),
+            },
         );
 
     const unverified = Object.entries(item.evidence).filter(([, e]) => e && !e.verified);
@@ -273,7 +293,11 @@ function ItemCard({
                         <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
                             Change
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => router.post(`/travel/${item.id}/reopen`, {}, { preserveScroll: true })}>
+                        <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => router.post(`/travel/${item.id}/reopen`, {}, { preserveScroll: true, onError: failed })}
+                        >
                             Reopen
                         </Button>
                     </div>
@@ -379,7 +403,9 @@ export default function Travel({
                                 <div className="flex flex-wrap gap-2">
                                     <Button
                                         size="sm"
-                                        onClick={() => router.post('/travel/scan', { tax_year: year, searches }, { preserveScroll: true })}
+                                        onClick={() =>
+                                            router.post('/travel/scan', { tax_year: year, searches }, { preserveScroll: true, onError: failed })
+                                        }
                                         disabled={!searches.length}
                                     >
                                         <Search className="size-4" /> Search Gmail for {year}
@@ -452,7 +478,7 @@ export default function Travel({
                         <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => router.post('/travel/check', { tax_year: year }, { preserveScroll: true })}
+                            onClick={() => router.post('/travel/check', { tax_year: year }, { preserveScroll: true, onError: failed })}
                         >
                             <RefreshCw className="size-4" /> Check against jobs again
                         </Button>
@@ -500,7 +526,9 @@ export default function Travel({
                                                 size="sm"
                                                 variant="ghost"
                                                 className="h-6 px-2"
-                                                onClick={() => router.post(`/travel/messages/${m.id}/read`, {}, { preserveScroll: true })}
+                                                onClick={() =>
+                                                    router.post(`/travel/messages/${m.id}/read`, {}, { preserveScroll: true, onError: failed })
+                                                }
                                             >
                                                 Read again
                                             </Button>

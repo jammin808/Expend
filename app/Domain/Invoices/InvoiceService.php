@@ -2,6 +2,7 @@
 
 namespace App\Domain\Invoices;
 
+use App\Domain\Ai\DocumentReader;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Gmail\GmailLabeller;
 use App\Jobs\SyncGmailLabels;
@@ -18,6 +19,7 @@ use Dompdf\Dompdf;
 use Dompdf\Options;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
 use InvalidArgumentException;
 
 /**
@@ -38,16 +40,18 @@ final class InvoiceService
             $client = $job?->client ?? ($po['bill_to_name'] ? Client::query()->firstOrCreate(['name' => mb_substr($po['bill_to_name'], 0, 120)]) : null);
             $terms = $po['payment_terms_days'] ?? (int) Setting::get('invoice_terms_days');
 
+            // What the AI read fits the draft form (InvoiceController::update), so the draft saves as it opens, also
+            // from a PO read before readings were cut to fit.
             $invoice = Invoice::query()->create([
                 'status' => 'draft',
                 'client_id' => $client?->id,
                 'work_job_id' => $job?->id,
                 'document_id' => $document->id,
-                'po_number' => $po['po_number'],
+                'po_number' => DocumentReader::clip($po['po_number'] ?? null, 100),
                 'currency' => $po['currency'] ?? 'GBP',
-                'bill_to_name' => $po['bill_to_name'] ?? $client?->name,
-                'bill_to_address' => $po['bill_to_address'],
-                'bill_to_email' => $po['bill_to_email'],
+                'bill_to_name' => DocumentReader::clip($po['bill_to_name'] ?? null, 200) ?? $client?->name,
+                'bill_to_address' => DocumentReader::clip($po['bill_to_address'] ?? null, 1000, true),
+                'bill_to_email' => self::emailAddress($po['bill_to_email'] ?? null),
                 'po_total_minor' => $po['stated_total_minor'],
                 'notes' => "Payment due within {$terms} days.",
             ]);
@@ -197,6 +201,18 @@ final class InvoiceService
         if ($invoice->status !== 'draft') {
             throw new InvalidArgumentException('This invoice has been issued and can’t be changed. Void it and issue a new one.');
         }
+    }
+
+    /**
+     * One address the invoice can be emailed to, checked as the draft form and sending check it, or null. Two
+     * addresses ("accounts@client.co.uk, producer@client.co.uk"), a name with the address, or one with no ending
+     * (accounts@client) are left out rather than put on the invoice.
+     */
+    public static function emailAddress(mixed $value): ?string
+    {
+        $email = is_string($value) ? trim($value) : '';
+
+        return $email !== '' && Validator::make(['email' => $email], ['email' => 'email:rfc,filter|max:200'])->passes() ? $email : null;
     }
 
     /** A quantity as an exact decimal with at most 2 places, or null if it isn't a positive number. */

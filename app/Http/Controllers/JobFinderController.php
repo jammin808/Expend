@@ -24,6 +24,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 use Throwable;
@@ -209,6 +210,11 @@ class JobFinderController extends Controller
     /** "This is a job": make a job from a calendar entry (you check the details first), linked to the entry. */
     public function fromCalendar(Request $request, JobFinder $finder): RedirectResponse
     {
+        $entry = $request->validate(['key' => 'required|string|size:40', 'date' => 'required|date_format:Y-m-d']);
+        $event = JobFinder::event($entry['key'], $entry['date']);
+        abort_unless($event, 404);
+        // The entry's own title and venue can be longer than a job's: shortened to fit, with the whole text in the notes.
+        $request->merge($fitted = self::fitEntryText($request->only(['title', 'location', 'notes']), $event));
         $data = $request->validate([
             'key' => 'required|string|size:40', 'date' => 'required|date_format:Y-m-d',
             'title' => 'required|string|max:150', 'client_id' => 'nullable|integer|exists:clients,id', 'new_client' => 'nullable|string|max:120',
@@ -216,9 +222,11 @@ class JobFinderController extends Controller
             'end_time' => 'nullable|date_format:H:i', 'location' => 'nullable|string|max:200', 'postcode' => 'nullable|string|max:10',
             'fee' => 'nullable|string', 'po_number' => 'nullable|string|max:100', 'notes' => 'nullable|string|max:2000', 'status' => 'nullable|in:booked,done',
             'po_not_required' => 'boolean', 'then' => 'nullable|in:job',
+        ], [
+            // Worded as the job form's other messages are (JobController, JobCreator).
+            'title.max' => 'The job title is too long (150 characters at most).', 'location.max' => 'The venue is too long (200 characters at most).',
+            'notes.max' => 'The notes are too long (2,000 characters at most).',
         ]);
-        $event = JobFinder::event($data['key'], $data['date']);
-        abort_unless($event, 404);
         if ($long = self::tooLong($data)) {
             return back()->with('error', $long);
         }
@@ -243,9 +251,82 @@ class JobFinderController extends Controller
         // Then everything that belongs to it: other days, POs and documents, Gmail, payments, stays, the fee.
         $found = app(JobGatherer::class)->gather($job);
         $message = "Added {$job->title} and linked the calendar entry. ".$found['summary']
-            .(PoStatus::forJobs([$job->fresh()])[$job->id]['missing'] ? ' It has no PO yet, so it’s flagged until one is linked.' : '');
+            .(PoStatus::forJobs([$job->fresh()])[$job->id]['missing'] ? ' It has no PO yet, so it’s flagged until one is linked.' : '')
+            .self::shortenedNote($fitted);
 
         return ($data['then'] ?? null) === 'job' ? redirect('/jobs/'.$job->id)->with('success', $message) : back()->with('success', $message);
+    }
+
+    /**
+     * A calendar entry's title and venue are kept up to 250 characters, longer than a job's. When the form sends the
+     * entry's own text unchanged, each is shortened at a sensible place and the whole text added to the notes (if
+     * they have room). Text you typed yourself is left as it is, so a long one is refused with a message.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, string> the fields to change
+     */
+    private static function fitEntryText(array $input, CalendarEvent $event): array
+    {
+        $own = ['title' => Str::trim((string) $event->summary), 'location' => Str::trim((string) $event->location)];
+        $notes = is_string($input['notes'] ?? null) ? $input['notes'] : '';
+        $fitted = [];
+        $kept = [];
+        foreach (['title' => [150, 'Full title from your calendar'], 'location' => [200, 'Full venue from your calendar']] as $field => [$max, $label]) {
+            $sent = $input[$field] ?? null;
+            if (is_string($sent) && $sent === $own[$field] && mb_strlen($sent) > $max) {
+                $fitted[$field] = self::shorten($sent, $max);
+                if (! str_contains($notes, $line = $label.': '.$sent)) {
+                    $kept[] = $line;
+                }
+            }
+        }
+        if ($fitted) {
+            $notes = implode("\n", array_filter([$notes, ...$kept], fn ($n) => $n !== ''));
+            if (mb_strlen($notes) <= 2000) {
+                $fitted['notes'] = $notes;
+            }
+        }
+
+        return $fitted;
+    }
+
+    /** What the success message says when the entry's title or venue was shortened. */
+    private static function shortenedNote(array $fitted): string
+    {
+        $what = array_values(array_intersect_key(['title' => 'title', 'location' => 'venue'], $fitted));
+        if (! $what) {
+            return '';
+        }
+        $one = count($what) === 1;
+
+        return ' The entry’s '.implode(' and ', $what).($one ? ' was' : ' were').' too long for a job, so '.($one ? 'it’s' : 'they’re').' shortened; the whole text is '
+            .(isset($fitted['notes']) ? 'in the job’s notes.' : 'still in your calendar.');
+    }
+
+    /**
+     * Text cut to $max characters at a sensible place: after a sentence or a line (an address, before the directions
+     * that follow it), else after a part of it (a comma, a dash), else after a word, with "…" to show there's more.
+     * resources/js/pages/jobs/calendar.tsx fills the form the same way.
+     */
+    public static function shorten(string $text, int $max): string
+    {
+        if (mb_strlen($text) <= $max) {
+            return $text;
+        }
+        $tidy = fn (string $s) => (string) preg_replace('/[\s,;:.\-–·|]+$/u', '', $s);
+        // One character more, so a part that ends right at the limit is kept.
+        $head = mb_substr($text, 0, $max + 1);
+        $last = fn (array $marks) => max(array_map(fn (string $m) => ($i = mb_strrpos($head, $m)) === false ? -1 : $i, $marks));
+        foreach ([[['. ', "\n", ' | '], $max / 4], [[', ', '; ', ' - ', ' – ', ' · '], $max / 2]] as [$marks, $least]) {
+            if (($at = $last($marks)) >= $least && ($cut = $tidy(mb_substr($head, 0, $at))) !== '') {
+                return $cut;
+            }
+        }
+        $head = mb_substr($text, 0, $max);
+        $space = mb_strrpos($head, ' ');
+        $cut = $tidy($space !== false && $space >= $max / 2 ? mb_substr($head, 0, $space) : mb_substr($text, 0, $max - 1));
+
+        return ($cut !== '' ? $cut : mb_substr($text, 0, $max - 1)).'…';
     }
 
     /** A job longer than JobDays::MAX_DAYS can't keep all its days: it's refused with a message rather than cut short. */

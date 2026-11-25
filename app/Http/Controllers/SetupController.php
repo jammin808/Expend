@@ -52,6 +52,20 @@ class SetupController extends Controller
             'vehicle.method' => 'nullable|in:simplified,actual',
         ]);
 
+        // The last filed return's figures, read before anything is saved. Only those typed in count: a box left blank
+        // keeps what the year already has.
+        $figures = [];
+        foreach (['turnover', 'expenses', 'profit'] as $field) {
+            try {
+                $pence = Money::parse($data['prior_year'][$field] ?? null);
+            } catch (\InvalidArgumentException $e) {
+                return back()->with('error', $e->getMessage());
+            }
+            if ($pence !== null) {
+                $figures["filed_{$field}_pence"] = $pence;
+            }
+        }
+
         foreach ($data['accounts'] ?? [] as $account) {
             Account::query()->firstOrCreate(['name' => $account['name']], ['kind' => $account['kind'], 'provider' => $account['provider'] ?? 'other']);
         }
@@ -61,14 +75,21 @@ class SetupController extends Controller
             TaxYear::track($label);
         }
 
-        $prior = $data['prior_year'] ?? [];
-        if (array_filter($prior)) {
-            $before = UkTaxYear::fromLabel($labels->first())->previous()->label();
-            TaxYear::track($before, 'filed')->update([
-                'filed_turnover_pence' => Money::parse($prior['turnover'] ?? null),
-                'filed_expenses_pence' => Money::parse($prior['expenses'] ?? null),
-                'filed_profit_pence' => Money::parse($prior['profit'] ?? null),
-            ]);
+        $note = '';
+        if ($figures) {
+            // Read back in full, so the audit's "before" shows a new year's empty figures too.
+            $prior = TaxYear::track(UkTaxYear::fromLabel($labels->first())->previous()->label(), 'filed')->refresh();
+            if ($prior->isLocked()) {
+                // A locked year's figures can't change from here either.
+                $note = " {$prior->label} is locked, so the figures from its return weren’t changed.";
+            } else {
+                $before = $prior->toArray();
+                $prior->fill($figures);
+                if ($prior->isDirty()) {
+                    $prior->save();
+                    AuditLog::record('tax_year.updated', $prior, $before, $prior->fresh()->toArray(), 'Figures from the last filed return, entered in setup');
+                }
+            }
         }
 
         Setting::put('home_postcode', $data['home_postcode'] ? strtoupper(trim($data['home_postcode'])) : null);
@@ -80,6 +101,6 @@ class SetupController extends Controller
 
         AuditLog::record('setup.completed', 'Setup', null, ['years' => $labels->all(), 'accounts' => count($data['accounts'] ?? [])]);
 
-        return to_route('dashboard')->with('success', 'All set. Import your first statement to start.');
+        return to_route('dashboard')->with('success', "All set.{$note} Import your first statement to start.");
     }
 }

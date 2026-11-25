@@ -1,5 +1,6 @@
 import { Money } from '@/components/money';
 import { NativeSelect } from '@/components/native-select';
+import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -161,7 +162,11 @@ function MissingRates({ rates, accountId }: { rates: MissingRate[]; accountId: n
                 account_id: accountId,
                 rates: rates.map((r) => ({ currency: r.currency, month: r.month, units_per_gbp: values[key(r)] })),
             } as never,
-            { preserveScroll: true, onFinish: () => setSaving(false) },
+            {
+                preserveScroll: true,
+                onError: () => toast('That rate wasn’t accepted. Type how many of the currency £1 bought, for example 1.1650.', 'error'),
+                onFinish: () => setSaving(false),
+            },
         );
     };
     return (
@@ -193,6 +198,9 @@ function MissingRates({ rates, accountId }: { rates: MissingRate[]; accountId: n
         </div>
     );
 }
+
+/** Show the first thing the server refused (a reason that's too short, a file it can't read), so nothing goes quiet. */
+const failed = (errors: Record<string, string>) => toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error');
 
 const presetNames: Record<string, string> = {
     starling: 'Starling',
@@ -246,6 +254,7 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
             {
                 forceFormData: true,
                 onSuccess: (p) => setProfile(((p.props as unknown as Props).preview?.profile as Profile) ?? null),
+                onError: failed,
                 onFinish: () => setBusy(false),
             },
         );
@@ -606,7 +615,7 @@ export default function Imports({ accounts, batches, preview, dateFormats }: Pro
                             {batches.map((b) => {
                                 const ask = (action: string, question: string) => {
                                     const reason = window.prompt(question);
-                                    if (reason) router.post(`/imports/${b.id}/${action}`, { reason }, { preserveScroll: true });
+                                    if (reason) router.post(`/imports/${b.id}/${action}`, { reason }, { preserveScroll: true, onError: failed });
                                 };
                                 const off = b.status === 'reverted' || b.status === 'discarded';
                                 return (

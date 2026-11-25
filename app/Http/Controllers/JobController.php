@@ -243,7 +243,7 @@ class JobController extends Controller
     public function update(Request $request, WorkJob $job): RedirectResponse
     {
         $before = $job->toArray();
-        $job->update($this->validated($request));
+        $job->update($this->sent($request, $this->validated($request)));
         AuditLog::record('job.updated', $job, $before, $job->fresh()->toArray());
 
         // A new PO number, dates, client or venue: look again for what belongs to it, once (the queued search is
@@ -262,6 +262,17 @@ class JobController extends Controller
         }
 
         return back()->with('success', 'Saved.');
+    }
+
+    /**
+     * Only the fields the request sent change. "Use in job" on the job sheet sends just a few, and the PO number, the
+     * "No PO needed" tick, the fee and the rest stay as they were (an empty field the job form sends still clears it).
+     */
+    private function sent(Request $request, array $data): array
+    {
+        $from = ['fee_pence' => ['fee'], 'client_id' => ['client_id', 'new_client']];
+
+        return array_filter($data, fn (string $key) => $request->hasAny($from[$key] ?? [$key]), ARRAY_FILTER_USE_KEY);
     }
 
     private function validated(Request $request): array
@@ -291,6 +302,15 @@ class JobController extends Controller
             'notes' => 'nullable|string|max:2000',
             'po_number' => 'nullable|string|max:100',
             'po_not_required' => 'boolean',
+        ], [
+            // "Use in job" on the job sheet shows the first of these as a message, so they say what's wrong plainly.
+            'starts_on.date' => 'The start date isn’t a date.',
+            'ends_on.date' => 'The end date isn’t a date.',
+            'ends_on.after_or_equal' => 'The job can’t end before it starts.',
+            'start_time.date_format' => 'The start time needs hours and minutes, like 07:30.',
+            'end_time.date_format' => 'The finish time needs hours and minutes, like 18:00.',
+            'location.max' => 'The venue is too long (200 characters at most).',
+            'postcode.max' => 'A postcode is 10 characters at most, like SE10 0DX.',
         ]);
 
         if (! empty($data['new_client'])) {

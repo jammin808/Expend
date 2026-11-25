@@ -1,5 +1,6 @@
 import HeadingSmall from '@/components/heading-small';
 import { NativeSelect } from '@/components/native-select';
+import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -127,6 +128,24 @@ function TaxPotChooser({ pot }: { pot: TaxPotSettings }) {
     );
 }
 
+/** What the server refused, under its form: without it a refused save looks as if nothing happened. */
+function FormErrors({ errors }: { errors: Record<string, string> }) {
+    const messages = [...new Set(Object.values(errors))];
+    if (messages.length === 0) return null;
+    return (
+        <div role="alert" className="space-y-1">
+            {messages.map((e) => (
+                <p key={e} className="text-sm text-rose-600">
+                    {e}
+                </p>
+            ))}
+        </div>
+    );
+}
+
+/** For buttons that aren't a form: show the first thing refused as a message. */
+const failed = (errors: Record<string, string>) => toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error');
+
 export default function Integrations({ ai, business, email, telegram, gmail, mail: out, starling }: Props) {
     const starlingForm = useForm({ token: '' });
     const aiForm = useForm({
@@ -152,8 +171,12 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
         username: email.username ?? '',
         password: '',
         allowed: email.allowed ?? '',
-        test: false as boolean,
     });
+    // Save and Save and check now send the same form, so what's refused shows under it either way.
+    const saveMail = (test: boolean) => {
+        mail.transform((data) => ({ ...data, test }));
+        mail.put('/settings/integrations/email', { preserveScroll: true, onSuccess: () => mail.setData('password', '') });
+    };
     const tg = useForm({ token: '' });
     const send = useForm({
         method: out.method === 'log' ? 'server' : out.method,
@@ -259,6 +282,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                             This month: {ai.usage.calls} requests{ai.usage.web_searches ? `, ${ai.usage.web_searches} law searches` : ''}, about $
                             {Number(ai.usage.usd).toFixed(2)} (estimate from published prices).
                         </p>
+                        <FormErrors errors={aiForm.errors} />
                         <Button disabled={aiForm.processing}>Save AI settings</Button>
                     </form>
 
@@ -295,6 +319,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                 <Input inputMode="numeric" value={biz.data.terms} onChange={(e) => biz.setData('terms', e.target.value)} />
                             </div>
                         </div>
+                        <FormErrors errors={biz.errors} />
                         <Button disabled={biz.processing}>Save business details</Button>
                     </form>
 
@@ -404,7 +429,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                                     router.patch(
                                                         '/settings/starling',
                                                         { uid: a.uid, account_id: Number(e.target.value) },
-                                                        { preserveScroll: true },
+                                                        { preserveScroll: true, onError: failed },
                                                     )
                                                 }
                                             >
@@ -429,12 +454,14 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                     </div>
                                 )}
                                 <div className="flex flex-wrap gap-2">
-                                    <Button onClick={() => router.post('/settings/starling/sync', {}, { preserveScroll: true })}>Import now</Button>
+                                    <Button onClick={() => router.post('/settings/starling/sync', {}, { preserveScroll: true, onError: failed })}>
+                                        Import now
+                                    </Button>
                                     <Button
                                         variant="outline"
                                         onClick={() => {
                                             const from = window.prompt('Import from which date? (YYYY-MM-DD, for catching up on earlier months)', '');
-                                            if (from) router.post('/settings/starling/sync', { from }, { preserveScroll: true });
+                                            if (from) router.post('/settings/starling/sync', { from }, { preserveScroll: true, onError: failed });
                                         }}
                                     >
                                         Import from a date…
@@ -474,6 +501,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                     />
                                     <Button disabled={starlingForm.processing || starlingForm.data.token.length < 20}>Connect</Button>
                                 </div>
+                                <FormErrors errors={starlingForm.errors} />
                             </form>
                         )}
                     </section>
@@ -613,13 +641,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                         </form>
                     </section>
 
-                    <form
-                        className="space-y-4"
-                        onSubmit={(e) => (
-                            e.preventDefault(),
-                            mail.put('/settings/integrations/email', { preserveScroll: true, onSuccess: () => mail.setData('password', '') })
-                        )}
-                    >
+                    <form className="space-y-4" onSubmit={(e) => (e.preventDefault(), saveMail(false))}>
                         <HeadingSmall
                             title="Forward by email"
                             description="Use a mailbox just for this, not your everyday one: every new message in it is read and filed. Forward POs, invites, production packs and bookings to it. A Gmail filter can forward them automatically (Gmail first emails a confirmation code to the mailbox; open its webmail to see it)."
@@ -656,13 +678,10 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                 </p>
                             </div>
                         </div>
+                        <FormErrors errors={mail.errors} />
                         <div className="flex gap-2">
                             <Button disabled={mail.processing}>Save</Button>
-                            <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => router.put('/settings/integrations/email', { ...mail.data, test: true }, { preserveScroll: true })}
-                            >
+                            <Button type="button" variant="outline" disabled={mail.processing} onClick={() => saveMail(true)}>
                                 Save and check now
                             </Button>
                         </div>
@@ -747,6 +766,7 @@ export default function Integrations({ ai, business, email, telegram, gmail, mai
                                     value={tg.data.token}
                                     onChange={(e) => tg.setData('token', e.target.value)}
                                 />
+                                <FormErrors errors={tg.errors} />
                                 <Button disabled={tg.processing || !tg.data.token}>Connect bot</Button>
                             </form>
                         )}

@@ -35,6 +35,53 @@ interface JobOption {
     days?: string[];
 }
 
+/**
+ * Text cut to max characters at a sensible place: after a sentence or a line (an address, before the directions that
+ * follow it), else after a part of it (a comma, a dash), else after a word, with "…" to show there's more. Counted in
+ * characters as the server counts them; JobFinderController::shorten cuts the same way.
+ */
+function shorten(text: string, max: number): string {
+    const chars = Array.from(text);
+    if (chars.length <= max) return text;
+    const tidy = (s: string) => s.replace(/[\s,;:.\-–·|]+$/u, '');
+    const length = (s: string) => Array.from(s).length;
+    // One character more, so a part that ends right at the limit is kept.
+    const head = chars.slice(0, max + 1).join('');
+    const parts: [string[], number][] = [
+        [['. ', '\n', ' | '], max / 4],
+        [[', ', '; ', ' - ', ' – ', ' · '], max / 2],
+    ];
+    for (const [marks, least] of parts) {
+        const at = Math.max(...marks.map((m) => head.lastIndexOf(m)));
+        const cut = at >= 0 && length(head.slice(0, at)) >= least ? tidy(head.slice(0, at)) : '';
+        if (cut) return cut;
+    }
+    const words = chars.slice(0, max).join('');
+    const space = words.lastIndexOf(' ');
+    const hard = chars.slice(0, max - 1).join('');
+    const cut = tidy(space >= 0 && length(words.slice(0, space)) >= max / 2 ? words.slice(0, space) : hard);
+    return (cut || hard) + '…';
+}
+
+/**
+ * A calendar entry's title and venue as a job takes them (150 and 200 characters at most): the calendar keeps longer
+ * ones, such as an address with directions. What's shortened is kept whole in the notes, as the server does.
+ */
+export function fitEntry(title: string, location: string | null): { title: string; location: string | null; notes: string | null } {
+    const kept: string[] = [];
+    const fit = (text: string, max: number, label: string) => {
+        const t = text.trim();
+        if (Array.from(t).length <= max) return t;
+        kept.push(`${label}: ${t}`);
+        return shorten(t, max);
+    };
+    return {
+        title: fit(title, 150, 'Full title from your calendar'),
+        location: location === null ? null : fit(location, 200, 'Full venue from your calendar'),
+        notes: kept.length ? kept.join('\n') : null,
+    };
+}
+
 const dayLabel = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 const monthLabel = (m: string) => new Date(m + '-01T12:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 
@@ -233,6 +280,7 @@ function EntryPanel({
     const added = chosen?.days ? entryDates.filter((d) => !chosen.days!.includes(d)) : null;
     const beyond = !!chosen && (e.date < chosen.starts_on || e.last_day > chosen.ends_on);
     const opts = { preserveScroll: true, onSuccess: onDone };
+    const fitted = fitEntry(e.summary, e.location);
 
     return (
         <>
@@ -309,6 +357,8 @@ function EntryPanel({
                             <p className="text-muted-foreground text-sm">
                                 Check the details and add what you know: client, fee, PO number, the days it really covers. When you save, Expend
                                 looks for its POs and documents (and searches Gmail), payments on its days, stays and journeys, and the fee coming in.
+                                {fitted.notes &&
+                                    ' The entry’s title or venue is too long for a job, so it’s shortened here; the whole text is in the notes.'}
                             </p>
                             <JobForm
                                 clients={clients}
@@ -316,17 +366,17 @@ function EntryPanel({
                                 submitLabel="Save the job and find what belongs to it"
                                 extra={{ key: e.key, date: e.date, then: 'job' }}
                                 job={{
-                                    title: e.summary,
+                                    title: fitted.title,
                                     client_id: e.client_id,
                                     starts_on: e.date,
                                     ends_on: e.last_day,
                                     start_time: e.start_time,
                                     end_time: e.end_time,
-                                    location: e.location,
+                                    location: fitted.location,
                                     postcode: e.postcode,
                                     fee_pence: null,
                                     status: e.last_day < today ? 'done' : 'booked',
-                                    notes: null,
+                                    notes: fitted.notes,
                                 }}
                                 onDone={onDone}
                             />
