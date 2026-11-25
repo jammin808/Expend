@@ -4,6 +4,9 @@ namespace App\Domain\Jobs;
 
 use App\Domain\Audit\AuditLog;
 use App\Domain\Gmail\GmailClient;
+use App\Domain\Income\IncomeClient;
+use App\Domain\Income\Lines;
+use App\Domain\Income\PayerAliases;
 use App\Domain\Intel\AuditContext;
 use App\Domain\Intel\Provenance;
 use App\Domain\Intel\Vetoes;
@@ -20,6 +23,7 @@ use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
 use App\Models\Category;
+use App\Models\Client;
 use App\Models\Document;
 use App\Models\Invoice;
 use App\Models\JobDay;
@@ -357,28 +361,45 @@ final class JobGatherer
         }
     }
 
-    /** Money in that looks like the fee: the agreed amount, or from the client, up to four months after. */
+    /**
+     * Money in that looks like the fee: the agreed amount, or from the client (its name, or a payer that pays you for it
+     * and no other client: PayerAliases::keysFor and sole()), up to four months after; the earliest first. Only money that isn't for anything yet is
+     * offered: nothing decided, turnover with no job, invoice or client, or turnover for this job's own client.
+     */
     private function income(WorkJob $job): void
     {
         $words = collect(preg_split('/\s+/', mb_strtoupper((string) $job->client?->name)) ?: [])
             ->reject(fn ($w) => mb_strlen($w) < 3 || in_array($w, ['LTD', 'LIMITED', 'THE', 'AND', 'PLC', 'LLP', 'EVENTS', 'PRODUCTIONS', 'GROUP', 'UK'], true))->values();
-        if (! $job->fee_pence && $words->isEmpty()) {
+        $client = IncomeClient::resolve($job->client_id === null ? null : (int) $job->client_id);
+        // Only a payer that pays you for this client alone speaks for it: one that also pays for others (a crewing
+        // agency) proves nothing about who this payment is for.
+        $known = $client === null ? [] : array_keys(PayerAliases::keysFor($client));
+        $aliases = PayerAliases::forKeys($known);
+        $payers = array_values(array_filter($known, fn (string $key) => $aliases->sole($key) === $client));
+        if (! $job->fee_pence && $words->isEmpty() && $payers === []) {
             return;
         }
-        $rows = OwnAccounts::scopeNotTransfers(BankTransaction::query())->with(['allocations', 'account'])->where('amount_pence', '>', 0)
+        $base = fn () => OwnAccounts::scopeNotTransfers(BankTransaction::query())->with(['allocations', 'account'])->where('amount_pence', '>', 0)
             ->whereBetween('posted_on', [$job->starts_on->copy()->subDays(30)->format('Y-m-d'), $job->ends_on->copy()->addDays(120)->format('Y-m-d')])
-            ->where(function ($q) use ($job, $words) {
-                if ($job->fee_pence) {
-                    $q->orWhere('amount_pence', $job->fee_pence);
-                }
+            ->orderBy('posted_on')->orderBy('id')->limit(30);
+        // The agreed amount is looked for on its own, so a busy payer's other payments can't push it out of the list.
+        $rows = $job->fee_pence ? $base()->where('amount_pence', $job->fee_pence)->get() : collect();
+        if ($words->isNotEmpty() || $payers !== []) {
+            $rows = $rows->concat($base()->where(function ($q) use ($words, $payers) {
                 foreach ($words as $w) {
                     $q->orWhere('counterparty', 'like', '%'.addcslashes($w, '%_\\').'%')->orWhere('description', 'like', '%'.addcslashes($w, '%_\\').'%');
                 }
-            })->limit(30)->get();
+                if ($payers !== []) {
+                    $q->orWhereIn('merchant_key', $payers);
+                }
+            })->get());
+        }
+        $rows = $rows->unique('id')->sortBy(fn (BankTransaction $tx) => [$tx->posted_on->format('Y-m-d'), $tx->id])->values();
         foreach ($rows as $tx) {
-            if (isset($this->rejected['income:'.$tx->id]) || $tx->allocations->contains(fn (Allocation $a) => $a->work_job_id !== null)
-                || $tx->allocations->contains(fn (Allocation $a) => $a->kind !== 'business_income')) {
-                continue;
+            if (isset($this->rejected['income:'.$tx->id]) || $tx->allocations->contains(fn (Allocation $a) => $a->work_job_id !== null || $a->invoice_id !== null)
+                || $tx->allocations->contains(fn (Allocation $a) => $a->kind !== 'business_income' && ! Lines::isDeduction($a))
+                || $tx->allocations->contains(fn (Allocation $a) => $a->client_id !== null && IncomeClient::resolve((int) $a->client_id) !== $client)) {
+                continue; // a job's or an invoice's already, decided as something else, or another client's
             }
             // Your own money paid in (your name, a top-up, a card bill) is never a job's fee, whatever its amount,
             // unless you've decided it as income yourself.
@@ -387,7 +408,8 @@ final class JobGatherer
             }
             $why = array_filter([
                 $job->fee_pence && $tx->amount_pence === $job->fee_pence ? 'it’s the agreed fee ('.Money::format($job->fee_pence).')' : null,
-                $words->contains(fn ($w) => str_contains(mb_strtoupper($tx->description.' '.$tx->counterparty), $w)) ? 'it’s from '.$job->client?->name : null,
+                $words->contains(fn ($w) => str_contains(mb_strtoupper($tx->description.' '.$tx->counterparty), $w))
+                    || in_array($tx->merchant_key, $payers, true) ? 'it’s from '.$job->client?->name : null,
             ]);
             $this->add('income', (string) $tx->id, 'possible', ($tx->counterparty ?: $tx->description).' · '.$tx->effectiveDate()->format('j M Y'),
                 'Looks like payment for this job: '.implode(' and ', $why), $tx->effectiveDate()->format('Y-m-d'), $tx->amount_pence);
@@ -501,8 +523,10 @@ final class JobGatherer
 
     /**
      * Money in as this job's income. Undecided: the whole amount is the job's turnover. Already decided as business
-     * income: those lines (and their amounts) are kept and only the job is added. Decided as anything else since it
-     * was found (a split, a transfer, a loan), or on another job: left as it is.
+     * income: those lines (and their amounts) are kept, and the job goes on the turnover that isn't for anything yet (no
+     * job, no invoice, no client) or is for this job's own client, with any fee taken off beside it. Lines naming an
+     * invoice stay as they are. Decided as anything else since it was found (a split, a transfer, a loan), on another job,
+     * or for another client: left as it is.
      */
     private function linkIncome(JobFind $find, WorkJob $job): string
     {
@@ -511,13 +535,26 @@ final class JobGatherer
         if ($other = $a->first(fn (Allocation $x) => $x->work_job_id !== null && $x->work_job_id !== $job->id)) {
             $this->outOfDate($find, 'That payment is on '.(WorkJob::query()->find($other->work_job_id)?->title ?? 'another job').' now, so it’s left there. Open it to move it.');
         }
-        if ($a->isNotEmpty() && ! $a->every(fn (Allocation $x) => $x->kind === 'business_income')) {
+        if ($a->isNotEmpty() && ! $a->every(fn (Allocation $x) => $x->kind === 'business_income' || Lines::isDeduction($x))) {
             $this->outOfDate($find, 'That payment has been decided as something else since it was found, so it’s left as it is. Open it to change it.');
         }
+        $client = IncomeClient::resolve($job->client_id === null ? null : (int) $job->client_id);
+        $free = fn (Allocation $x) => $x->work_job_id === null && $x->invoice_id === null
+            && ($x->client_id === null || IncomeClient::resolve((int) $x->client_id) === $client);
+        if ($another = $a->first(fn (Allocation $x) => $x->work_job_id === null && $x->invoice_id === null && ! $free($x))) {
+            $this->outOfDate($find, 'That payment is for '.(Client::query()->whereKey($another->client_id)->value('name') ?? 'another client').': open it to change it.');
+        }
         $turnover = Category::query()->where('code', 'turnover')->value('id');
+        // The income that goes on the job, and a fee taken off goes with it when every income line ends up there.
+        $income = $a->filter(fn (Allocation $x) => $x->kind === 'business_income');
+        $allHere = $income->every(fn (Allocation $x) => $x->work_job_id === $job->id || $free($x));
         $lines = $a->isNotEmpty()
-            ? $a->map(fn (Allocation $x) => self::line($x, $job->id))->all()
+            ? $a->map(fn (Allocation $x) => self::line($x, $x->work_job_id ?? (($x->kind === 'business_income' || $allHere) && $free($x) ? $job->id : null)))->all()
             : AllocationWriter::lines($tx->amount_pence, 'business_income', $turnover, $job->id);
+        if (! collect($lines)->contains(fn (array $l) => $l['work_job_id'] === $job->id)) {
+            $number = Invoice::query()->whereKey($a->pluck('invoice_id')->filter()->first())->value('number');
+            $this->outOfDate($find, 'That payment is for '.($number ?: 'an invoice').', so it’s left as it is. Open it to change it.');
+        }
         $this->writer->decide($tx, $lines, 'you', true, 'Payment for '.$job->title);
 
         return 'Recorded as income for this job.';
@@ -531,15 +568,30 @@ final class JobGatherer
         throw new InvalidArgumentException($message);
     }
 
+    /**
+     * "Not this job" for a payment: its lines come off the job. A line naming one of this job's invoices loses the
+     * invoice too (the writer would otherwise put the invoice's job back), and when the lines were automatic that
+     * invoice is remembered as not this payment's (an invoice_payment veto), so no matcher suggests it again.
+     */
     private function unlinkPayment(int $id, WorkJob $job): void
     {
-        $tx = BankTransaction::query()->with('allocations')->find($id);
+        $tx = BankTransaction::query()->with('allocations.invoice:id,work_job_id')->find($id);
         if (! $tx || ! $tx->allocations->contains('work_job_id', $job->id)) {
             return;
         }
         $automatic = $tx->allocations->every(fn (Allocation $a) => $a->confirmed_at === null && ! $a->is_manual);
-        $lines = $tx->allocations->map(fn (Allocation $a) => self::line($a, $a->work_job_id === $job->id ? null : $a->work_job_id))->all();
-        $this->writer->decide($tx, $lines, $automatic ? 'matcher' : 'you', ! $automatic, 'Not for '.$job->title, null, $automatic ? self::notFor($tx->allocations, $job) : null);
+        $jobs = fn (Allocation $a) => $a->invoice_id !== null && $a->invoice !== null && (int) $a->invoice->work_job_id === $job->id;
+        $dropped = $tx->allocations->filter($jobs)->pluck('invoice_id')->map(fn ($i) => (int) $i)->unique()->values();
+        $lines = $tx->allocations->map(fn (Allocation $a) => ['invoice_id' => $jobs($a) ? null : $a->invoice_id]
+            + self::line($a, $a->work_job_id === $job->id ? null : $a->work_job_id))->all();
+        if ($automatic) {
+            foreach ($dropped as $invoiceId) {
+                Vetoes::record('invoice_payment', 'tx:'.$tx->id, 'inv:'.$invoiceId, reasonCode: 'not_this_job', reason: 'Not for '.$job->title);
+            }
+        }
+        // You said so: an invoice match taken off is replaced on purpose, though a match outranks the search's own.
+        $this->writer->decide($tx, $lines, $automatic ? 'matcher' : 'you', ! $automatic, 'Not for '.$job->title, null,
+            $automatic ? self::notFor($tx->allocations, $job, $dropped->isNotEmpty()) : null, $automatic && $dropped->isNotEmpty());
     }
 
     /**
@@ -550,14 +602,17 @@ final class JobGatherer
      *
      * @param  Collection<int, Allocation>  $allocations
      */
-    private static function notFor(Collection $allocations, WorkJob $job): ?Provenance
+    private static function notFor(Collection $allocations, WorkJob $job, bool $invoiceDropped = false): ?Provenance
     {
         $kept = Provenance::keep($allocations);
-        if ($kept === null || ! str_starts_with($kept->method, 'categorise.')) {
+        if ($kept === null || (! str_starts_with($kept->method, 'categorise.') && ! $invoiceDropped)) {
             return $kept;
         }
+        // An invoice match without its invoice is no longer the matcher's: it's this search's, citing the job (its
+        // other evidence kept, the invoice left out).
+        $evidence = array_values(array_filter($kept->evidence, fn ($ref) => ! is_string($ref) || ! str_starts_with($ref, 'inv:')));
 
-        return new Provenance('jobs.gather', ['job:'.$job->id, ...$kept->evidence]);
+        return new Provenance('jobs.gather', ['job:'.$job->id, ...$evidence]);
     }
 
     /** A calendar entry isn't this job's: unlinked if it's on it, otherwise remembered, wherever the entry is now. */
@@ -879,6 +934,6 @@ final class JobGatherer
     private static function line(Allocation $a, ?int $jobId): array
     {
         return ['kind' => $a->kind, 'category_id' => $a->category_id, 'work_job_id' => $jobId, 'invoice_id' => $a->invoice_id,
-            'amount_pence' => $a->amount_pence, 'business_use_pct' => $a->business_use_pct, 'note' => $a->note];
+            'client_id' => $a->client_id, 'amount_pence' => $a->amount_pence, 'business_use_pct' => $a->business_use_pct, 'note' => $a->note];
     }
 }

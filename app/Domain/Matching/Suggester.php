@@ -2,21 +2,19 @@
 
 namespace App\Domain\Matching;
 
+use App\Domain\Income\InvoiceMatcher;
+use App\Domain\Income\PayerAliases;
 use App\Domain\Intel\Methods;
 use App\Domain\Intel\Provenance;
-use App\Domain\Intel\Vetoes;
-use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Travel\TravelDays;
 use App\Models\BankTransaction;
 use App\Models\Category;
-use App\Models\Invoice;
 use App\Models\MerchantRule;
 use App\Models\TaxYear;
 use App\Models\TravelItem;
 use App\Models\WorkJob;
-use App\Support\Money;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
 
@@ -25,6 +23,11 @@ use Illuminate\Support\Collection;
  * (AllocationWriter enforces that), never proposes what you said no to (Intel\Vetoes, also in AllocationWriter), and
  * only confirms on its own when you switched a rule to auto-confirm. A rule's job is used only within that job's dates
  * (ruleJobFor()).
+ *
+ * Money in (income design v3): which invoice it's for is Income\InvoiceMatcher's (what's still to come, a set of the
+ * payer's client's invoices, or with a fee taken off; a tie is never guessed). A rule's or a guess's turnover line gets
+ * the payer's client when the payer has only ever paid for one (Income\PayerAliases::enrich). Either way it's only a
+ * suggestion: automation never confirms an income link, even for a rule that confirms on its own (owner answer 3).
  */
 final class Suggester
 {
@@ -81,18 +84,23 @@ final class Suggester
         $locked = TaxYear::query()->whereNotNull('locked_at')->pluck('label')->all();
 
         $turnover = Category::query()->where('code', 'turnover')->value('id');
-        $openInvoices = Invoice::query()->where('status', 'issued')->where('currency', 'GBP')->get();
-        $received = null; // worked out the first time money comes in, below
         OwnAccounts::flush();
         if ($match && $transactions instanceof EloquentCollection) {
             $transactions->loadMissing('account'); // OwnAccounts::reason() reads each line's account
         }
-        // The invoices you said a payment isn't for (Intel\Vetoes), for the money coming in: one query for them all.
-        $notFor = $match ? Vetoes::forSubjects('invoice_payment', $transactions->filter(fn ($t) => $t->amount_pence > 0)->map(fn ($t) => 'tx:'.$t->id)) : collect();
+        // Money in, read once the first time some comes in: the invoice matcher for this run (open invoices, what
+        // they've received, the payers and what you said no to, with one tally so two payments never take the same
+        // amount), and who each payer pays for (one query for the run's payers).
+        $incoming = fn () => $transactions->filter(fn ($t) => $t instanceof BankTransaction && $t->amount_pence > 0)->values();
+        $matcher = null;
+        $aliases = null;
 
         foreach ($transactions as $tx) {
             if (in_array($tx->tax_year, $locked, true) || $tx->allocations()->exists() || (! $match && $tx->transfer_pair_id)) {
                 continue;
+            }
+            if ($tx->amount_pence > 0) {
+                $aliases ??= PayerAliases::forKeys($incoming()->pluck('merchant_key'));
             }
 
             $text = $tx->description.' '.$tx->counterparty;
@@ -100,34 +108,25 @@ final class Suggester
             if ($match) {
                 $own = OwnAccounts::reason($tx) !== null;
                 if (! $own && $tx->amount_pence > 0 && $turnover) {
-                    // Only an invoice nothing has come in for yet (counted as everywhere else: payments linked to it,
-                    // and income recorded for its job).
-                    $received ??= InvoicePayments::received($openInvoices);
-                    // Never one you said this payment isn't for: another invoice of the same amount is tried instead.
-                    $vetoed = $notFor->get('tx:'.$tx->id) ?? collect();
-                    $candidates = $openInvoices->filter(fn ($i) => $i->total_minor === $tx->amount_pence && ($received[$i->id]['paid'] ?? 0) === 0
-                        && (! $i->issue_date || $tx->posted_on->gte($i->issue_date->copy()->subDays(3)))
-                        && Vetoes::matching($vetoed, 'inv:'.$i->id, null, 'suggest.invoice')->isEmpty())->values();
-                    if ($invoice = $candidates->first()) {
-                        $lines = AllocationWriter::lines($tx->amount_pence, 'business_income', $turnover, $invoice->work_job_id);
-                        $lines[0]['invoice_id'] = $invoice->id;
-                        // Its score is how many unpaid invoices were for this amount; the others are its runner-ups.
-                        $why = new Provenance('suggest.invoice', ['inv:'.$invoice->id, $invoice->work_job_id ? 'job:'.$invoice->work_job_id : null], $candidates->count(),
-                            $candidates->slice(1)->map(fn ($i) => ['ref' => 'inv:'.$i->id, 'score' => null]));
-                        if ($this->writer->decide($tx, $lines, 'matcher', false, "Matches invoice {$invoice->number} for ".Money::format($invoice->total_minor), null, $why)) {
-                            $made++;
+                    // What's still to come on an invoice (or a set of the payer's client's, or with a fee taken off):
+                    // refused, never thrown, over what you said no to or a stronger suggestion, and nothing on a tie.
+                    // When it writes nothing your rule, the other matchers and the guess have their turn.
+                    $matcher ??= app(InvoiceMatcher::class)->begin($incoming());
+                    if ($matcher->write($tx)) {
+                        $made++;
 
-                            continue;
-                        }
-                        // Refused (what you said no to): your rule, the other matchers and the guess have their turn.
+                        continue;
                     }
                 }
 
                 if (($rule = $rules->get($tx->merchant_key)) && RuleLearner::appliesTo($rule, $tx->amount_pence)) {
                     $jobId = self::ruleJobFor($rule, $tx, $ruleJobs->get((int) $rule->work_job_id));
                     $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, $jobId, $rule->business_pct);
-                    if ($this->writer->decide($tx, $lines, 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}", $rule->id,
-                        new Provenance($ruleMethods[$rule->id] ??= Methods::forRule($rule), ['rule:'.$rule->id, $jobId ? 'job:'.$jobId : null]))) {
+                    // Turnover with no job gets the payer's client, when it pays for only one: then it's a suggestion
+                    // for you to accept, even from a rule that confirms on its own (the writer never confirms it).
+                    $client = PayerAliases::enrich($tx, $lines, $aliases);
+                    if ($this->writer->decide($tx, $client['lines'], 'rule', $rule->auto_confirm, "Your rule for {$rule->merchant_key}".($client['note'] ?? ''), $rule->id,
+                        new Provenance($ruleMethods[$rule->id] ??= Methods::forRule($rule), ['rule:'.$rule->id, $jobId ? 'job:'.$jobId : null, ...$client['evidence']]))) {
                         $made++;
                     }
 
@@ -154,9 +153,10 @@ final class Suggester
 
             if ($guess && ($learned = $this->categoriser->propose($tx))) {
                 // Learned from your decisions, the bank's category, or a list of common merchants. Marked as the
-                // Categoriser's own, so your later decisions can update it (Categoriser::learnFrom).
+                // Categoriser's own, so your later decisions can update it (Categoriser::learnFrom). Turnover gets the
+                // payer's client there too (Categoriser::suggest).
                 try {
-                    $made += (int) $this->categoriser->suggest($tx, $learned);
+                    $made += (int) $this->categoriser->suggest($tx, $learned, $aliases);
                 } catch (\InvalidArgumentException) {
                     // doesn't fit this payment
                 }

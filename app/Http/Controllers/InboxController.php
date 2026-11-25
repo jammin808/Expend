@@ -3,6 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Calendar\CalendarSync;
+use App\Domain\Income\IncomeTargets;
+use App\Domain\Income\IncomeText;
+use App\Domain\Income\PayerAliases;
 use App\Domain\Intel\Methods;
 use App\Domain\Intel\RefResolver;
 use App\Domain\Intel\Vetoes;
@@ -11,6 +14,7 @@ use App\Models\Allocation;
 use App\Models\AuditEvent;
 use App\Models\BankTransaction;
 use App\Models\Category;
+use App\Models\Client;
 use App\Models\Verification;
 use App\Models\Veto;
 use Illuminate\Http\Request;
@@ -25,7 +29,7 @@ class InboxController extends Controller
         $year = $request->string('year')->toString() ?: null;
         $status = $request->string('status')->toString() ?: null;
 
-        $query = BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job', 'quickReceipt'])
+        $query = BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job', 'quickReceipt', ...Present::ALLOCATION_LINKS])
             ->whereIn('review_status', $status ? [$status] : ['unreviewed', 'suggested'])
             ->when($year, fn ($q) => $q->where('tax_year', $year))
             ->orderBy('tax_year')->orderBy('posted_on')->orderBy('id');
@@ -44,13 +48,29 @@ class InboxController extends Controller
         $alternatives = self::alternatives($items);
         $vetoes = Veto::query()->active()->whereIn('subject_ref', $items->map(fn (BankTransaction $tx) => 'tx:'.$tx->id)->all() ?: [''])->orderBy('id')->get()->groupBy('subject_ref');
         $events = AuditEvent::query()->whereIn('id', $vetoes->flatten(1)->pluck('audit_event_id')->filter()->all() ?: [0])->get()->keyBy('id');
+        // Money in (income design v3): one-tap chips for what it may be for, read together for the page, and who the
+        // payer usually pays for.
+        $moneyIn = $items->filter(fn (BankTransaction $tx) => $tx->amount_pence > 0)->values();
+        $targets = IncomeTargets::forMany($moneyIn);
+        $aliases = PayerAliases::forKeys($moneyIn->pluck('merchant_key'));
+        // Who each suggestion is from, for the whole page at once.
+        $clients = IncomeText::clients($items->flatMap(fn (BankTransaction $tx) => $tx->allocations->all())->values());
+        $soleNames = Client::query()->whereKey($moneyIn->map(fn (BankTransaction $tx) => $aliases->sole($tx->merchant_key, 1))->filter()->unique()->values()->all() ?: [0])->pluck('name', 'id');
+
+        // Each day's calendar read once for the page.
+        $eventsOn = $items->map(fn (BankTransaction $tx) => $tx->effectiveDate()->format('Y-m-d'))->unique()
+            ->mapWithKeys(fn (string $day) => [$day => CalendarSync::eventsOn($day)])->all();
 
         return Inertia::render('inbox', [
             'items' => $items->map(fn (BankTransaction $tx) => Present::tx($tx) + [
                 'check' => $checks[$tx->id] ?? null,
                 'merchant_count' => (int) ($merchantCounts[$tx->merchant_key] ?? 1),
-                'events' => CalendarSync::eventsOn($tx->effectiveDate()->format('Y-m-d')),
-                'jobs_near' => Present::jobsNear($tx->effectiveDate()->format('Y-m-d')),
+                'events' => $eventsOn[$tx->effectiveDate()->format('Y-m-d')] ?? [],
+                // "Jobs around then" is for money out: money in has its chips.
+                'jobs_near' => $tx->amount_pence > 0 ? [] : Present::jobsNear($tx->effectiveDate()->format('Y-m-d')),
+                'targets' => $targets[$tx->id] ?? [],
+                'payer' => $tx->amount_pence > 0 ? self::payer($tx, $aliases, $soleNames) : null,
+                'suggestion_text' => self::suggestionText($tx, $clients),
                 'suggestion_why' => self::why($tx, $alternatives),
                 'said_no' => ($vetoes->get('tx:'.$tx->id) ?? collect())->map(fn (Veto $v) => ['id' => $v->id, 'what' => Vetoes::describe($v, $events[$v->audit_event_id] ?? null, 'tx:'.$tx->id)])->values()->all(),
             ])->values(),
@@ -60,6 +80,29 @@ class InboxController extends Controller
             // "Not this one" asks why, with these (Intel\Vetoes::REASONS).
             'not_this_reasons' => Vetoes::REASONS,
         ]);
+    }
+
+    /** "ACME PAYROLL · usually Acme Events (3 payments)", "… · pays for several clients", or null when it's new. */
+    private static function payer(BankTransaction $tx, PayerAliases $aliases, Collection $names): ?string
+    {
+        $key = $tx->merchant_key;
+        if ($aliases->shared($key)) {
+            return $key.' · pays for several clients';
+        }
+        $sole = $aliases->sole($key, 1);
+        if ($sole === null) {
+            return null;
+        }
+        $n = $aliases->count($key, $sole);
+
+        return $key.' · usually '.($names[$sole] ?? 'one client').' ('.$n.' '.($n === 1 ? 'payment' : 'payments').')';
+    }
+
+    /** An open suggestion in words (IncomeText: "INV-041 £600 + INV-043 £750 · Acme Events"), or null. */
+    /** @param  array<int, array{0:?int, 1:?string}>  $clients  each line's client and name (IncomeText::clients) */
+    private static function suggestionText(BankTransaction $tx, array $clients = []): ?string
+    {
+        return $tx->allocations->isNotEmpty() && Vetoes::isOpenSuggestion($tx->allocations) ? IncomeText::suggestion($tx->allocations, $clients) : null;
     }
 
     /**

@@ -265,11 +265,17 @@ class JobCloseoutTest extends TestCase
         $taxi = $this->payment($job, 2340, 'UBER', 'travel_taxi');
         JobDays::add($job->fresh(), '2026-06-05');
 
-        $item = $this->items()['closeout:'.$job->id];
-        $this->assertSame([32340, 'Expo rig: £323.40 not invoiced', 'strong'], [$item['amount'], $item['title'], $item['grade']]);
-        $this->assertStringContainsString('To recharge and not on the invoice: Taxi: UBER, 4 Jun 2026 £23.40; Expo rig: 1 more day than on INV-0001 £300.00.', $item['detail']);
-        $this->assertContains('tx:'.$taxi->id, $item['why']);
+        // The day added since is closed out. The taxi linked after INV-0001 went is the to-do list's own item, with
+        // Invoice it now on the main list (stage 3 fix: the close-out starts below the fold, so it no longer counts it).
+        $items = $this->items();
+        $item = $items['closeout:'.$job->id];
+        $this->assertSame([30000, 'Expo rig: £300.00 not invoiced', 'strong'], [$item['amount'], $item['title'], $item['grade']]);
+        $this->assertStringContainsString('To recharge and not on the invoice: Expo rig: 1 more day than on INV-0001 £300.00.', $item['detail']);
+        $this->assertNotContains('tx:'.$taxi->id, $item['why']);
         $this->assertSame('/invoices/'.$invoice->id, $item['href']);
+        $charge = $items['charge:tx:'.$taxi->id.':j'.$job->id];
+        $this->assertSame(['cost_invoice_now', 'cost_no_charge', 'cost_invoiced'], array_column($charge['actions'], 'code'));
+        $this->assertContains('charge:tx:'.$taxi->id.':j'.$job->id, array_column(TodoList::build(100)['items'], 'key'), 'On the main list');
     }
 
     public function test_a_covered_jobs_booking_is_asked_about_until_you_say(): void

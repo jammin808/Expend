@@ -171,6 +171,8 @@ class ReviewFixesIntegrationTest extends TestCase
 
     public function test_the_overdue_nudge_counts_what_has_come_in_like_the_to_do_list(): void
     {
+        // S10: the nudges keep quiet at night (21:00 to 08:00 London); a morning, as they're scheduled.
+        $this->travelTo(CarbonImmutable::parse('2025-07-14 09:13:00', 'Europe/London'));
         $this->telegram();
         $paidJob = $this->job('Paid');
         $paid = $this->issuedInvoice($paidJob);
@@ -188,7 +190,9 @@ class ReviewFixesIntegrationTest extends TestCase
         $sent = collect($this->sent())->keyBy(fn ($m) => preg_match('/Invoice (\S+)/', $m['text'], $x) ? $x[1] : '');
         $this->assertArrayNotHasKey($paid->number, $sent->all(), 'Paid in full through its job: not chased');
         $this->assertStringContainsString('£100.00 of it has come in, so £350.00 is still to come.', $sent[$part->number]['text']);
-        $this->assertSame([], $sent[$part->number]['buttons'], 'The reminder says no payment has been seen, so it isn’t offered');
+        // S10: no reminder (its email says no payment has been seen); They've paid and Not yet instead.
+        $this->assertSame([Telegram::callbackData('inv_paid_wait', (string) $part->id), Telegram::callbackData('inv_chase_later', (string) $part->id)], $sent[$part->number]['buttons'],
+            'The reminder says no payment has been seen, so it isn’t offered');
         $this->assertStringContainsString('waiting in the Inbox', $sent[$waiting->number]['text']);
         $this->assertSame([], $sent[$waiting->number]['buttons']);
         $this->assertSame([Telegram::callbackData('inv_chase', (string) $unpaid->id)], $sent[$unpaid->number]['buttons']);

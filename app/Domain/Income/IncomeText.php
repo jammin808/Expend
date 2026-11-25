@@ -2,6 +2,7 @@
 
 namespace App\Domain\Income;
 
+use App\Domain\Clients\ClientIds;
 use App\Domain\Intel\Vetoes;
 use App\Models\Allocation;
 use App\Models\Client;
@@ -61,8 +62,10 @@ final class IncomeText
      * each line's kind, category and job ("Business expense: Travel · Show B").
      *
      * @param  Collection<int, Allocation>  $allocations
+     * @param  array<int, array{0:?int, 1:?string}>|null  $clients  each line's client and its name, when a page has read them
+     *                                                              for all its lines at once (clients())
      */
-    public static function suggestion(Collection $allocations): ?string
+    public static function suggestion(Collection $allocations, ?array $clients = null): ?string
     {
         if ($allocations->isEmpty()) {
             return null;
@@ -77,7 +80,7 @@ final class IncomeText
 
         $deducted = -(int) $allocations->filter(fn (Allocation $a) => Lines::isDeduction($a))->sum('amount_pence');
         $fee = $deducted > 0 ? ', '.self::money($deducted).' fee taken off' : '';
-        $client = self::clientName($income);
+        $client = self::clientName($income, $clients);
         $withInvoice = $income->whereNotNull('invoice_id');
         if ($withInvoice->isNotEmpty()) {
             $parts = $income->map(fn (Allocation $a) => ($a->invoice?->number ?: ($a->invoice_id ? 'an invoice' : ($a->job?->title ?? 'no job'))).' '.self::money((int) $a->amount_pence));
@@ -135,14 +138,39 @@ final class IncomeText
     }
 
     /** The one client these lines are for (worked out, merges resolved), by name; null when none or several. */
-    private static function clientName(Collection $lines): ?string
+    private static function clientName(Collection $lines, ?array $clients = null): ?string
     {
-        $ids = $lines->map(fn (Allocation $a) => IncomeClient::of($a))->unique()->values();
+        $ids = $lines->map(fn (Allocation $a) => $clients !== null && array_key_exists($a->id, $clients) ? $clients[$a->id][0] : IncomeClient::of($a))->unique()->values();
         if ($ids->count() !== 1 || $ids->first() === null) {
             return null;
         }
+        $known = $lines->first(fn (Allocation $a) => $clients !== null && isset($clients[$a->id][1]));
 
-        return Client::query()->whereKey($ids->first())->value('name');
+        return $known !== null ? $clients[$known->id][1] : Client::query()->whereKey($ids->first())->value('name');
+    }
+
+    /**
+     * Each line's worked-out client (IncomeClient::of: its invoice's, else its job's, else its own; merges resolved) and
+     * that client's name, for a page's lines all at once: a fixed number of queries however many lines.
+     *
+     * @param  Collection<int, Allocation>  $lines
+     * @return array<int, array{0:?int, 1:?string}> by line id
+     */
+    public static function clients(Collection $lines): array
+    {
+        if ($lines->isEmpty()) {
+            return [];
+        }
+        self::load($lines, ['job:id,title,client_id', 'invoice:id,number,currency,client_id,work_job_id']);
+        $raw = $lines->mapWithKeys(fn (Allocation $a) => [$a->id => $a->invoice?->client_id ?? $a->job?->client_id ?? $a->client_id]);
+        $resolved = ClientIds::resolveMany($raw->filter()->values());
+        $names = Client::query()->whereKey(array_values(array_unique($resolved)) ?: [0])->pluck('name', 'id');
+
+        return $raw->map(function ($id) use ($resolved, $names) {
+            $now = $id === null ? null : ($resolved[(int) $id] ?? (int) $id);
+
+            return [$now, $now === null ? null : ($names[$now] ?? null)];
+        })->all();
     }
 
     /** A category's name without its explanation: "Turnover (sales and fees)" is "Turnover". */

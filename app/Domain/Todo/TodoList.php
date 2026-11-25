@@ -2,7 +2,15 @@
 
 namespace App\Domain\Todo;
 
+use App\Domain\Charges\ChargeStatus;
+use App\Domain\Charges\CostCharges;
+use App\Domain\Charges\CostRef;
+use App\Domain\Charges\CostUnits;
+use App\Domain\Clients\ClientIds;
 use App\Domain\Gmail\GmailClient;
+use App\Domain\Income\IncomeClient;
+use App\Domain\Income\IncomeTargets;
+use App\Domain\Income\IncomeText;
 use App\Domain\Intel\Contracts\Detector;
 use App\Domain\Intel\Cycle\CycleContext;
 use App\Domain\Intel\DetectorLevels;
@@ -17,9 +25,14 @@ use App\Domain\Intel\FindingDraft;
 use App\Domain\Intel\Grades;
 use App\Domain\Intel\Ranker;
 use App\Domain\Intel\ReceiptMatch;
+use App\Domain\Invoices\ChaseLadder;
+use App\Domain\Invoices\InvoiceDraftSync;
+use App\Domain\Invoices\InvoiceEmails;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\CandidateText;
+use App\Domain\Jobs\JobBilling;
+use App\Domain\Jobs\JobStage;
 use App\Domain\Jobs\Opportunities;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Ledger\Reconciler;
@@ -34,10 +47,15 @@ use App\Models\Account;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\CalendarJobLink;
+use App\Models\Client;
+use App\Models\CostCharge;
 use App\Models\Document;
 use App\Models\ImportBatch;
 use App\Models\Invoice;
+use App\Models\InvoiceEmail;
+use App\Models\InvoiceLine;
 use App\Models\JobCandidate;
+use App\Models\ManualExpense;
 use App\Models\Opportunity;
 use App\Models\Setting;
 use App\Models\TaxYear;
@@ -63,6 +81,14 @@ use Throwable;
  * payments and stays to decide, jobs with no PO (with who to ask), payments missing from your statements and documents
  * held for approval. Each item carries one-tap actions (TodoActions), used by the to-do page and by Telegram buttons.
  * Nothing here changes anything: the checks only read.
+ *
+ * Each finished job has one item that moves on with it (S10): "Is it done?" (job_done:{id}) while it's booked and
+ * finished in the last 60 days, then its invoice to draft or check (invoice:{id}), then the issued invoice's own items:
+ * to send (unsent:, worded by where its email is in Gmail) and overdue (invoice_overdue:, only once sent, by what's
+ * still to come). Beside them: a follow-up or client draft (draft:{invoice}), a cost linked after its job's invoice went
+ * (charge:{cost}), a cost charged on the client's form a month ago (claimed:{cost}), an invoice paid more than it was for
+ * (invoice_overpaid:) and a voided one that was paid (invoice_void_paid:). Money in is offered its invoice and its
+ * client, never one-tap Personal. A reminder button only ever asks: TodoActions makes the reminder when you press it.
  *
  * Building it reads most of the ledger, so the last list is kept (see cached()) for the dashboard, and built afresh
  * as soon as anything it's made from changes: a change made by this process is seen as it's written (watch()), one
@@ -125,8 +151,8 @@ final class TodoList
      * found for finished jobs and the background work that failed).
      */
     private const WATCHED = [
-        'accounts', 'allocations', 'bank_transactions', 'calendar_job_links', 'categories', 'clients', 'document_facts', 'documents', 'failed_jobs', 'gmail_messages', 'import_batches',
-        'invoice_lines', 'invoices', 'job_candidates', 'job_days', 'manual_expenses', 'merchant_rules', 'mileage_trips', 'opportunities', 'places', 'quick_entries', 'statement_balances', 'tax_submissions', 'tax_years', 'travel_items',
+        'accounts', 'allocations', 'bank_transactions', 'calendar_job_links', 'categories', 'charge_terms', 'clients', 'cost_charges', 'document_facts', 'documents', 'failed_jobs',
+        'gmail_messages', 'import_batches', 'invoice_emails', 'invoice_lines', 'invoices', 'job_candidates', 'job_days', 'manual_expenses', 'merchant_rules', 'mileage_trips', 'opportunities', 'places', 'quick_entries', 'statement_balances', 'tax_submissions', 'tax_years', 'travel_items',
         'vehicles', 'verifications', 'work_jobs',
     ];
 
@@ -155,7 +181,7 @@ final class TodoList
      */
     private const WATCHED_SETTINGS = ['google_client_id', 'google_client_secret', 'gmail_refresh_token', 'gmail_last_result', 'rule_offers_declined', 'mtd_volunteer_from', 'mtd_exempt', 'mtd_exempt_from', 'mtd_exempt_never_required',
         'home_postcode', 'mileage_threshold_scope', self::AUDIT_RESULT, 'starling_token', 'starling_last_result', 'calendar_ics_url', 'calendar_synced_at',
-        Health::MAILBOX_RESULT, 'imap_host', DetectorLevels::SETTING, 'intel_receipt_threshold_pence', 'intel_cycle'];
+        Health::MAILBOX_RESULT, 'imap_host', DetectorLevels::SETTING, 'intel_receipt_threshold_pence', 'intel_cycle', InvoiceEmails::BLIND_SETTING, 'gmail_scopes'];
 
     /** This process has written to what the list is made from since it last built it (see watch()). */
     private static bool $changed = false;
@@ -426,6 +452,22 @@ final class TodoList
      */
     private static function compute(int $limit, array $hidden, bool $complete = false, bool $withDetectors = true, bool $below = false): array
     {
+        // Each setting is read once while the list is worked out (it only reads: nothing here writes a setting), the
+        // ones it's known to read in one query.
+        return Setting::remembering(function () use ($limit, $hidden, $complete, $withDetectors, $below) {
+            Setting::preload(self::READS);
+
+            return self::workOut($limit, $hidden, $complete, $withDetectors, $below);
+        });
+    }
+
+    /** The settings the list (and the checks it runs) reads, read together up front; any other is read when asked for. */
+    private const READS = [...self::WATCHED_SETTINGS, 'allowed_senders', 'business_email', 'gmail_account', 'imap_password', 'imap_username', 'mail_from_address',
+        'scottish_taxpayer', 'smtp_username', 'gmail_scopes', 'telegram_chat_id', 'telegram_bot_token', 'business_bank_details', 'business_name'];
+
+    /** @see compute() */
+    private static function workOut(int $limit, array $hidden, bool $complete, bool $withDetectors, bool $below): array
+    {
         // How prominent each kind is (Intel\DetectorLevels), worked out once.
         $levels = DetectorLevels::all();
         if (! $complete) {
@@ -474,35 +516,73 @@ final class TodoList
         $open = Invoice::query()->where('status', 'issued')
             ->where(fn ($q) => $q->whereNull('sent_at')->orWhere(fn ($q) => $q->whereNotNull('due_date')->whereDate('due_date', '<', today())))
             ->orderBy('due_date')->orderBy('id')->get();
-        $received = self::received($open);
+        // Issued invoices payments name (they may be overpaid), and void ones (they may have been paid): counted with
+        // these, in one go.
+        $named = Invoice::query()->where('status', 'void')->orWhere(fn ($q) => $q->where('status', 'issued')
+            ->whereIn('id', Allocation::query()->whereNotNull('invoice_id')->whereNotNull('confirmed_at')->where('amount_pence', '>', 0)->select('invoice_id')))->get();
+        $received = self::received($open->concat($named->where('status', 'issued'))->unique('id')->values());
+        // Each one's email rows (the latest of each kind), for what the item says about Gmail and which buttons it offers.
+        $rows = $open->isEmpty() ? collect() : InvoiceEmail::query()->whereIn('invoice_id', $open->pluck('id')->all())->orderBy('id')->get()
+            ->groupBy(fn (InvoiceEmail $e) => $e->invoice_id.':'.$e->kind)->map(fn ($g) => $g->last());
+        $gmail = $open->isNotEmpty() && InvoiceEmails::canUse();
 
-        // Past their due date and not paid in full.
-        // The one-tap reminder is only offered when nothing at all has come in: its email tells the client so.
-        foreach ($open->filter(fn (Invoice $i) => $i->due_date && $i->due_date->lt(today())) as $i) {
-            ['paid' => $paid, 'elsewhere' => $elsewhere, 'waiting' => $waiting] = $received[$i->id];
-            if ($paid >= $i->total_minor) {
-                continue;
+        // Past their due date, sent, and not paid in full or closed. An issued invoice that hasn't been sent is never
+        // overdue (it's listed to send, below): its client may not have it. Reminders are made only when you press for
+        // one: as your Gmail draft when Gmail can be used (Make a reminder, then Send the reminder once it's there),
+        // otherwise emailed from Expend as before, and only when nothing at all has come in (that email tells the
+        // client so). Nothing while a payment that may be for it waits in the Inbox.
+        // Overdue as the reminder and Telegram count it (ChaseLadder::overdue): from the later of the due date and the day
+        // it was sent plus its terms, so one sent late isn't overdue (nor offered a reminder) before the client's time is up.
+        $late = $open->mapWithKeys(fn (Invoice $i) => [$i->id => $i->sent_at !== null ? ChaseLadder::overdue($i, today()) : null])->filter();
+        foreach ($open->filter(fn (Invoice $i) => isset($late[$i->id])) as $i) {
+            $r = $received[$i->id] ?? InvoicePayments::EMPTY;
+            ['paid' => $paid, 'elsewhere' => $elsewhere, 'waiting' => $waiting] = $r;
+            if ($r['outstanding'] <= 0) {
+                continue; // paid in full, or closed
             }
-            $money = fn (int $minor) => Money::format($minor, $i->currency ?: 'GBP');
-            $due = 'due '.$i->due_date->format('j M Y').' ('.(int) $i->due_date->diffInDays(today()).' days ago)';
+            $currency = $i->currency ?: 'GBP';
+            $money = fn (int $minor) => Money::format($minor, $currency);
+            $dueOn = CarbonImmutable::parse($late[$i->id]['from']);
+            $ago = (int) $late[$i->id]['days'];
+            $due = 'due '.$dueOn->format('j M Y').' ('.$ago.' '.($ago === 1 ? 'day' : 'days').' ago)';
             $client = $i->bill_to_name ?: 'the client';
             $inbox = $waiting > 0 ? ' '.Money::format($waiting).' that may be for it is waiting in the Inbox: decide it first.' : '';
-            $extra = ['amount' => $i->total_minor - $paid, 'currency' => $i->currency ?: 'GBP', 'due_on' => $i->due_date->format('Y-m-d')];
-            if ($elsewhere > 0) {
+            $extra = ['amount' => $r['outstanding'], 'currency' => $currency, 'due_on' => $dueOn->format('Y-m-d')];
+            $short = $money($r['outstanding']);
+            if ($r['refunded'] > 0) {
+                // You paid money back against it: chasing it would ask for money that isn't owed.
+                $add('income', 1, 'invoice_overdue:'.$i->id, "Invoice {$i->number}: you paid money back",
+                    $money($i->total_minor).' from '.$client.', '.$due.'. '.ucfirst(ChaseLadder::paidBack($i, $r['refunded'], $currency)).$inbox,
+                    '/invoices/'.$i->id, $waiting > 0 ? [] : [self::action('inv_close', $i->id.':ot', 'Close it: not owed', 'ghost')], $extra);
+            } elseif ($elsewhere > 0) {
                 $add('income', 1, 'invoice_overdue:'.$i->id, "Invoice {$i->number}: check it’s been paid",
                     $money($i->total_minor).' from '.$client.', '.$due.'. '.Money::format($elsewhere).' came in for this job in another currency, so Expend can’t tell how much of the invoice it covers. If it’s all paid, mark this not relevant.'.$inbox,
-                    '/invoices/'.$i->id, [], $extra);
+                    '/invoices/'.$i->id, $waiting > 0 ? [] : [self::action('inv_close', $i->id.':fx', 'It’s paid (in another currency)', 'ghost')], $extra);
             } elseif ($paid > 0) {
+                $fee = $waiting > 0 ? null : TodoActions::feeShortfall($i, $r);
                 $add('income', 1, 'invoice_overdue:'.$i->id, "Invoice {$i->number} part-paid",
-                    $money($paid).' of '.$money($i->total_minor).' received from '.$client.', '.$due.'; '.$money($i->total_minor - $paid).' still to come.'.$inbox, '/invoices/'.$i->id, [], $extra);
+                    $money($paid).' of '.$money($i->total_minor).' received from '.$client.', '.$due.'; '.$short.' still to come.'.$inbox.self::reminderWords($i, $rows, $gmail),
+                    '/invoices/'.$i->id, $waiting > 0 ? [] : array_values(array_filter([
+                        $gmail ? self::reminderAction($i, $rows) : null,
+                        $fee ? self::action('tx_fee', $fee['tx'].':'.$i->id, IncomeText::money($fee['fee']).' was a fee or commission', 'ghost') : null,
+                        self::action('inv_close', $i->id.':sp', 'Close it: '.IncomeText::money($r['outstanding'], $currency).' isn’t coming', 'ghost'),
+                    ])), $extra);
             } else {
                 // A reminder that went in the last day isn't offered again (the button would only say so).
                 $reminded = $i->reminded_at && $i->reminded_at->gt(now()->subHours(InvoiceMailer::REPEAT_HOURS));
+                $chase = match (true) {
+                    $waiting > 0 => null,
+                    $gmail => self::reminderAction($i, $rows),
+                    default => $i->bill_to_email && ! $reminded && ($rows[$i->id.':reminder'] ?? null)?->status !== 'drafted' ? self::action('inv_chase', $i->id, 'Send a reminder') : null,
+                };
                 $add('income', 1, 'invoice_overdue:'.$i->id, "Invoice {$i->number} unpaid", $money($i->total_minor).' from '.$client.', '.$due.'.'
-                    .($reminded ? ' Reminder sent '.$i->reminded_at->format('j M Y, H:i').'.' : '').$inbox,
-                    $waiting > 0 ? '/inbox' : '/invoices/'.$i->id, array_values(array_filter([$i->bill_to_email && $waiting <= 0 && ! $reminded ? self::action('inv_chase', $i->id, 'Send a reminder') : null])), $extra);
+                    .($reminded ? ' Reminder sent '.$i->reminded_at->format('j M Y, H:i').'.' : '').$inbox.self::reminderWords($i, $rows, $gmail),
+                    $waiting > 0 ? '/inbox' : '/invoices/'.$i->id, array_values(array_filter([$chase])), $extra);
             }
         }
+
+        // Paid more than it was for, and paid then voided with nothing to replace it (income design v3).
+        $try('invoice_overpaid:', fn () => self::incomeItems($add, $named, $received));
 
         // Jobs to close out: for each finished job, what's short of its PO and the recharges not on its invoice, as one
         // amount (Intel\Detectors\JobCloseout). It says what the two kinds below said for a finished job, so they're
@@ -522,21 +602,31 @@ final class TodoList
         });
 
         // Money you may be owed: an invoice for less than its PO, and costs to recharge to the client (for a job
-        // still under way: a finished one's are in its close-out).
-        foreach (Invoice::query()->whereIn('status', ['issued', 'draft'])->whereNotNull('po_total_minor')->whereColumn('total_minor', '<', 'po_total_minor')->get() as $i) {
-            if (array_key_exists('underbilled:'.$i->id, $subsumed)) {
+        // still under way: a finished one's are in its close-out). The PO is compared with the invoice's work only (its
+        // fee, days and hours, and lines you typed), never the travel and expenses on it, as JobCloseout compares them.
+        $withPo = Invoice::query()->whereIn('status', ['issued', 'draft'])->whereNotNull('po_total_minor')->get();
+        $costLines = $withPo->isEmpty() ? collect() : InvoiceLine::query()->whereIn('invoice_id', $withPo->pluck('id')->all())->where('included', true)
+            ->whereNotNull('source')->whereNotIn('source', InvoiceDraftSync::WORK_SOURCES)->groupBy('invoice_id')->selectRaw('invoice_id, SUM(amount_minor) AS costs')->pluck('costs', 'invoice_id');
+        foreach ($withPo as $i) {
+            $work = (int) $i->total_minor - (int) ($costLines[$i->id] ?? 0);
+            if ($work >= (int) $i->po_total_minor || array_key_exists('underbilled:'.$i->id, $subsumed)) {
                 continue;
             }
             $money = fn (int $minor) => Money::format($minor, $i->currency ?: 'GBP');
-            $add('revenue', 1, 'underbilled:'.$i->id, ($i->number ? "Invoice {$i->number}" : 'Draft invoice').' is '.$money($i->po_total_minor - $i->total_minor).' less than its PO',
-                'The PO authorises '.$money($i->po_total_minor).' and the invoice totals '.$money($i->total_minor).'. Check nothing was left off'.($i->status === 'issued' ? ' (an issued invoice can be voided and re-issued).' : '.'),
-                '/invoices/'.$i->id, [], ['amount' => $i->po_total_minor - $i->total_minor, 'currency' => $i->currency ?: 'GBP']);
+            $costs = (int) ($costLines[$i->id] ?? 0);
+            $add('revenue', 1, 'underbilled:'.$i->id, ($i->number ? "Invoice {$i->number}" : 'Draft invoice').' is '.$money($i->po_total_minor - $work).' less than its PO',
+                'The PO authorises '.$money($i->po_total_minor).' and the invoice totals '.$money($i->total_minor).($costs > 0 ? ', '.$money($costs).' of it travel and expenses' : '')
+                .'. Check nothing was left off'.($i->status === 'issued' ? ' (an issued invoice can be voided and re-issued).' : '.'),
+                '/invoices/'.$i->id, [], ['amount' => $i->po_total_minor - $work, 'currency' => $i->currency ?: 'GBP']);
         }
+        // Bookings you decided to recharge, by where each stands now (Charges\ChargeStatus): one on an invoice, charged
+        // another way or set aside isn't listed.
         $recharges = TravelItem::query()->where('decision', 'recharge')->whereNotNull('work_job_id')->with('job')->get();
-        $onInvoice = Invoice::query()->whereIn('work_job_id', $recharges->pluck('work_job_id')->unique()->values())->whereIn('status', ['issued', 'paid'])
+        $onInvoice = $recharges->isEmpty() ? collect() : Invoice::query()->whereIn('work_job_id', $recharges->pluck('work_job_id')->unique()->values())->whereIn('status', ['issued', 'paid'])
             ->orderByDesc('issue_date')->orderByDesc('id')->get()->unique('work_job_id')->keyBy('work_job_id');
+        $standing = self::bookingStatuses($recharges->reject(fn (TravelItem $t) => array_key_exists('recharge:'.$t->id, $subsumed))->values());
         foreach ($recharges as $t) {
-            if (array_key_exists('recharge:'.$t->id, $subsumed)) {
+            if (array_key_exists('recharge:'.$t->id, $subsumed) || in_array($standing[$t->id] ?? null, ['on_invoice', 'elsewhere', 'not_charged', 'to_claim'], true)) {
                 continue;
             }
             $invoice = $onInvoice[$t->work_job_id] ?? null;
@@ -544,6 +634,12 @@ final class TodoList
                 .($invoice ? ": check it's on invoice {$invoice->number}." : ': add it to the invoice when you draft it.'), $invoice ? '/invoices/'.$invoice->id : '/jobs/'.$t->work_job_id, [],
                 ['amount' => $t->amount_minor, 'currency' => $t->currency ?: 'GBP']);
         }
+        // Costs linked to a job after its invoice went, and costs you charged on the client's own form a month ago.
+        // Follow-up and client drafts, and the recent issued invoices Expend tracks (for late costs): one query.
+        $later = self::laterInvoices();
+        // A finished job's close-out leaves these out (it starts below the fold), so each is here, with Invoice it now.
+        $try('charge:', fn () => self::lateCosts($add, $later->whereIn('status', InvoicePayments::PAYABLE)->values()));
+        self::claimedCosts($add);
 
         // AI findings that didn't stand up to the double-check, about something that's still there.
         $failed = Verification::query()->whereIn('status', ['mismatch', 'partly', 'source_missing', 'second_read_disagreed'])->orderByDesc('checked_at')->get();
@@ -725,30 +821,57 @@ final class TodoList
                 ])));
         }
 
-        // Finished jobs with no invoice issued (as PoStatus counts it: an issued or paid invoice for the job).
-        $finished = $capped(WorkJob::query()->with('client')->where('status', '!=', 'cancelled')->whereDate('ends_on', '<', today())->orderByDesc('ends_on'), 300)->get();
+        // One item for each finished job, moving on with its stage (Jobs\JobStage): "Is it done?" while it's booked and
+        // finished in the last 60 days, then "Invoice <job>" (or "Check and issue the invoice for <job>" once it has a
+        // draft), then the issued invoice's items below. A job billed already (an issued invoice, or income recorded
+        // for its work) isn't listed; one cancelled with a fee or costs owed is, until it's invoiced.
+        $finished = $capped(WorkJob::query()->with(['client', 'days'])->whereDate('ends_on', '<=', today())
+            ->where(fn ($q) => $q->where('status', '!=', 'cancelled')->orWhereIn('cancel_charge', ['fee', 'costs']))->orderByDesc('ends_on')->orderByDesc('id'), 300)->get();
         if (! $complete && $finished->count() >= 300) {
             $cappedKeys[] = 'invoice:';
+            $cappedKeys[] = 'job_done:';
         }
-        $invoiced = Invoice::query()->whereIn('work_job_id', $finished->pluck('id'))->whereIn('status', ['issued', 'paid'])->distinct()->pluck('work_job_id')->flip();
-        $drafts = Invoice::query()->where('status', 'draft')->whereIn('work_job_id', $finished->pluck('id'))->pluck('id', 'work_job_id');
-        foreach ($finished->filter(fn (WorkJob $j) => ! isset($invoiced[$j->id])) as $j) {
-            $draft = $drafts[$j->id] ?? null;
-            $add('invoice', 2, 'invoice:'.$j->id, 'Invoice '.$j->title, ($j->client?->name ? $j->client->name.' · ' : '').'finished '.$j->ends_on->format('j M Y').($draft ? ' · draft ready to check and issue' : ''),
-                $draft ? '/invoices/'.$draft : '/jobs/'.$j->id, $draft ? [] : [self::action('job_invoice', $j->id, 'Draft the invoice')]);
-        }
+        self::jobItems($add, $finished, $hidden);
+        // Follow-up drafts (late costs on a job already invoiced) and drafts for a client with no job: their own items.
+        self::draftItems($add, $later->where('status', 'draft')->values());
 
-        // Issued but never emailed, and not paid in full (a client who's paid it all has had the invoice; one who's
-        // paid a deposit still needs it). Left until you've decided a payment waiting in the Inbox that may be for it.
+        // Issued but never sent, and not paid in full (a client who's paid it all has had the invoice; one who's paid a
+        // deposit still needs it). Left until you've decided a payment waiting in the Inbox that may be for it, and
+        // while money you paid back against it is unexplained. Worded by where its email is: in your Gmail drafts,
+        // being put there, deleted there unsent, not put there, or (with no Gmail) to email from Expend. While Expend
+        // can't see Gmail it asks whether it went, rather than saying it wasn't sent.
         $unsent = $open->whereNull('sent_at')->sortBy(fn (Invoice $i) => [$i->issue_date?->format('Y-m-d') ?? '', $i->id])
-            ->filter(fn (Invoice $i) => $received[$i->id]['paid'] < $i->total_minor && $received[$i->id]['waiting'] <= 0);
+            ->filter(fn (Invoice $i) => ($r = $received[$i->id] ?? InvoicePayments::EMPTY)['outstanding'] > 0 && $r['waiting'] <= 0 && $r['refunded'] <= 0);
+        $blind = $unsent->isNotEmpty() && InvoiceEmails::cantSee() !== null;
         foreach ($unsent as $i) {
             ['paid' => $paid, 'elsewhere' => $elsewhere] = $received[$i->id];
             $money = fn (int $minor) => Money::format($minor, $i->currency ?: 'GBP');
-            $add('invoice', 2, 'unsent:'.$i->id, "Send invoice {$i->number}", $money($i->total_minor).' to '.($i->bill_to_name ?: 'the client').($i->bill_to_email ? ' at '.$i->bill_to_email : ': add their email address on the invoice')
-                .($paid > 0 ? ' · '.$money($paid).' already received' : '')
-                .($elsewhere > 0 ? ' · '.Money::format($elsewhere).' came in for this job in another currency: if that paid it, mark this not relevant' : ''),
-                '/invoices/'.$i->id, $i->bill_to_email ? [self::action('inv_send', $i->id, 'Email it')] : [], ['amount' => $i->total_minor - $paid, 'currency' => $i->currency ?: 'GBP']);
+            $row = $rows[$i->id.':invoice'] ?? null;
+            $email = $row?->route === 'gmail' ? $row->status : null;
+            $after = ($paid > 0 ? ' · '.$money($paid).' already received' : '')
+                .($elsewhere > 0 ? ' · '.Money::format($elsewhere).' came in for this job in another currency: if that paid it, mark this not relevant' : '');
+            $to = $money($i->total_minor).' to '.($i->bill_to_name ?: 'the client');
+            $mailer = $i->bill_to_email && $email !== 'drafted' && $email !== 'pending' ? self::action('inv_send', $i->id, 'Email it') : null;
+            [$detail, $actions] = match (true) {
+                $blind && $email !== null => ['Expend can’t see Gmail: did '.$i->number.' go? '.$to.$after,
+                    [self::action('inv_sent_self', $i->id, 'Yes, I sent it'), self::link('Reconnect Gmail', '/settings/integrations#gmail')]],
+                $email === 'drafted' => [$to.': it’s in your Gmail drafts'.$after, array_values(array_filter([
+                    // One tap only when it's safe (InvoiceEmails::oneTapProblem: Expend's own unedited draft, to an
+                    // address an earlier invoice to this client went to), as Telegram's nudges offer it.
+                    app(InvoiceEmails::class)->oneTapProblem($i, 'invoice', live: false) === null ? self::action('inv_gmail_send', $i->id, 'Send it') : null,
+                    self::action('inv_sent_self', $i->id, 'I sent it myself', 'ghost'),
+                ]))],
+                $email === 'pending' => [$to.': putting it in your Gmail drafts…'.$after, []],
+                $email === 'deleted' => [$to.': the Gmail draft was deleted without being sent'.$after,
+                    array_values(array_filter([$gmail ? self::action('inv_to_gmail', $i->id, 'Put it back in Gmail') : null, self::action('inv_sent_self', $i->id, 'I sent it another way', 'ghost')]))],
+                $email === 'failed' => [$to.': it isn’t in your Gmail drafts yet ('.InvoiceEmails::reason((string) ($row->error ?: 'Gmail didn’t answer')).')'.$after,
+                    array_values(array_filter([$gmail ? self::action('inv_to_gmail', $i->id, 'Try again') : null, $mailer !== null ? self::action('inv_send', $i->id, 'Email it from Expend', 'ghost') : null]))],
+                $gmail && $email === null && $row === null => [$to.': issued but not in Gmail'.($i->bill_to_email ? ' yet' : ': who should get it?').$after,
+                    array_values(array_filter([self::action('inv_to_gmail', $i->id, 'Put it in Gmail'), $mailer !== null ? self::action('inv_send', $i->id, 'Email it from Expend', 'ghost') : null]))],
+                default => [$to.($i->bill_to_email ? ' at '.$i->bill_to_email : ': add their email address on the invoice').$after, $mailer !== null ? [$mailer] : []],
+            };
+            $add('invoice', 2, 'unsent:'.$i->id, "Send invoice {$i->number}", $detail, '/invoices/'.$i->id, $actions,
+                ['amount' => $i->total_minor - $paid, 'currency' => $i->currency ?: 'GBP']);
         }
 
         // Expenses you could claim: mileage for finished jobs you drove to, with none recorded (Intel\Detectors\TravelUnclaimed).
@@ -795,16 +918,19 @@ final class TodoList
             ->where(fn ($q) => $q->whereDoesntHave('allocations', fn ($a) => $a->where('kind', 'transfer')->whereNull('confirmed_at')->where('decided_by', 'matcher'))
                 ->orWhereIn('id', $moves['left_ids'] ?: [0])
                 ->orWhereHas('allocations', fn ($a) => $a->where('kind', '!=', 'transfer')->whereNull('confirmed_at')));
-        $txs = $waiting()->with(['account', 'allocations.category', 'allocations.job'])
+        $txs = $waiting()->with(['account', 'allocations.category', 'allocations.job', 'allocations.invoice'])
             ->orderByRaw("CASE WHEN review_status = 'suggested' THEN 0 ELSE 1 END")->orderByDesc('posted_on')->limit($limit)->get();
+        // Money in: what it could be for (Income\IncomeTargets), one read of open invoices and payers for them all.
+        $targets = ($in = $txs->filter(fn (BankTransaction $t) => $t->amount_pence > 0)->values())->isEmpty() ? [] : IncomeTargets::forMany($in);
         foreach ($txs as $t) {
             $s = $t->allocations->first();
-            // Every line suggested, so accepting never confirms a part you didn't see (an exchange's fee beside its transfer).
-            $suggestion = $s && ! $s->confirmed_at ? $t->allocations->map(fn (Allocation $a) => (Allocation::KINDS[$a->kind] ?? $a->kind).($a->category ? ': '.$a->category->name : '').($a->job ? ' · '.$a->job->title : ''))
-                ->unique()->implode(' + ') : null;
+            // Every line suggested, so accepting never confirms a part you didn't see (an exchange's fee beside its
+            // transfer); income in words that name each invoice, job and client (Income\IncomeText).
+            $suggestion = $s && ! $s->confirmed_at ? IncomeText::suggestion($t->allocations) : null;
             $how = self::howPaid($t);
             $add('payments', 2, 'tx:'.$t->id, ($t->counterparty ?: $t->description), $t->effectiveDate()->format('j M Y').($how !== '' ? ' · '.$how : '').($suggestion ? ' · suggested: '.$suggestion : ''), '/inbox',
-                array_values(array_filter([$suggestion ? self::action('tx_accept', $t->id, 'Accept') : null, self::action('tx_personal', $t->id, 'Personal', 'ghost')])), ['amount' => $t->amount_pence]);
+                array_values(array_filter([$suggestion ? self::action('tx_accept', $t->id, 'Accept') : null, ...self::paymentActions($t, $targets[$t->id] ?? [], $suggestion !== null)])),
+                ['amount' => $t->amount_pence]);
         }
         $payments = $txs->count() < $limit ? $txs->count() : $waiting()->count();
 
@@ -969,6 +1095,421 @@ final class TodoList
 
         return ['items' => $items, 'counts' => $counts, 'below_counts' => $belowCounts, 'total' => array_sum($counts), 'per_group' => $limit,
             'failed' => array_values(array_unique($notWorkedOut)), 'capped' => array_values(array_unique($cappedKeys)), 'checked' => $checked];
+    }
+
+    /** A link among an item's buttons: opens a page, decides nothing (no fingerprint; Telegram shows it as a link). */
+    public static function link(string $label, string $href, string $style = 'ghost'): array
+    {
+        return ['code' => 'link', 'id' => '', 'label' => $label, 'style' => $style, 'href' => $href];
+    }
+
+    /**
+     * The reminder button for an overdue invoice when Gmail can be used: "Send the reminder" when Expend's own reminder
+     * draft is in your Gmail drafts, unchanged, and can be sent with one tap (InvoiceEmails::oneTapProblem); nothing
+     * while one you edited is there; otherwise "Make a reminder" (made only when you press it).
+     *
+     * @param  Collection<string, InvoiceEmail>  $rows  the latest email row of each invoice and kind ("{id}:{kind}")
+     */
+    private static function reminderAction(Invoice $invoice, Collection $rows): ?array
+    {
+        $row = $rows[$invoice->id.':reminder'] ?? null;
+        if ($row?->status !== 'drafted') {
+            return self::action('inv_chase', $invoice->id, 'Make a reminder');
+        }
+        $edited = $row->current_message_id !== null && $row->current_message_id !== $row->draft_message_id;
+
+        return ! $edited && app(InvoiceEmails::class)->oneTapProblem($invoice, 'reminder', live: false) === null ? self::action('inv_chase_send', $invoice->id, 'Send the reminder') : null;
+    }
+
+    /** What an overdue invoice's item says about its reminder in Gmail: there and ready, or edited by you and waiting. */
+    private static function reminderWords(Invoice $invoice, Collection $rows, bool $gmail): string
+    {
+        $row = $rows[$invoice->id.':reminder'] ?? null;
+        if (! $gmail || $row?->status !== 'drafted') {
+            return '';
+        }
+
+        return $row->current_message_id !== null && $row->current_message_id !== $row->draft_message_id
+            ? ' Your edited reminder is in your Gmail drafts: send it there.' : ' A reminder is in your Gmail drafts.';
+    }
+
+    /**
+     * A payment's buttons beside Accept. Money out: Personal. Money in (income design v3): up to two "For INV-042"
+     * (an open invoice whose amount still to come is the payment) and "Acme Events, no job" for the payer's one client,
+     * from Income\IncomeTargets, each bound to the payment as shown; never Personal (it may be a client paying you).
+     *
+     * @param  list<array<string, mixed>>  $chips
+     * @return list<array>
+     */
+    private static function paymentActions(BankTransaction $tx, array $chips, bool $suggested): array
+    {
+        if ($tx->amount_pence <= 0) {
+            return [self::action('tx_personal', $tx->id, 'Personal', 'ghost')];
+        }
+        $open = $tx->allocations->whereNull('confirmed_at');
+        $named = $open->pluck('invoice_id')->filter()->map(fn ($id) => (int) $id)->all();
+        $out = [];
+        foreach (array_slice(array_values(array_filter($chips, fn (array $c) => $c['kind'] === 'invoice')), 0, 2) as $c) {
+            if (in_array($c['invoice_ids'][0], $named, true)) {
+                continue; // Accept already says it
+            }
+            $out[] = self::action('tx_invoice', $tx->id.':'.$c['invoice_ids'][0], 'For '.explode(' · ', $c['label'])[0]);
+        }
+        $client = collect($chips)->firstWhere('kind', 'client');
+        $same = $suggested && $open->count() === 1 && (int) $open->first()->client_id === (int) ($client['client_id'] ?? 0) && $open->first()->work_job_id === null && $open->first()->invoice_id === null;
+        if ($client !== null && ! $same) {
+            $out[] = self::action('tx_client', $tx->id.':'.$client['client_id'], str_replace(' · no job', ', no job', $client['label']), 'ghost');
+        }
+
+        return $out;
+    }
+
+    /**
+     * Income design v3's two items: an invoice paid more than it was for ("Acme Events paid £100 more than INV-042",
+     * invoice_overpaid:{id}, with Keep it as theirs with no job and a link to find what you paid back), and a voided
+     * invoice that was paid, with nothing to replace it ("INV-041 was voided after £500 was paid against it",
+     * invoice_void_paid:{id}, with "INV-043 replaced it" when exactly one of the client's later issued invoices could have).
+     *
+     * @param  callable  $add  compute()'s
+     * @param  Collection<int, Invoice>  $invoices  issued invoices payments name, and void ones
+     * @param  array<int, array>  $received  InvoicePayments::received() for them (and others)
+     */
+    private static function incomeItems(callable $add, Collection $invoices, array $received): void
+    {
+        $linked = $invoices->where('status', 'issued')->values();
+        foreach ($linked as $i) {
+            $over = (int) ($received[$i->id]['over'] ?? 0);
+            if ($over <= 0) {
+                continue;
+            }
+            $currency = $i->currency ?: 'GBP';
+            $client = IncomeClient::ofInvoice($i);
+            $name = ($client !== null ? Client::query()->whereKey($client)->value('name') : null) ?? ($i->bill_to_name ?: 'The client');
+            $payer = BankTransaction::query()->whereIn('id', Allocation::query()->where('invoice_id', $i->id)->whereNotNull('confirmed_at')->select('bank_transaction_id'))
+                ->orderByDesc('posted_on')->value('counterparty');
+            $add('income', 2, 'invoice_overpaid:'.$i->id, $name.' paid '.Money::format($over, $currency).' more than '.$i->number,
+                $i->number.' was for '.Money::format((int) $i->total_minor, $currency).' and '.Money::format((int) $received[$i->id]['paid'], $currency).' came in. Keep the rest as '.$name.'’s, with no job, or find what you paid back.',
+                '/invoices/'.$i->id, array_values(array_filter([
+                    $client !== null && strtoupper($currency) === 'GBP' ? self::action('inv_over_keep', $i->id, 'Keep '.IncomeText::money($over).' as '.$name.', no job') : null,
+                    self::link('I paid it back', '/transactions?q='.urlencode((string) ($payer ?: $i->bill_to_name)).'&direction=out'),
+                ])), ['amount' => $over, 'currency' => $currency]);
+        }
+
+        $voids = $invoices->where('status', 'void')->pluck('id')->all();
+        $stranded = $voids === [] ? [] : InvoicePayments::stranded($voids);
+        if ($stranded === []) {
+            return;
+        }
+        foreach (Invoice::query()->whereKey(array_keys($stranded))->orderBy('id')->get() as $void) {
+            $client = IncomeClient::ofInvoice($void);
+            // Its client's issued invoices from the same day or later, still owed at least what was paid against it.
+            $later = $client === null ? collect() : Invoice::query()->where('status', 'issued')->whereKeyNot($void->id)
+                ->when($void->issue_date, fn ($q) => $q->whereDate('issue_date', '>=', $void->issue_date->format('Y-m-d')))->orderBy('id')->get()
+                ->filter(fn (Invoice $i) => IncomeClient::ofInvoice($i) === $client)->values();
+            $owed = InvoicePayments::received($later);
+            $fits = $later->filter(fn (Invoice $i) => ($owed[$i->id]['outstanding'] ?? 0) >= $stranded[$void->id])->values();
+            $add('income', 2, 'invoice_void_paid:'.$void->id, $void->number.' was voided after '.Money::format($stranded[$void->id]).' was paid against it',
+                'Say which invoice replaced it, so what was paid counts there. Until then reminders to '.($void->bill_to_name ?: 'this client').' wait.',
+                '/invoices/'.$void->id, $fits->count() === 1 ? [self::action('inv_replace', $void->id.':'.$fits->first()->id, $fits->first()->number.' replaced it')] : [],
+                ['amount' => $stranded[$void->id], 'currency' => 'GBP']);
+        }
+    }
+
+    /**
+     * Where each booking you decided to recharge stands now (Charges\ChargeStatus), by its id: on an invoice, charged
+     * another way, to charge, … Bookings it can't place (or a check that goes wrong) are left out, and listed as before.
+     *
+     * @param  Collection<int, TravelItem>  $bookings
+     * @return array<int, string>
+     */
+    private static function bookingStatuses(Collection $bookings): array
+    {
+        if ($bookings->isEmpty()) {
+            return [];
+        }
+        try {
+            $jobs = WorkJob::query()->whereIn('id', $bookings->pluck('work_job_id')->unique()->values()->all())->get();
+            $units = collect(CostUnits::forJobs($jobs))->flatten(1)->values()->all();
+            $statuses = $units === [] ? [] : ChargeStatus::for($units);
+        } catch (Throwable $e) {
+            report($e);
+
+            return [];
+        }
+        $out = [];
+        foreach ($units as $u) {
+            foreach ([$u['ref'], ...$u['aliases']] as $ref) {
+                if (str_starts_with($ref, 'travel:') && isset($statuses[$u['ref']])) {
+                    $out[(int) substr($ref, 7)] = $statuses[$u['ref']]['status'];
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Drafts that aren't a job's first invoice (no job, or a job already invoiced), and the issued invoices Expend tracks
+     * (synced) from the last LATE_COST_DAYS, for late costs: one query for both.
+     *
+     * @return \Illuminate\Database\Eloquent\Collection<int, Invoice>
+     */
+    private static function laterInvoices()
+    {
+        return Invoice::query()
+            ->where(fn ($q) => $q->where('status', 'draft')
+                ->where(fn ($q) => $q->whereNull('work_job_id')->orWhereIn('work_job_id', Invoice::query()->whereIn('status', InvoicePayments::PAYABLE)->whereNotNull('work_job_id')->select('work_job_id'))))
+            ->orWhere(fn ($q) => $q->whereIn('status', InvoicePayments::PAYABLE)->whereNotNull('synced_at')->whereNotNull('work_job_id')->where('issued_at', '>=', now()->subDays(self::LATE_COST_DAYS)))
+            ->orderBy('id')->get();
+    }
+
+    /** How long after an invoice went its job's costs are still looked at for late ones (JobCloseout leaves these to it). */
+    public const LATE_COST_DAYS = 400;
+
+    /**
+     * Costs linked to a job after its invoice was sent (owed late: Charges\ChargeStatus): "Linked to Arena load-in after
+     * INV-0031 was sent: Taxi 13 Mar £18.20, on Acme Events' next invoice", with Invoice it now (the client's next
+     * draft, which ticks it under "From earlier jobs"), Not charged, and It was on INV-0031 when that invoice may have
+     * had it. One item per cost (charge:{cost}); gone once it's on a draft or decided.
+     *
+     * @param  callable  $add  compute()'s
+     */
+    private static function lateCosts(callable $add, Collection $tracked): void
+    {
+        $invoices = $tracked->groupBy('work_job_id');
+        if ($invoices->isEmpty()) {
+            return;
+        }
+        $jobs = WorkJob::query()->whereIn('id', $invoices->keys()->all())->with('client:id,name')->get()->keyBy('id');
+        $units = collect(CostUnits::forJobs($jobs))->flatten(1)->filter(fn (array $u) => $u['kind'] !== 'work')->values()->all();
+        if ($units === []) {
+            return;
+        }
+        $statuses = ChargeStatus::for($units);
+        // A booking you decided to recharge is listed as itself ("Recharge <provider> to the client", recharge:{id}).
+        $travel = collect($units)->flatMap(fn (array $u) => [$u['ref'], ...$u['aliases']])->filter(fn (string $r) => str_starts_with($r, 'travel:'))
+            ->map(fn (string $r) => (int) substr($r, 7))->values()->all();
+        $recharged = $travel === [] ? [] : TravelItem::query()->whereKey($travel)->where('decision', 'recharge')->pluck('id')->map(fn ($id) => 'travel:'.$id)->flip()->all();
+        foreach ($units as $u) {
+            $s = $statuses[$u['ref']] ?? null;
+            if ($s === null || $s['status'] !== 'owed_late' || ! $s['expected'] || ! CostRef::valid($u['ref'])
+                || collect([$u['ref'], ...$u['aliases']])->contains(fn (string $r) => isset($recharged[$r]))) {
+                continue;
+            }
+            $job = $jobs[(int) $u['job_id']] ?? null;
+            $invoice = ($invoices[(int) $u['job_id']] ?? collect())->last();
+            if ($job === null || $invoice === null) {
+                continue;
+            }
+            $client = $job->client?->name ?? 'the client';
+            $what = trim((string) ($u['description'] ?? 'A cost')).($u['date'] ?? null ? ' '.CarbonImmutable::parse($u['date'])->format('j M') : '');
+            $amount = $u['amount_minor'] !== null ? Money::format(abs((int) $u['amount_minor']), $u['currency'] ?? 'GBP') : null;
+            $id = CostRef::toId($u['ref']);
+            $add('revenue', 2, 'charge:'.$id, 'Charge '.$what.' to '.$client,
+                'Linked to '.$job->title.' after '.$invoice->number.' was sent: '.$what.($amount ? ' '.$amount : '').', on '.$client.'’s next invoice.',
+                '/jobs/'.$job->id, [
+                    self::action('cost_invoice_now', $id, 'Invoice it now'),
+                    self::action('cost_no_charge', $id, 'Not charged', 'ghost'),
+                    self::action('cost_invoiced', $id.':'.$invoice->id, 'It was on '.$invoice->number, 'ghost'),
+                ], $u['amount_minor'] !== null ? ['amount' => abs((int) $u['amount_minor']), 'currency' => $u['currency'] ?? 'GBP'] : []);
+        }
+    }
+
+    /** Costs charged another way (or claimed on the client's form) a month ago or more, with nothing said since. */
+    public const CLAIMED_DAYS = 30;
+
+    /**
+     * "Was it paid back?" for a cost you charged another way, or claimed on the client's expense form, a month ago:
+     * [Paid back] and [Not paid back] (CostCharges::outcome). claimed:{cost}.
+     *
+     * @param  callable  $add  compute()'s
+     */
+    private static function claimedCosts(callable $add): void
+    {
+        $rows = CostCharge::query()->where('charge', 'elsewhere')->whereNull('outcome')->where('updated_at', '<=', now()->subDays(self::CLAIMED_DAYS))->orderBy('updated_at')->orderBy('id')->get();
+        if ($rows->isEmpty()) {
+            return;
+        }
+        $parsed = $rows->mapWithKeys(fn (CostCharge $r) => [$r->id => CostRef::valid($r->cost_ref) ? CostRef::parse($r->cost_ref) : null])->filter();
+        $ids = fn (string $type) => $parsed->where('type', $type)->pluck('id')->unique()->values()->all() ?: [0];
+        $txs = BankTransaction::query()->whereIn('id', $ids('tx'))->get(['id', 'counterparty', 'description', 'amount_pence', 'posted_on'])->keyBy('id');
+        $exps = ManualExpense::query()->whereIn('id', $ids('exp'))->get(['id', 'description', 'amount_pence', 'spent_on'])->keyBy('id');
+        $bookings = TravelItem::query()->whereIn('id', $ids('travel'))->get(['id', 'provider', 'amount_minor', 'currency', 'starts_on'])->keyBy('id');
+        foreach ($rows as $row) {
+            $p = $parsed[$row->id] ?? null;
+            if ($p === null) {
+                continue;
+            }
+            [$what, $pence, $currency] = match ($p['type']) {
+                'tx' => ($t = $txs[$p['id']] ?? null) ? [($t->counterparty ?: $t->description).' '.$t->posted_on->format('j M'), abs((int) $t->amount_pence), 'GBP'] : [null, null, 'GBP'],
+                'exp' => ($e = $exps[$p['id']] ?? null) ? [$e->description.' '.$e->spent_on?->format('j M'), abs((int) $e->amount_pence), 'GBP'] : [null, null, 'GBP'],
+                'travel' => ($b = $bookings[$p['id']] ?? null) ? [$b->provider.' '.$b->starts_on->format('j M'), $b->amount_minor, $b->currency ?: 'GBP'] : [null, null, 'GBP'],
+                default => ['A cost', null, 'GBP'],
+            };
+            if ($what === null) {
+                continue; // its record has gone
+            }
+            $id = CostRef::toId($row->cost_ref);
+            $add('revenue', 2, 'claimed:'.$id, 'Was '.trim($what).' paid back?',
+                'You '.($row->note === CostCharges::CLAIMED_NOTE ? 'claimed it on their expense form' : 'charged it another way').' on '.$row->updated_at->format('j M Y')
+                .'. If it was paid back, link their payment when it’s in; if not, it stays your own cost.',
+                '/transactions', [self::action('cost_paid_back', $id, 'Paid back'), self::action('cost_not_paid', $id, 'Not paid back', 'ghost')],
+                $pence !== null ? ['amount' => (int) $pence, 'currency' => $currency] : []);
+        }
+    }
+
+    /** How long a client who pays without an invoice from you may take before "hasn't paid yet". */
+    public const NO_INVOICE_DAYS = 45;
+
+    /**
+     * One item for each finished job (see compute()): "Is it done?" (job_done:{id}, with Done, Not yet and Cancelled…),
+     * or its invoice to draft or check (invoice:{id}), or, for a client who pays without an invoice from you, a note
+     * once 45 days have gone by with nothing in. "Invoice <job>" also says when the job's client paid once with no job
+     * soon after it ("Acme Events paid £450 on 3 Mar with no job: was it for this?", with It was for this job).
+     *
+     * @param  callable  $add  compute()'s
+     * @param  \Illuminate\Database\Eloquent\Collection<int, WorkJob>  $finished
+     * @param  array<string, true>  $hidden
+     */
+    private static function jobItems(callable $add, $finished, array $hidden): void
+    {
+        if ($finished->isEmpty()) {
+            return;
+        }
+        $ids = $finished->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $now = CarbonImmutable::now();
+        // Billed already (an issued invoice, or income for its work: Jobs\JobBilling), and paid only part of its work
+        // by income (a deposit: the rest still to invoice).
+        $billed = JobBilling::billed($ids);
+        $short = $billed === [] ? [] : JobBilling::short($finished, $billed);
+        // Each job's latest draft, with its ticked lines and total, and its changes since you looked.
+        $drafts = Invoice::query()->where('status', 'draft')->whereIn('work_job_id', $ids)->orderBy('id')->get(['id', 'work_job_id', 'total_minor', 'currency'])->keyBy('work_job_id');
+        $changes = InvoiceDraftSync::changeCounts($drafts->pluck('id')->all());
+        $lines = $drafts->isEmpty() ? collect() : InvoiceLine::query()->whereIn('invoice_id', $drafts->pluck('id')->all())->where('included', true)
+            ->groupBy('invoice_id')->selectRaw('invoice_id, COUNT(*) AS n')->pluck('n', 'invoice_id');
+        $clientOnly = self::clientOnlyReceipts($finished->filter(fn (WorkJob $j) => $j->status !== 'cancelled' && ! isset($drafts[$j->id])));
+        $stages = [];
+        foreach ($finished as $j) {
+            $finish = JobStage::finishAt($j);
+            $paidUp = isset($billed[$j->id]) && ! isset($short[$j->id]);
+            // "Is it done?" by Jobs\JobStage's own rule.
+            $stages[$j->id] = ['done_due' => JobStage::isDue($j, $finish, $now, $paidUp, $hidden), 'finish_at' => $finish->toIso8601String(), 'draft_id' => $drafts[$j->id]->id ?? null];
+        }
+
+        foreach ($finished as $j) {
+            $st = $stages[$j->id] ?? null;
+            if ($st === null) {
+                continue;
+            }
+            // Its paying client (one merged into another is that one: looked up only then, as it's rare).
+            $client = $j->client?->merged_into_id !== null ? Client::query()->find(ClientIds::resolve((int) $j->client_id)) : $j->client;
+            $who = $client?->name ? $client->name.' · ' : '';
+            if ($st['done_due']) {
+                $add('invoice', 2, 'job_done:'.$j->id, 'Is '.$j->title.' done?', $who.'last day was '.$j->ends_on->format('D j M Y').'. Marking it done gets its invoice ready to check.',
+                    '/jobs/'.$j->id, [self::action('job_done', $j->id, 'Done'), self::action('job_not_yet', $j->id, 'Not yet', 'ghost'), self::action('job_cancel', $j->id, 'Cancelled…', 'ghost')]);
+
+                continue;
+            }
+            $finish = CarbonImmutable::parse($st['finish_at']);
+            if (($j->status === 'booked' && $finish->gt($now)) || (isset($billed[$j->id]) && ! isset($short[$j->id]))
+                || ($j->status === 'booked' && isset($hidden['job_done:'.$j->id]) && $finish->gt($now->subDays(JobStage::DONE_WINDOW_DAYS)))) {
+                continue; // not finished yet, billed already, or you said it isn't finished (or not to ask) lately
+            }
+            $draftId = $st['draft_id'] ?? null;
+            $part = isset($short[$j->id]) ? ' · '.IncomeText::money($short[$j->id]['paid']).' of '.IncomeText::money($short[$j->id]['expected']).' has come in' : '';
+            $cancelled = $j->status === 'cancelled'
+                ? ' · cancelled: '.($j->cancel_charge === 'fee' ? 'a '.IncomeText::money((int) $j->cancel_fee_pence).' cancellation fee is owed' : 'your costs are owed') : '';
+            if ($draftId !== null) {
+                $d = $drafts[$j->id];
+                $n = (int) ($lines[$draftId] ?? 0);
+                $c = (int) ($changes[$draftId] ?? 0);
+                $add('invoice', 2, 'invoice:'.$j->id, 'Check and issue the invoice for '.$j->title,
+                    $who.'Draft · '.$n.' '.($n === 1 ? 'line' : 'lines').($c > 0 ? ' · '.$c.' '.($c === 1 ? 'change' : 'changes').' since you looked' : '')
+                    .' · '.Money::format((int) $d->total_minor, $d->currency ?: 'GBP').$part.$cancelled, '/invoices/'.$draftId, []);
+
+                continue;
+            }
+            if ($client?->invoiceRoute() === 'none' && $j->status !== 'cancelled') {
+                // They pay without an invoice from you: only once they're late.
+                if ($j->ends_on->lt(today()->subDays(self::NO_INVOICE_DAYS))) {
+                    $add('invoice', 2, 'invoice:'.$j->id, $client->name.' hasn’t paid for '.$j->title.' yet', 'They pay without an invoice from you · finished '.$j->ends_on->format('j M Y').$part,
+                        '/jobs/'.$j->id, [self::action('job_invoice', $j->id, 'Draft the invoice', 'ghost')]);
+                }
+
+                continue;
+            }
+            $receipt = $clientOnly[$j->id] ?? null;
+            $hint = $receipt !== null ? ' · '.($client?->name ?? 'The client').' paid '.IncomeText::money((int) $receipt->amount_pence).' on '.$receipt->transaction->posted_on->format('j M').' with no job: was it for this?' : '';
+            $add('invoice', 2, 'invoice:'.$j->id, 'Invoice '.$j->title, $who.'finished '.$j->ends_on->format('j M Y').$part.$cancelled.$hint, '/jobs/'.$j->id,
+                array_values(array_filter([self::action('job_invoice', $j->id, 'Draft the invoice'),
+                    $receipt !== null ? self::action('tx_job', $receipt->bank_transaction_id.':'.$j->id, 'It was for this job', 'ghost') : null])));
+        }
+    }
+
+    /**
+     * For each of these jobs, the one payment its client made with no job and no invoice soon after it (Jobs\JobBilling::
+     * clientOnlyAfter's rule: from 30 days before its first day to 120 after its last), when there's exactly one. One
+     * query for them all (and one more for merged clients, only when there are any such payments).
+     *
+     * @param  Collection<int, WorkJob>  $jobs
+     * @return array<int, Allocation> by job id
+     */
+    private static function clientOnlyReceipts(Collection $jobs): array
+    {
+        $jobs = $jobs->filter(fn (WorkJob $j) => $j->client_id !== null && $j->starts_on !== null && $j->ends_on !== null)->values();
+        if ($jobs->isEmpty()) {
+            return [];
+        }
+        $from = $jobs->min(fn (WorkJob $j) => $j->starts_on->copy()->subDays(JobBilling::BEFORE_DAYS)->format('Y-m-d'));
+        $to = $jobs->max(fn (WorkJob $j) => $j->ends_on->copy()->addDays(JobBilling::AFTER_DAYS)->format('Y-m-d'));
+        $lines = Allocation::query()->select('allocations.*')
+            ->join('bank_transactions as co_tx', 'co_tx.id', '=', 'allocations.bank_transaction_id')
+            ->where('co_tx.state', 'active')->whereDate('co_tx.posted_on', '>=', $from)->whereDate('co_tx.posted_on', '<=', $to)
+            ->where('allocations.kind', 'business_income')->whereNotNull('allocations.confirmed_at')->where('allocations.amount_pence', '>', 0)
+            ->whereNull('allocations.work_job_id')->whereNull('allocations.invoice_id')->whereNotNull('allocations.client_id')
+            ->orderBy('co_tx.posted_on')->orderBy('allocations.id')->with('transaction')->get();
+        if ($lines->isEmpty()) {
+            return [];
+        }
+        // Clients count as one with every client merged into them.
+        $group = ClientIds::resolveMany($jobs->pluck('client_id')->concat($lines->pluck('client_id')));
+        $out = [];
+        foreach ($jobs as $j) {
+            $mine = $group[(int) $j->client_id] ?? (int) $j->client_id;
+            $from = $j->starts_on->copy()->subDays(JobBilling::BEFORE_DAYS)->format('Y-m-d');
+            $to = $j->ends_on->copy()->addDays(JobBilling::AFTER_DAYS)->format('Y-m-d');
+            $found = $lines->filter(fn (Allocation $a) => ($group[(int) $a->client_id] ?? (int) $a->client_id) === $mine && $a->transaction !== null
+                && $a->transaction->posted_on->format('Y-m-d') >= $from && $a->transaction->posted_on->format('Y-m-d') <= $to);
+            if ($found->count() === 1) {
+                $out[$j->id] = $found->first();
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Drafts that aren't a job's first invoice: a follow-up for late costs on a job already invoiced ("Late costs for
+     * Arena load-in: draft ready"), and a client's draft with no job ("Draft invoice for Acme Events: ready to check").
+     * draft:{invoice}.
+     *
+     * @param  callable  $add  compute()'s
+     */
+    private static function draftItems(callable $add, Collection $drafts): void
+    {
+        if ($drafts->isEmpty()) {
+            return;
+        }
+        $drafts->load(['job:id,title', 'client:id,name']);
+        $changes = InvoiceDraftSync::changeCounts($drafts->pluck('id')->all());
+        $lines = InvoiceLine::query()->whereIn('invoice_id', $drafts->pluck('id')->all())->where('included', true)->groupBy('invoice_id')->selectRaw('invoice_id, COUNT(*) AS n')->pluck('n', 'invoice_id');
+        foreach ($drafts as $d) {
+            $n = (int) ($lines[$d->id] ?? 0);
+            $c = (int) ($changes[$d->id] ?? 0);
+            $title = $d->work_job_id !== null ? 'Late costs for '.($d->job?->title ?? 'a job').': draft ready' : 'Draft invoice for '.($d->client?->name ?? $d->bill_to_name ?? 'a client').': ready to check';
+            $add('invoice', 2, 'draft:'.$d->id, $title, 'Draft · '.$n.' '.($n === 1 ? 'line' : 'lines').($c > 0 ? ' · '.$c.' '.($c === 1 ? 'change' : 'changes').' since you looked' : '')
+                .' · '.Money::format((int) $d->total_minor, $d->currency ?: 'GBP'), '/invoices/'.$d->id, [], ['amount' => (int) $d->total_minor, 'currency' => $d->currency ?: 'GBP']);
+        }
     }
 
     /**

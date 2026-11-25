@@ -55,13 +55,20 @@ class ReviewFixesTodoListTest extends TestCase
         return WorkJob::query()->create(['title' => $title, 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14', 'po_number' => 'PO-1']);
     }
 
-    /** Issued on the given day, due 30 days later. */
-    private function issuedInvoice(WorkJob $job, string $amount = '450.00', string $currency = 'GBP', string $issued = '2025-05-15'): Invoice
+    /**
+     * Issued on the given day, due 30 days later, and sent that day (S10: an issued invoice that hasn't been sent is
+     * listed to send, never as overdue), unless $sent is false.
+     */
+    private function issuedInvoice(WorkJob $job, string $amount = '450.00', string $currency = 'GBP', string $issued = '2025-05-15', bool $sent = true): Invoice
     {
         $invoice = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'total_minor' => 0, 'currency' => $currency, 'bill_to_name' => 'Client Ltd', 'bill_to_email' => 'accounts@client.example']);
         app(InvoiceService::class)->updateDraft($invoice, [], [['description' => 'Show day', 'quantity' => '1', 'unit_price' => $amount]]);
+        $invoice = app(InvoiceService::class)->issue($invoice->fresh(), $issued)->fresh();
+        if ($sent) {
+            $invoice->forceFill(['sent_at' => $issued.' 10:00:00', 'sent_to' => 'accounts@client.example'])->save();
+        }
 
-        return app(InvoiceService::class)->issue($invoice->fresh(), $issued)->fresh();
+        return $invoice->fresh();
     }
 
     /** A payment in your statements, waiting to be decided. */
@@ -127,7 +134,8 @@ class ReviewFixesTodoListTest extends TestCase
         $this->assertSame("Invoice {$invoice->number} part-paid", $item['title']);
         $this->assertStringContainsString('£449.80 of £450.00 received', $item['detail']);
         $this->assertStringContainsString('£0.20 still to come', $item['detail']);
-        $this->assertSame([], $item['actions'], 'The reminder email says no payment has been seen');
+        // S10 (income design v3): no reminder (its email says no payment has been seen), but "Close it" for what's short.
+        $this->assertSame([['inv_close', $invoice->id.':sp', 'Close it: £0.20 isn’t coming']], array_map(fn ($a) => [$a['code'], $a['id'], $a['label']], $item['actions']));
         $this->assertSame(20, $item['amount']);
     }
 
@@ -179,7 +187,9 @@ class ReviewFixesTodoListTest extends TestCase
         $this->assertSame("Invoice {$eur->number}: check it’s been paid", $item['title']);
         $this->assertStringContainsString('€1,000.00 from Client Ltd', $item['detail']);
         $this->assertStringContainsString('£850.00 came in for this job in another currency', $item['detail']);
-        $this->assertSame([], $item['actions']);
+        // S10 (income design v3): "It's paid (in another currency)" closes it, and nothing chases the client.
+        $this->assertSame(['inv_close'], array_column($item['actions'], 'code'));
+        $this->assertSame($eur->id.':fx', $item['actions'][0]['id']);
     }
 
     public function test_on_a_job_with_pound_and_euro_invoices_euros_pay_the_euro_invoice(): void
@@ -220,7 +230,7 @@ class ReviewFixesTodoListTest extends TestCase
         $job = $this->job();
         // A £100.00 deposit decided as income for the job, then the £450.00 invoice issued and never emailed.
         $this->decideIncome($this->payment(10000, 'Client Ltd', on: today()->subDays(10)->format('Y-m-d')), $job);
-        $invoice = $this->issuedInvoice($job, issued: today()->subDays(3)->format('Y-m-d'));
+        $invoice = $this->issuedInvoice($job, issued: today()->subDays(3)->format('Y-m-d'), sent: false);
         $this->assertSame(['paid' => 10000, 'elsewhere' => 0, 'waiting' => 0], self::three(TodoList::received([$invoice])[$invoice->id]));
 
         $item = $this->item('unsent:'.$invoice->id);
@@ -244,6 +254,8 @@ class ReviewFixesTodoListTest extends TestCase
         $draft = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'currency' => 'EUR', 'total_minor' => 0, 'bill_to_name' => 'Client SA', 'po_total_minor' => 100000]);
         app(InvoiceService::class)->updateDraft($draft, [], [['description' => 'Show day', 'quantity' => '1', 'unit_price' => '800.00']]);
         $issued = $this->issuedInvoice($this->job('Lyon'), '1000.00', 'EUR');
+        // S10: one sent (overdue) and one not sent (to send): an invoice not sent is never overdue.
+        $unsent = $this->issuedInvoice($this->job('Nice'), '1000.00', 'EUR', sent: false);
 
         $list = TodoList::build();
         $under = $this->item('underbilled:'.$draft->id, $list);
@@ -253,7 +265,8 @@ class ReviewFixesTodoListTest extends TestCase
         $overdue = $this->item('invoice_overdue:'.$issued->id, $list);
         $this->assertStringStartsWith('€1,000.00 from Client Ltd', $overdue['detail']);
         $this->assertSame([100000, 'EUR'], [$overdue['amount'], $overdue['currency']]);
-        $this->assertStringStartsWith('€1,000.00 to Client Ltd', $this->item('unsent:'.$issued->id, $list)['detail']);
+        $this->assertStringStartsWith('€1,000.00 to Client Ltd', $this->item('unsent:'.$unsent->id, $list)['detail']);
+        $this->assertNull($this->item('invoice_overdue:'.$unsent->id, $list), 'Not sent: never overdue');
     }
 
     // ---------------------------------------------------------------- R17, R31: snoozed payments
@@ -558,7 +571,7 @@ class ReviewFixesTodoListTest extends TestCase
     public function test_the_kept_list_is_built_afresh_when_anything_it_shows_changes(): void
     {
         Mail::fake();
-        $invoice = $this->issuedInvoice($this->job(), issued: today()->subDays(5)->format('Y-m-d'));
+        $invoice = $this->issuedInvoice($this->job(), issued: today()->subDays(5)->format('Y-m-d'), sent: false);
         $keys = fn () => array_column(TodoList::cached()['items'], 'key');
         $this->assertContains('unsent:'.$invoice->id, $keys());
 

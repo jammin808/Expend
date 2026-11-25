@@ -13,6 +13,7 @@ use App\Domain\Ledger\AllocationWriter;
 use App\Models\Account;
 use App\Models\BankTransaction;
 use App\Models\Category;
+use App\Models\Client;
 use App\Models\Document;
 use App\Models\ImportBatch;
 use App\Models\ManualExpense;
@@ -130,7 +131,7 @@ class ReceiptsAndLinksTest extends TestCase
         $this->assertSame([], $this->found(new ReceiptUnmatched));
     }
 
-    public function test_income_with_no_invoice_or_job(): void
+    public function test_income_with_no_client_job_or_invoice(): void
     {
         $job = WorkJob::query()->create(['title' => 'Gala', 'starts_on' => '2026-05-01', 'ends_on' => '2026-05-01', 'status' => 'done']);
         $loose = $this->tx('2026-05-20', 105000, 'ACME EVENTS LTD');
@@ -142,11 +143,18 @@ class ReceiptsAndLinksTest extends TestCase
         $suggested = $this->tx('2026-05-23', 20000, 'STAGE CO');
         app(AllocationWriter::class)->decide($suggested, AllocationWriter::lines(20000, 'business_income', Category::query()->where('code', 'turnover')->value('id')), 'matcher', false);
 
+        // Version 2 (income design v3): income for a client with no job is done once the client is set.
+        $client = Client::query()->create(['name' => 'Acme Events']);
+        $forClient = $this->tx('2026-05-24', 40000, 'ACME EVENTS LTD');
+        $this->decide($forClient, 'business_income', 'turnover', ['client_id' => $client->id]);
+
         $found = $this->found(new IncomeUnlinked);
-        $this->assertSame(['unlinked:'.$loose->id], array_keys($found), 'Only confirmed turnover with no invoice or job');
+        $this->assertSame(['unlinked:'.$loose->id], array_keys($found), 'Only confirmed turnover with no client, job or invoice');
         $d = $found['unlinked:'.$loose->id];
-        $this->assertSame(['income.unlinked', 105000, 'none', 'certain', 'tx:'.$loose->id, 'records'], [$d->code, $d->amountPence, $d->direction, $d->grade, $d->subjectRef, $d->group]);
-        $this->assertSame('Income with no invoice or job: £1,050.00 from ACME EVENTS LTD on 20 May 2026', $d->title);
+        $this->assertSame(['income.unlinked', 105000, 'none', 'certain', 'tx:'.$loose->id, 'records', 2], [$d->code, $d->amountPence, $d->direction, $d->grade, $d->subjectRef, $d->group, $d->detectorVersion]);
+        $this->assertSame('Income with no client, job or invoice: £1,050.00 from ACME EVENTS LTD on 20 May 2026', $d->title);
+        $this->assertStringContainsString('Set the client, job or invoice', $d->detail);
+        $this->assertSame('/transactions?year=2026-27&unassigned=1&q=ACME+EVENTS+LTD', $d->href);
     }
 
     public function test_a_cash_expense_also_on_a_card(): void

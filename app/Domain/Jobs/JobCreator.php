@@ -123,11 +123,23 @@ final class JobCreator
      */
     public static function client(string $name, string $by = 'you', string $reason = 'For a new job'): Client
     {
-        $name = trim(preg_replace('/\s+/u', ' ', $name) ?? $name);
-        if ($name === '') {
-            throw new InvalidArgumentException('Give the client a name.');
+        $name = self::clientName($name);
+        if ($found = self::findClient($name)) {
+            return $found;
         }
-        $name = mb_substr($name, 0, 120);
+        $client = Client::query()->create(['name' => $name]);
+        AuditLog::record('client.created', $client, null, ['name' => $name], $reason, $by);
+
+        return $client;
+    }
+
+    /**
+     * The client this name finds, as client() finds it (merges resolved), without adding one: null when client()
+     * would add a new client. For a form that adds a client only once the rest of the save goes ahead.
+     */
+    public static function findClient(string $name): ?Client
+    {
+        $name = self::clientName($name);
         $named = self::resolved(Client::query()->whereRaw('LOWER(name) = ?', [mb_strtolower($name)])->orderBy('id')->pluck('id'));
         if ($named->isNotEmpty() && ($found = Client::query()->find($named->first()))) {
             return $found;
@@ -139,10 +151,19 @@ final class JobCreator
                 return $found;
             }
         }
-        $client = Client::query()->create(['name' => $name]);
-        AuditLog::record('client.created', $client, null, ['name' => $name], $reason, $by);
 
-        return $client;
+        return null;
+    }
+
+    /** A client's name as it's stored: spaces tidied, 120 characters at most. */
+    private static function clientName(string $name): string
+    {
+        $name = trim(preg_replace('/\s+/u', ' ', $name) ?? $name);
+        if ($name === '') {
+            throw new InvalidArgumentException('Give the client a name.');
+        }
+
+        return mb_substr($name, 0, 120);
     }
 
     /**

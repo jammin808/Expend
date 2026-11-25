@@ -74,7 +74,8 @@ class JobEditSearchTest extends TestCase
     public function test_a_cancelled_job_is_not_searched(): void
     {
         Queue::fake();
-        $this->patch('/jobs/'.$this->job->id, $this->form(['status' => 'cancelled', 'po_number' => 'PO-9']))->assertSessionHas('success', 'Saved.');
+        // The status change goes through JobStatus (build slice S9), which says what it did.
+        $this->patch('/jobs/'.$this->job->id, $this->form(['status' => 'cancelled', 'po_number' => 'PO-9']))->assertSessionHas('success', 'Saved. Cancelled.');
         Queue::assertNotPushed(GatherForJob::class);
     }
 

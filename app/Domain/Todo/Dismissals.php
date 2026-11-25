@@ -3,6 +3,7 @@
 namespace App\Domain\Todo;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Clients\ClientIds;
 use App\Domain\Intel\AuditContext;
 use App\Domain\Intel\Backfills\Findings as FindingsBackfill;
 use App\Domain\Intel\Detectors\TodoGroupsDetector;
@@ -22,6 +23,9 @@ use InvalidArgumentException;
  * of its own, TodoList::mileageJobKey()), so a job that finishes later is listed on its own. Undo puts them back.
  * A gap with the bank, or an account with nothing imported lately, is hidden as you saw it (TodoList::dismissKeyFor()):
  * one that changes comes back. A job's close-out is hidden by its parts as you saw them: a new part comes back.
+ *
+ * Two of its keys aren't to-do items: client_dupe:{a}:{b} ("It's a different client", kept for good, never snoozed:
+ * Clients\ClientIds::dupeKey) and job_done:{id} snoozed "Not finished yet" (asked again when it ends).
  */
 final class Dismissals
 {
@@ -38,10 +42,14 @@ final class Dismissals
         'other' => ['label' => 'Other', 'false_positive' => false],
     ];
 
-    /** Why it's snoozed. */
+    /**
+     * Why it's snoozed. "Not finished yet" is for "Is it done?" only (job.done_due): the job is asked about again when
+     * the snooze ends (JobFinishedNudges), or after its last day once you add more.
+     */
     public const SNOOZE_REASONS = [
         'later' => ['label' => 'Later'],
         'waiting' => ['label' => 'Waiting to hear back'],
+        'not_finished' => ['label' => 'Not finished yet', 'only' => ['job.done_due']],
         'other' => ['label' => 'Other'],
     ];
 
@@ -137,6 +145,10 @@ final class Dismissals
     {
         if ($days === null && TodoList::snoozeOnly($key)) {
             throw new InvalidArgumentException('This one can only be snoozed. It comes back whenever it applies again, and “Not relevant” would hide it for good.');
+        }
+        // Two clients are either the same or not: "Not the same" is kept for good (ClientIds::possibleDuplicates).
+        if ($days !== null && str_starts_with($key, ClientIds::DUPE_PREFIX)) {
+            throw new InvalidArgumentException('Two clients are the same or not: say “It’s a different client” rather than snoozing it.');
         }
 
         return AuditContext::with('you', function () use ($key, $days, $note, $fromStartOfDay) {

@@ -3,7 +3,9 @@
 use App\Http\Controllers\AccountController;
 use App\Http\Controllers\AssistantController;
 use App\Http\Controllers\CalendarPickController;
+use App\Http\Controllers\ClientController;
 use App\Http\Controllers\ConnectionsController;
+use App\Http\Controllers\CostChargeController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DecisionController;
 use App\Http\Controllers\DocumentController;
@@ -15,6 +17,7 @@ use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\JobCalendarController;
 use App\Http\Controllers\JobController;
 use App\Http\Controllers\JobFinderController;
+use App\Http\Controllers\LookupController;
 use App\Http\Controllers\ManualExpenseController;
 use App\Http\Controllers\MileageController;
 use App\Http\Controllers\OpportunityController;
@@ -222,6 +225,66 @@ Route::middleware(['auth'])->group(function () {
     Route::post('mileage/not-driven/{job}/undo', [MileageController::class, 'putBack'])->name('mileage.putBack');
     Route::patch('mileage/{trip}', [MileageController::class, 'updateTrip'])->name('mileage.update');
     Route::delete('mileage/{trip}', [MileageController::class, 'destroyTrip'])->name('mileage.destroy');
+
+    // Income linked to clients, jobs and invoices (income design v3): who money in was from, for many at once; the
+    // pickers' searches (read only); closing an invoice that won't be paid in full, reopening it, and what replaced a
+    // void one.
+    Route::post('decisions/bulk-client', [DecisionController::class, 'bulkClient'])->name('decisions.bulkClient');
+    Route::get('lookups/jobs', [LookupController::class, 'jobs'])->middleware('throttle:120,1,lookups-jobs')->name('lookups.jobs');
+    Route::get('lookups/owed', [LookupController::class, 'owed'])->middleware('throttle:120,1,lookups-owed')->name('lookups.owed');
+    Route::get('lookups/invoices', [LookupController::class, 'invoices'])->middleware('throttle:120,1,lookups-invoices')->name('lookups.invoices');
+    Route::post('invoices/{invoice}/close', [InvoiceController::class, 'close'])->name('invoices.close');
+    Route::post('invoices/{invoice}/reopen', [InvoiceController::class, 'reopen'])->name('invoices.reopen');
+    Route::post('invoices/{invoice}/replaced-by', [InvoiceController::class, 'replacedBy'])->name('invoices.replacedBy');
+
+    // The client area: the list, a client's page and details, merging duplicates (tied to both as compared) and
+    // undoing it, "Not the same", their usual arrangement for travel and expenses, and a draft for their costs.
+    Route::get('clients', [ClientController::class, 'index'])->name('clients.index');
+    Route::post('clients', [ClientController::class, 'store'])->middleware('throttle:60,1,clients-store')->name('clients.store');
+    Route::get('clients/{client}', [ClientController::class, 'show'])->whereNumber('client')->name('clients.show');
+    Route::patch('clients/{client}', [ClientController::class, 'update'])->whereNumber('client')->name('clients.update');
+    Route::get('clients/{client}/compare/{other}', [ClientController::class, 'compare'])->whereNumber(['client', 'other'])->name('clients.compare');
+    Route::post('clients/{client}/merge', [ClientController::class, 'merge'])->whereNumber('client')->name('clients.merge');
+    Route::post('clients/{client}/unmerge', [ClientController::class, 'unmerge'])->whereNumber('client')->name('clients.unmerge');
+    Route::post('clients/{client}/not-same', [ClientController::class, 'notSame'])->whereNumber('client')->name('clients.notSame');
+    Route::put('clients/{client}/terms', [ClientController::class, 'terms'])->whereNumber('client')->name('clients.terms');
+    Route::post('clients/{client}/invoice', [ClientController::class, 'draft'])->whereNumber('client')->name('clients.invoice');
+
+    // Your decision about one cost, by its id (CostRef::toId), and "Recharge to Acme" or its client on a payment.
+    Route::post('costs/{id}/charge', [CostChargeController::class, 'decide'])->where('id', '[A-Za-z0-9_:]+')->name('costs.charge');
+    Route::post('costs/{id}/claimed', [CostChargeController::class, 'claimed'])->where('id', '[A-Za-z0-9_:]+')->name('costs.claimed');
+    Route::post('costs/{id}/outcome', [CostChargeController::class, 'outcome'])->where('id', '[A-Za-z0-9_:]+')->name('costs.outcome');
+    Route::post('costs/{id}/clear', [CostChargeController::class, 'clear'])->where('id', '[A-Za-z0-9_:]+')->name('costs.clear');
+    Route::post('costs/{id}/pair', [CostChargeController::class, 'pair'])->where('id', '[A-Za-z0-9_:]+')->name('costs.pair');
+    Route::post('items/{source}/{id}/recharge', [CostChargeController::class, 'recharge'])->whereIn('source', ['bank', 'manual'])->whereNumber('id')->name('items.recharge');
+    Route::post('items/{source}/{id}/expense-client', [CostChargeController::class, 'expenseClient'])->whereIn('source', ['bank', 'manual'])->whereNumber('id')->name('items.expenseClient');
+
+    // A job's status (every change through JobStatus): Done (its invoice made ready), back to booked, Cancelled with
+    // what they owe, Undo of Cancelled, "Draft its invoice?", and its own arrangement for travel and expenses.
+    Route::post('jobs/{job}/done', [JobController::class, 'done'])->whereNumber('job')->name('jobs.done');
+    Route::post('jobs/{job}/reopen', [JobController::class, 'reopen'])->whereNumber('job')->name('jobs.reopen');
+    Route::post('jobs/{job}/cancel', [JobController::class, 'cancel'])->whereNumber('job')->name('jobs.cancel');
+    Route::post('jobs/{job}/uncancel', [JobController::class, 'uncancel'])->whereNumber('job')->name('jobs.uncancel');
+    Route::post('jobs/{job}/draft', [JobController::class, 'draft'])->whereNumber('job')->name('jobs.draft');
+    Route::put('jobs/{job}/terms', [JobController::class, 'terms'])->whereNumber('job')->name('jobs.terms');
+
+    // A draft's check screen (each line's tick and sheet, "Got it", sharing a cost, adding a cost, "Save these ticks
+    // as Acme's usual"), issuing it into Gmail or sending it, Send now, I sent it myself, "Make a reminder" (only when
+    // you press it) and "They've paid". Each call to Gmail has its own limit.
+    Route::patch('invoices/{invoice}/lines/{line}', [InvoiceController::class, 'line'])->whereNumber(['invoice', 'line'])->name('invoices.line');
+    Route::post('invoices/{invoice}/seen', [InvoiceController::class, 'seen'])->whereNumber('invoice')->name('invoices.seen');
+    Route::post('invoices/{invoice}/share', [InvoiceController::class, 'share'])->whereNumber('invoice')->name('invoices.share');
+    Route::get('invoices/{invoice}/costs', [InvoiceController::class, 'costs'])->whereNumber('invoice')->middleware('throttle:60,1,invoice-costs')->name('invoices.costs');
+    Route::post('invoices/{invoice}/usual', [InvoiceController::class, 'usual'])->whereNumber('invoice')->name('invoices.usual');
+    Route::post('invoices/{invoice}/gmail', [InvoiceController::class, 'toGmail'])->whereNumber('invoice')->middleware('throttle:20,1,invoice-gmail')->name('invoices.gmail');
+    Route::get('invoices/{invoice}/gmail/preview', [InvoiceController::class, 'gmailPreview'])->whereNumber('invoice')->middleware('throttle:30,1,invoice-gmail-preview')->name('invoices.gmail.preview');
+    Route::post('invoices/{invoice}/gmail/send', [InvoiceController::class, 'gmailSend'])->whereNumber('invoice')->middleware('throttle:20,1,invoice-gmail-send')->name('invoices.gmail.send');
+    Route::post('invoices/{invoice}/gmail/check', [InvoiceController::class, 'checkGmail'])->whereNumber('invoice')->middleware('throttle:30,1,invoice-gmail-check')->name('invoices.gmail.check');
+    Route::post('invoices/{invoice}/issue-and-send', [InvoiceController::class, 'issueAndSend'])->whereNumber('invoice')->middleware('throttle:20,1,invoice-issue-send')->name('invoices.issueAndSend');
+    Route::post('invoices/{invoice}/sent-self', [InvoiceController::class, 'sentSelf'])->whereNumber('invoice')->name('invoices.sentSelf');
+    Route::get('invoices/{invoice}/threads', [InvoiceController::class, 'threads'])->whereNumber('invoice')->middleware('throttle:20,1,invoice-threads')->name('invoices.threads');
+    Route::post('invoices/{invoice}/reminder', [InvoiceController::class, 'reminder'])->whereNumber('invoice')->middleware('throttle:20,1,invoice-reminder')->name('invoices.reminder');
+    Route::post('invoices/{invoice}/paid-wait', [InvoiceController::class, 'paidWait'])->whereNumber('invoice')->name('invoices.paidWait');
 });
 
 require __DIR__.'/settings.php';

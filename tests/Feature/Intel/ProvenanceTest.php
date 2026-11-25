@@ -94,6 +94,45 @@ class ProvenanceTest extends TestCase
         return Allocation::query()->where('bank_transaction_id', $tx->id)->orderBy('id')->firstOrFail();
     }
 
+    // ---- income design v3: the invoice matcher and the payer's client ----------------------------------------------
+
+    public function test_the_invoice_matchers_set_and_net_and_a_filled_in_client_say_why(): void
+    {
+        $acme = Client::query()->create(['name' => 'Acme Events']);
+        $writer = app(AllocationWriter::class);
+        // ACME PAYROLL pays for Acme: two receipts you decided, each with a £30 fee taken off.
+        $receipts = [];
+        foreach (['2025-04-02' => 100000, '2025-04-09' => 50000] as $on => $gross) {
+            $receipts[] = $r = $this->tx($this->starling, $on, $gross - 3000, 'ACME PAYROLL', 'ACME PAYROLL');
+            $writer->decide($r, [['kind' => 'business_income', 'category_id' => $this->cat('turnover'), 'client_id' => $acme->id, 'amount_pence' => $gross],
+                ['kind' => 'business_expense', 'category_id' => $this->cat('other'), 'client_id' => $acme->id, 'amount_pence' => -3000]]);
+        }
+        $invoice = fn (string $number, int $total) => Invoice::query()->create(['number' => $number, 'status' => 'issued', 'client_id' => $acme->id, 'currency' => 'GBP',
+            'total_minor' => $total, 'issue_date' => '2025-05-20', 'bill_to_name' => 'Acme Events']);
+        $a = $invoice('INV-41', 60000);
+        $b = $invoice('INV-43', 75000);
+        $c = $invoice('INV-50', 100000);
+        MerchantRule::query()->create(['merchant_key' => 'ACME BONUS', 'kind' => 'business_income', 'category_id' => $this->cat('turnover'), 'business_pct' => 100, 'auto_confirm' => true]);
+        $bonusPayer = $this->tx($this->starling, '2025-04-03', 5000, 'ACME BONUS', 'ACME BONUS');
+        $writer->decide($bonusPayer, [['kind' => 'business_income', 'category_id' => $this->cat('turnover'), 'client_id' => $acme->id, 'amount_pence' => 5000]]);
+
+        $set = $this->tx($this->starling, '2025-06-02', 135000, 'ACME PAYROLL', 'ACME PAYROLL');
+        $net = $this->tx($this->starling, '2025-06-03', 97000, 'ACME PAYROLL', 'ACME PAYROLL');
+        $bonus = $this->tx($this->starling, '2025-06-04', 2500, 'ACME BONUS', 'ACME BONUS');
+        app(Suggester::class)->suggestFor(collect([$set, $net, $bonus]));
+
+        $s = $this->line($set);
+        $this->assertSame(['suggest.invoice_set', Methods::version('suggest.invoice_set'), ['inv:'.$a->id, 'inv:'.$b->id], 3],
+            [$s->method, $s->method_version, $s->evidence, $s->score], 'The set, and how many of the client’s invoices were searched');
+        $n = $this->line($net);
+        $this->assertSame(['suggest.invoice_net', ['inv:'.$c->id, 'tx:'.$receipts[1]->id, 'tx:'.$receipts[0]->id]], [$n->method, $n->evidence],
+            'The invoice, and the receipts the usual fee was learned from (newest first)');
+        // The rule's line names the payment its client was worked out from.
+        $r = $this->line($bonus);
+        $this->assertSame(['rule.owner', $acme->id, null], [$r->method, $r->client_id, $r->confirmed_at]);
+        $this->assertContains('tx:'.$bonusPayer->id, $r->evidence);
+    }
+
     // ---- the vocabulary ---------------------------------------------------------------------------------------------
 
     public function test_a_provenance_names_only_registered_methods_and_keeps_valid_refs(): void
@@ -194,7 +233,7 @@ class ProvenanceTest extends TestCase
 
         // The evidence each relied on.
         $this->assertSame(['inv:'.$invoice->id], $this->line($lines['income'])->evidence);
-        $this->assertSame(1, $this->line($lines['income'])->score, 'One unpaid invoice of that amount');
+        $this->assertSame(1, $this->line($lines['income'])->score, 'One invoice with that much still to come (suggest.invoice v2)');
         $this->assertSame(['tx:'.$in->id, 'tx:'.$out->id], $this->line($in)->evidence, 'Both sides: money in, then money out');
         $this->assertGreaterThan(0, $this->line($in)->score);
         $this->assertSame(['travel:'.$stay->id, 'tx:'.$paid->id], $this->line($paid)->evidence);

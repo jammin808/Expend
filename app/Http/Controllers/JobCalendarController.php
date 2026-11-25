@@ -7,6 +7,7 @@ use App\Domain\Jobs\CalendarMonth;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\JobGatherer;
+use App\Domain\Jobs\JobStage;
 use App\Jobs\GatherForJob;
 use App\Models\Client;
 use App\Models\JobDay;
@@ -47,7 +48,9 @@ class JobCalendarController extends Controller
         $jobs = WorkJob::query()->with(['client', 'days'])->where('status', '!=', 'cancelled')
             ->whereDate('starts_on', '<=', $to->addDays(14)->format('Y-m-d'))->whereDate('ends_on', '>=', $from->subDays(14)->format('Y-m-d'))
             ->orderBy('starts_on')->get();
-        $clients = Client::query()->orderBy('name')->get(['id', 'name']);
+        $clients = Client::query()->unmerged()->orderBy('name')->get(['id', 'name']);
+        // Where each job is: its status, and "Done?" on the last day's bar once that day has finished.
+        $stages = JobStage::of($jobs);
 
         return Inertia::render('jobs/calendar', [
             // A possible job on the to-do list opens its entry (CandidateText::href), with "Part of" on a job you have.
@@ -61,7 +64,7 @@ class JobCalendarController extends Controller
             'events' => $grid['events'],
             // With the days each job works, so the page can say which of an entry's dates linking it adds.
             'jobs' => $jobs->map(fn (WorkJob $j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'ends_on' => $j->ends_on->format('Y-m-d'),
-                'client' => $j->client?->name, 'days' => $j->workDates()])->values(),
+                'client' => $j->client?->name, 'days' => $j->workDates(), 'status' => $j->status, 'done_due' => (bool) ($stages[$j->id]['done_due'] ?? false)])->values(),
             'clients' => $clients,
             // For the month grid: whose days each date is (a cancelled job's faded), and the years you've locked.
             'job_days' => $grid['job_days'],

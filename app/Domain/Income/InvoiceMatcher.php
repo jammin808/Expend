@@ -13,6 +13,7 @@ use App\Domain\Matching\OwnAccounts;
 use App\Models\BankTransaction;
 use App\Models\Client;
 use App\Models\Invoice;
+use App\Models\JobFind;
 use App\Models\TaxYear;
 use App\Models\Veto;
 use App\Support\Money;
@@ -36,8 +37,10 @@ use Throwable;
  *
  * An open invoice is an issued one with money still to come: what's outstanding, less what other payments waiting in
  * the Inbox name for it (in its own currency; a payment's own suggestion is never taken off what it's measured
- * against), less what this run has already proposed for it (the tally), so two payments never take the same amount. Invoices you said a payment isn't for are dropped before any search; one in another currency
- * with a payment waiting that can't be measured against it is left out. The payment must come after the invoice (3
+ * against), less what this run has already proposed for it (the tally), so two payments never take the same amount.
+ * Invoices you said a payment isn't for (and the invoices that replaced them), and the invoices of a job you said it
+ * isn't for ("Not this job"), are dropped before any search; one in another currency with a payment waiting that can't
+ * be measured against it is left out. The payment must come after the invoice (3
  * days' slack, or 60 for a deposit from its known payer); a payer known to pay for one client from 2 or more payments is
  * only matched to that client's invoices.
  *
@@ -83,8 +86,17 @@ final class InvoiceMatcher
     /** @var array<string, Collection<int, Veto>> invoice vetoes by payment ref */
     private array $vetoes = [];
 
+    /** @var array<int, array<int, true>> the jobs you said each payment isn't for ("Not this job"), by payment */
+    private array $notJobs = [];
+
+    /** @var array<int, int>|null each void invoice's replacement (replaced_by_id), by invoice */
+    private ?array $replacedBy = null;
+
     /** @var array<string, ?array> the payer's usual fee, by payer */
     private array $usual = [];
+
+    /** @var array<string, bool> for the run's payers: whether enough of their receipts had a fee taken off for a usual fee */
+    private array $feePayers = [];
 
     /** @var array<int, string> client keys (JobCreator::clientKey of the name), by client */
     private array $clientKeys = [];
@@ -109,16 +121,24 @@ final class InvoiceMatcher
         $this->clientOf = array_map(fn ($c) => $c === null ? null : (int) ($merged[$c] ?? $c), $raw);
         $this->tally = [];
         $this->usual = [];
+        $this->feePayers = [];
         $this->clientKeys = [];
         $this->own = [];
+        $this->notJobs = [];
+        $this->replacedBy = null;
 
         $txs = collect($transactions)->filter(fn ($t) => $t instanceof BankTransaction);
         $keys = $txs->pluck('merchant_key')->filter()->unique()->values();
         $loaded = PayerAliases::forKeys($keys);
         $this->aliases = $keys->mapWithKeys(fn ($k) => [$k => $loaded])->all();
         $this->vetoes = $txs->isEmpty() ? [] : Vetoes::forSubjects('invoice_payment', $txs->map(fn ($t) => 'tx:'.$t->id))->all();
+        $this->feePayers = self::feePayers($keys->all());
         foreach ($txs as $t) {
             $this->vetoes['tx:'.$t->id] ??= collect();
+        }
+        $this->notJobs = self::rejectedJobs($txs->pluck('id')->all());
+        foreach ($txs as $t) {
+            $this->notJobs[$t->id] ??= [];
         }
 
         return $this;
@@ -294,15 +314,16 @@ final class InvoiceMatcher
         $sole = $aliases->sole($tx->merchant_key, 1);
         $known = $aliases->sole($tx->merchant_key, 2);
         $vetoes = $this->vetoes['tx:'.$tx->id] ??= Veto::query()->active()->where('relation', 'invoice_payment')->where('subject_ref', 'tx:'.$tx->id)->get();
-        $vetoed = $vetoes->filter(fn (Veto $v) => $v->effect === 'block' && ($v->method === null || str_starts_with($v->method, 'suggest.invoice')))
-            ->pluck('object_ref')->filter()->flip();
+        $vetoed = $this->withReplacements($vetoes->filter(fn (Veto $v) => $v->effect === 'block' && ($v->method === null || str_starts_with($v->method, 'suggest.invoice')))
+            ->pluck('object_ref')->filter()->flip()->all());
+        $notJobs = $this->notJobs[$tx->id] ??= self::rejectedJobs([$tx->id])[$tx->id] ?? [];
 
         $own = $this->ownWaiting($tx);
         $out = [];
         foreach ($this->open as $invoice) {
             $r = $this->received[$invoice->id] ?? null;
-            if ($r === null || isset($vetoed['inv:'.$invoice->id])) {
-                continue;
+            if ($r === null || isset($vetoed['inv:'.$invoice->id]) || ($invoice->work_job_id !== null && isset($notJobs[(int) $invoice->work_job_id]))) {
+                continue; // you said it isn't for this invoice (or the one it replaced), or isn't for its job
             }
             // What's waiting naming it from other payments: this payment's own waiting lines aren't taken off.
             [$ownLinked, $ownUnmeasured] = $own[$invoice->id] ?? [0, 0];
@@ -327,6 +348,51 @@ final class InvoiceMatcher
         }
 
         return $out;
+    }
+
+    /**
+     * The jobs you said these payments aren't for: "Not this job" on a job's list (JobGatherer::reject keeps the find
+     * as rejected), whatever invoice that job is billed on now, so a replacement invoice can't put the job back.
+     *
+     * @param  list<int>  $ids
+     * @return array<int, array<int, true>> by payment, the jobs
+     */
+    private static function rejectedJobs(array $ids): array
+    {
+        $out = [];
+        foreach (array_chunk(array_values(array_unique($ids)), 500) as $chunk) {
+            JobFind::query()->whereIn('type', ['income', 'payment'])->where('status', 'rejected')->whereIn('ref', array_map('strval', $chunk))
+                ->get(['work_job_id', 'ref'])->each(function (JobFind $f) use (&$out) {
+                    $out[(int) $f->ref][(int) $f->work_job_id] = true;
+                });
+        }
+
+        return $out;
+    }
+
+    /**
+     * Vetoed invoices ('inv:N' => any) with the invoices that replaced them (a void invoice's replaced_by_id, followed
+     * along the chain): a payment you said isn't for INV-0042 isn't for the corrected copy that replaced it either.
+     *
+     * @param  array<string, mixed>  $vetoed
+     * @return array<string, mixed>
+     */
+    private function withReplacements(array $vetoed): array
+    {
+        if ($vetoed === []) {
+            return $vetoed;
+        }
+        $this->replacedBy ??= Invoice::query()->where('status', 'void')->whereNotNull('replaced_by_id')->pluck('replaced_by_id', 'id')
+            ->map(fn ($v) => (int) $v)->all();
+        foreach (array_keys($vetoed) as $ref) {
+            $id = preg_match('/^inv:(\d+)$/', (string) $ref, $m) ? (int) $m[1] : null;
+            for ($hops = 0; $id !== null && isset($this->replacedBy[$id]) && $hops < 20; $hops++) {
+                $id = $this->replacedBy[$id];
+                $vetoed['inv:'.$id] = true;
+            }
+        }
+
+        return $vetoed;
     }
 
     /**
@@ -499,7 +565,8 @@ final class InvoiceMatcher
         }
         $key = (string) $tx->merchant_key;
         if (! array_key_exists($key, $this->usual)) {
-            $this->usual[$key] = self::usual($key, (int) $tx->id);
+            // A payer the run already knows has too few receipts with a fee taken off has no usual: not read again.
+            $this->usual[$key] = ($this->feePayers[$key] ?? true) ? self::usual($key, (int) $tx->id) : null;
         }
 
         return $this->usual[$key];
@@ -541,6 +608,29 @@ final class InvoiceMatcher
         }
 
         return null;
+    }
+
+    /**
+     * Which of these payers have at least USUAL_AGREE receipts you decided with a fee taken off (so may have a usual fee),
+     * in one grouped query: a page of payments from new payers reads none of their receipts.
+     *
+     * @param  list<?string>  $keys
+     * @return array<string, bool> by payer
+     */
+    private static function feePayers(array $keys): array
+    {
+        $keys = array_values(array_unique(array_filter($keys, fn ($k) => is_string($k) && $k !== '' && $k !== 'UNKNOWN')));
+        $out = array_fill_keys($keys, false);
+        foreach (array_chunk($keys, 500) as $chunk) {
+            BankTransaction::query()->whereIn('merchant_key', $chunk)->where('amount_pence', '>', 0)
+                ->whereHas('allocations', fn ($q) => $q->where('kind', 'business_expense')->where('amount_pence', '<', 0)->where('decided_by', 'you'))
+                ->select('merchant_key')->groupBy('merchant_key')->havingRaw('COUNT(*) >= ?', [self::USUAL_AGREE])
+                ->pluck('merchant_key')->each(function ($k) use (&$out) {
+                    $out[(string) $k] = true;
+                });
+        }
+
+        return $out;
     }
 
     /** Whether what was taken off a gross amount is the fee: the bank's exactly, a fixed fee within 1p, a rate's within 1p. */

@@ -168,18 +168,25 @@ class DocumentController extends Controller
 
     public function invoice(Document $document, InvoiceService $invoices): RedirectResponse
     {
+        // The job's open draft before: a PO arriving after Done converts it rather than making a second draft.
+        $open = $document->work_job_id ? Invoice::query()->where('work_job_id', $document->work_job_id)->where('status', 'draft')->orderByDesc('id')->first(['id', 'document_id']) : null;
         try {
             $invoice = $invoices->draftFromDocument($document);
         } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
+        $made = match (true) {
+            $open !== null && (int) $open->id === (int) $invoice->id && (int) $open->document_id === (int) $document->id => 'The job’s draft was made from this PO already: here it is, up to date.',
+            $open !== null && (int) $open->id === (int) $invoice->id => 'The job’s draft now follows the PO: its lines replace the work, and its costs and your own lines stay. Check it, then issue it.',
+            default => 'Draft invoice created from the PO. Check it, then issue it.',
+        };
         // An email address the PO gives that isn't one the invoice can be sent to is left off the draft: say so.
         $read = DocumentReader::clip($document->extraction['po']['bill_to_email'] ?? null, 200);
         $note = $read !== null && $invoice->bill_to_email === null
             ? " The PO gives “{$read}” as the email for invoices. That isn’t one address an invoice can be sent to, so it was left out: add the right one before you email it."
             : '';
 
-        return to_route('invoices.show', $invoice)->with('success', 'Draft invoice created from the PO. Check it, then issue it.'.$note);
+        return to_route('invoices.show', $invoice)->with('success', $made.$note);
     }
 
     public function download(Document $document): StreamedResponse

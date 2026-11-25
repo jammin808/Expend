@@ -132,6 +132,32 @@ class DetectorRefinementsTest extends TestCase
         $this->assertSame(['unlinked:'.$income->id], array_keys($this->found(new IncomeUnlinked)));
     }
 
+    public function test_income_for_a_client_is_assigned_and_only_a_splits_loose_part_is_flagged(): void
+    {
+        $turnover = $this->category('turnover');
+        $acme = Client::query()->create(['name' => 'Acme Events']);
+        $old = Client::query()->create(['name' => 'Acme Events Ltd']);
+        $old->forceFill(['merged_into_id' => $acme->id])->save();
+        $job = WorkJob::query()->create(['title' => 'Gala', 'client_id' => $acme->id, 'starts_on' => '2026-10-01', 'ends_on' => '2026-10-01', 'status' => 'done']);
+        $writer = app(AllocationWriter::class);
+        // For a client with no job (owner answer: done once the client is set), and for a client merged into another.
+        $writer->decide($this->tx('2026-10-12', 30000, 'ACME EVENTS LTD'), [['kind' => 'business_income', 'category_id' => $turnover, 'client_id' => $acme->id, 'amount_pence' => 30000]]);
+        $writer->decide($this->tx('2026-10-13', 20000, 'ACME EVENTS LTD'), [['kind' => 'business_income', 'category_id' => $turnover, 'client_id' => $old->id, 'amount_pence' => 20000]]);
+        // A refund paid back to a client, with the client set: not income either way.
+        $writer->decide($this->tx('2026-10-14', -5000, 'ACME EVENTS REFUND'), [['kind' => 'business_income', 'category_id' => $turnover, 'client_id' => $acme->id, 'amount_pence' => -5000]]);
+        // Part for the job, part assigned to nothing: flagged for the loose part only.
+        $split = $this->tx('2026-10-15', 100000, 'STAGE CO');
+        $writer->decide($split, [
+            ['kind' => 'business_income', 'category_id' => $turnover, 'work_job_id' => $job->id, 'amount_pence' => 70000],
+            ['kind' => 'business_income', 'category_id' => $turnover, 'amount_pence' => 30000],
+        ]);
+
+        $found = $this->found(new IncomeUnlinked);
+        $this->assertSame(['unlinked:'.$split->id], array_keys($found));
+        $this->assertSame([30000, 'Income with no client, job or invoice: £300.00 of £1,000.00 from STAGE CO on 15 Oct 2026'], [$found['unlinked:'.$split->id]->amountPence, $found['unlinked:'.$split->id]->title]);
+        $this->assertStringStartsWith('Part of this payment is assigned, but £300.00 of it isn’t', $found['unlinked:'.$split->id]->detail);
+    }
+
     public function test_two_car_parks_or_service_stations_are_not_one_cost_claimed_twice(): void
     {
         $writer = app(AllocationWriter::class);

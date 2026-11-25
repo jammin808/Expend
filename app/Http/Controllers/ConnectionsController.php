@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Invoices\InvoicePayments;
+use App\Domain\Jobs\JobBilling;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\PoStatus;
@@ -31,6 +33,8 @@ use Inertia\Response;
  * The connections map: jobs in the middle, linked to their calendar entries, documents and POs, stays and journeys,
  * costs, income, invoices and mileage, laid out on a timeline. Links you made are solid, automatic ones dashed, and
  * possible ones (a cost on a job's day, a calendar entry that looks like work) dotted, with what needs attention flagged.
+ * A cost's or a payment's link to a job carries that line's amount (edge 'amount', pence), and money in shows its lines
+ * on the jobs shown, so a payment for several jobs isn't counted whole on each.
  */
 class ConnectionsController extends Controller
 {
@@ -56,10 +60,18 @@ class ConnectionsController extends Controller
         $edge = function (string $a, string $b, string $kind, ?string $label = null) use (&$edges) {
             $edges[$a.'|'.$b] = ['from' => $a, 'to' => $b, 'kind' => $kind, 'label' => $label];
         };
+        // A money edge carries its line's amount (the lines of one payment on one job, added up).
+        $money = function (string $a, string $b, string $kind, int $pence) use (&$edges, $edge) {
+            $before = $edges[$a.'|'.$b]['amount'] ?? 0;
+            $edge($a, $b, $kind);
+            $edges[$a.'|'.$b]['amount'] = $before + $pence;
+        };
 
-        // Jobs, and whether each has a PO and an invoice.
+        // Jobs, and whether each has a PO and has been billed: an issued invoice, or income for it (paid without an
+        // Expend invoice, or under another job's invoice), as JobBilling works it out everywhere.
         $jobs = WorkJob::query()->with(['client', 'days'])->whereDate('ends_on', '>=', $f)->whereDate('starts_on', '<=', $t)->orderBy('starts_on')->get();
         $po = PoStatus::forJobs($jobs->keyBy('id'));
+        $billed = JobBilling::billed($jobs);
         foreach ($jobs as $job) {
             $id = 'job:'.$job->id;
             $nodes[$id] = ['id' => $id, 'type' => 'job', 'label' => $job->title, 'sub' => trim(($job->client?->name ?? '').' · '.($job->location ?? ''), ' ·'),
@@ -73,7 +85,7 @@ class ConnectionsController extends Controller
             if ($po[$job->id]['missing']) {
                 $flag($id, 'no_po');
             }
-            if (! $po[$job->id]['invoice'] && $job->ends_on->lt(now()->subDays(14))) {
+            if (! isset($billed[$job->id]) && $job->ends_on->lt(now()->subDays(14))) {
                 $flag($id, 'not_invoiced');
             }
         }
@@ -216,14 +228,20 @@ class ConnectionsController extends Controller
             $id = 'tx:'.$tx->id;
             $main = $spending->first() ?? $tx->allocations->first();
             $cat = $main?->category?->name;
+            // Money in shows what it brought the jobs on the map: its lines on them (a payment for three shows, one of them
+            // shown, is that show's share; a fee taken off on the job comes off it). Anything else as before.
+            $shown = $jobAllocs->filter(fn (Allocation $a) => $jobNode($a->work_job_id) !== null);
+            $amount = match (true) {
+                $income && $shown->isNotEmpty() => (int) $shown->sum('amount_pence'),
+                $spending->count() < $tx->allocations->count() => (int) $spending->sum('amount_pence'),
+                default => $tx->amount_pence,
+            };
             $nodes[$id] = ['id' => $id, 'type' => $income ? 'income' : 'expense', 'label' => $tx->counterparty ?: $tx->description, 'sub' => $cat ?? ($undecided ? 'Not decided' : (Allocation::KINDS[$main?->kind] ?? '')),
-                'date' => $date, 'amount' => $spending->count() < $tx->allocations->count() ? (int) $spending->sum('amount_pence') : $tx->amount_pence, 'flags' => [],
+                'date' => $date, 'amount' => $amount, 'flags' => [],
                 'data' => ['tx' => $tx->id, 'source' => 'bank', 'account' => $tx->account?->name, 'review_status' => $tx->review_status, 'category' => $cat,
                     'allowable' => $main?->category?->is_allowable]];
-            foreach ($jobAllocs as $a) {
-                if ($jn = $jobNode($a->work_job_id)) {
-                    $edge($id, $jn, $a->confirmed_at ? 'confirmed' : 'auto');
-                }
+            foreach ($shown as $a) {
+                $money($id, $jobNode($a->work_job_id), $a->confirmed_at ? 'confirmed' : 'auto', (int) $a->amount_pence);
             }
             if ($near) {
                 $flag($id, $undecided ? 'undecided_on_job_day' : 'cost_no_job');
@@ -235,17 +253,19 @@ class ConnectionsController extends Controller
             $nodes[$id] ??= ['id' => $id, 'type' => 'expense', 'label' => $a->manualExpense->description, 'sub' => $a->category?->name ?? 'Manual expense',
                 'date' => $a->manualExpense->spent_on->format('Y-m-d'), 'amount' => $a->manualExpense->amount_pence, 'flags' => [],
                 'data' => ['tx' => $a->manual_expense_id, 'source' => 'manual', 'category' => $a->category?->name, 'allowable' => $a->category?->is_allowable]];
-            $edge($id, 'job:'.$a->work_job_id, $a->confirmed_at ? 'confirmed' : 'auto');
+            $money($id, 'job:'.$a->work_job_id, $a->confirmed_at ? 'confirmed' : 'auto', (int) $a->amount_pence);
         }
 
-        $paidJobs = Allocation::query()->whereIn('work_job_id', $jobIds)->where('kind', 'business_income')->distinct()->pluck('work_job_id')->flip();
-        foreach (Invoice::query()->whereIn('work_job_id', $jobIds)->where('status', '!=', 'void')->get() as $inv) {
+        $invoices = Invoice::query()->whereIn('work_job_id', $jobIds)->where('status', '!=', 'void')->get();
+        $received = InvoicePayments::received($invoices);
+        foreach ($invoices as $inv) {
             $id = 'invoice:'.$inv->id;
             $nodes[$id] = ['id' => $id, 'type' => 'invoice', 'label' => $inv->number ?? 'Draft invoice', 'sub' => ucfirst($inv->status), 'date' => ($inv->issue_date ?? $inv->created_at)->format('Y-m-d'),
                 'amount' => $inv->total_minor, 'href' => '/invoices/'.$inv->id, 'flags' => [], 'data' => []];
             $edge($id, 'job:'.$inv->work_job_id, 'confirmed');
-            // Missing income: issued, past its due date, and no payment from the client linked to the job.
-            if ($inv->status === 'issued' && $inv->due_date && $inv->due_date->lt(today()) && ! isset($paidJobs[$inv->work_job_id])) {
+            // Missing income: issued, past its due date, still owed (not paid in full or closed), and nothing paid for it.
+            $r = $received[$inv->id] ?? InvoicePayments::EMPTY;
+            if ($inv->status === 'issued' && $inv->due_date && $inv->due_date->lt(today()) && (int) $r['outstanding'] > 0 && (int) $r['paid'] === 0) {
                 $flag($id, 'income_missing');
                 $flag('job:'.$inv->work_job_id, 'income_missing');
             }

@@ -3,6 +3,8 @@
 namespace App\Domain\Ai;
 
 use App\Domain\Documents\Grounding;
+use App\Domain\Income\IncomeClient;
+use App\Domain\Income\Lines;
 use App\Domain\Intel\Grades;
 use App\Domain\Intel\Provenance;
 use App\Domain\Intel\Ref;
@@ -34,6 +36,7 @@ use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
 use App\Models\Category;
+use App\Models\Client;
 use App\Models\Document;
 use App\Models\DocumentFact;
 use App\Models\Finding;
@@ -50,6 +53,7 @@ use App\Support\Money;
 use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
 /**
@@ -112,10 +116,12 @@ final class AssistantTools
         $int = ['type' => 'integer'];
 
         return [
-            ['name' => 'search_transactions', 'description' => 'Find bank and card transactions with their decisions. Returns matching items (up to 50) and exact totals for everything matching.',
+            ['name' => 'search_transactions', 'description' => 'Find bank and card transactions with their decisions (each line with its job, invoice and client). Returns matching items (up to 50) and exact totals for everything matching. '
+                .'When kind, category_code, job_id or client_id is given, lines_total is the sum of just the lines that match them all (a payment split between two jobs counts only its line for the job asked about); total_in and total_out are whole payments.',
                 'inputSchema' => $obj(['query' => $str + ['description' => 'Words in the description or merchant'], 'tax_year' => $str + ['description' => 'e.g. 2024-25'],
                     'date_from' => $str, 'date_to' => $str, 'status' => ['type' => 'string', 'enum' => ['unreviewed', 'suggested', 'confirmed']],
                     'kind' => ['type' => 'string', 'enum' => array_keys(Allocation::KINDS)], 'category_code' => $str, 'job_id' => $int,
+                    'client_id' => $int + ['description' => 'Lines for this client: its invoices, its jobs, or set on the line itself (a client merged into another counts as that one)'],
                     'direction' => ['type' => 'string', 'enum' => ['in', 'out']], 'limit' => $int])],
             ['name' => 'tax_year_overview', 'description' => 'Self-employment figures for a tax year from confirmed decisions, items still pending, pre-filing checks, deadline, and a labelled ESTIMATE of tax and the likely HMRC bill.',
                 'inputSchema' => $obj(['tax_year' => $str], ['tax_year'])],
@@ -129,7 +135,8 @@ final class AssistantTools
                 'inputSchema' => $obj(['query' => $str, 'kind' => ['type' => 'string', 'enum' => array_keys(Document::KINDS)], 'job_id' => $int, 'limit' => $int])],
             ['name' => 'read_document', 'description' => 'The text of one document, plus the details already read from it.',
                 'inputSchema' => $obj(['document_id' => $int, 'max_chars' => $int], ['document_id'])],
-            ['name' => 'invoices', 'description' => 'Invoices with totals, amounts paid, due dates and whether they are overdue.',
+            ['name' => 'invoices', 'description' => 'Invoices with totals, amounts paid, what is still to come (outstanding), due dates and whether they are overdue. '
+                .'status is draft, issued (sent and not paid in full), paid (paid in full) or void; state says more: paid, part_paid, closed (the owner wrote off the rest), check_currency (paid in another currency, to check), unpaid, draft or void.',
                 'inputSchema' => $obj(['status' => ['type' => 'string', 'enum' => ['draft', 'issued', 'paid', 'void']]])],
             ['name' => 'deadlines', 'description' => 'What is coming up or overdue: tax return and payment deadlines, Making Tax Digital quarterly updates not recorded as sent (with what being late costs in points), overdue invoices, Making Tax Digital and VAT thresholds, jobs in the next 14 days.',
                 'inputSchema' => $obj([])],
@@ -211,9 +218,20 @@ final class AssistantTools
                 .'its label, whether it is still there, whether it has changed since it was relied on, and the latest double-check of it. For a finding (fnd:), also its evidence. '
                 .'Labels and check results only, never the text of a document or an email.',
                 'inputSchema' => $obj(['ref' => $str], ['ref'])],
-            ['name' => 'propose_decision', 'description' => 'Suggest what one transaction is. It is saved as an unconfirmed AI suggestion for the owner to accept or change in the Inbox. Cannot change anything the owner has decided, repeat what they said no to, or replace a stronger suggestion already waiting.',
+            ['name' => 'propose_decision', 'description' => 'Suggest what one transaction is. It is saved as an unconfirmed AI suggestion for the owner to accept or change in the Inbox: never confirmed, and an income link (an invoice, a job or a client) is only ever a suggestion. '
+                .'Cannot change anything the owner has decided, repeat what they said no to, replace a stronger suggestion already waiting, or link to an invoice that is a draft or void. '
+                .'For one kind of line give kind (and category_code, job_id, client_id). For money in paid against several invoices or jobs, or with a fee or commission the payer took off, give lines instead: '
+                .'they must add up exactly to the transaction (each amount_pence positive; a deduction is taken off). Never record tax or National Insurance taken off as a deduction.',
                 'inputSchema' => $obj(['transaction_id' => $int, 'kind' => ['type' => 'string', 'enum' => array_keys(Allocation::KINDS)], 'category_code' => $str,
-                    'job_id' => $int, 'business_pct' => $int, 'reason' => $str], ['transaction_id', 'kind', 'reason'])],
+                    'job_id' => $int, 'business_pct' => $int,
+                    'client_id' => $int + ['description' => 'The client money in is from (or a cost was for), when no invoice or job says so'],
+                    'lines' => ['type' => 'array', 'description' => 'Instead of kind: the lines, in order', 'items' => $obj([
+                        'kind' => ['type' => 'string', 'enum' => array_keys(Allocation::KINDS)], 'category_code' => $str, 'job_id' => $int,
+                        'invoice_number' => $str + ['description' => 'The invoice this income pays, e.g. INV-0041'], 'client_id' => $int,
+                        'amount_pence' => $int + ['description' => 'Positive, in pence'],
+                        'deduction' => ['type' => 'boolean', 'description' => 'A fee or commission the payer took off this money in (a business expense, finance by default)'],
+                    ], ['amount_pence'])],
+                    'reason' => $str], ['transaction_id', 'reason'])],
         ];
     }
 
@@ -552,7 +570,15 @@ final class AssistantTools
 
     private function searchTransactions(array $f): array
     {
-        $q = BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job'])
+        // A client means the client it was merged into, if it was (as on the client's page).
+        $client = ! empty($f['client_id']) ? IncomeClient::resolve((int) $f['client_id']) : null;
+        // The line filters, together: the lines lines_total adds up, and (with any one of them) the payments listed.
+        $lineFilters = fn ($a) => $a
+            ->when($f['kind'] ?? null, fn ($a, $v) => $a->where('allocations.kind', $v))
+            ->when($f['job_id'] ?? null, fn ($a, $v) => $a->where('allocations.work_job_id', (int) $v))
+            ->when($f['category_code'] ?? null, fn ($a, $v) => $a->whereIn('allocations.category_id', Category::query()->where('code', $v)->select('id')))
+            ->when($client !== null, fn ($a) => $a->whereRaw(IncomeClient::expression().' = ?', [$client]));
+        $q = BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job', 'allocations.invoice:id,number'])
             ->when($f['query'] ?? null, fn ($q, $v) => $q->where(fn ($q) => $q->where('description', 'like', "%{$v}%")->orWhere('merchant_key', 'like', '%'.strtoupper($v).'%')))
             ->when($f['tax_year'] ?? null, fn ($q, $v) => $q->where('tax_year', $v))
             ->when($f['date_from'] ?? null, fn ($q, $v) => $q->where('posted_on', '>=', $v))
@@ -561,16 +587,26 @@ final class AssistantTools
             ->when($f['direction'] ?? null, fn ($q, $v) => $q->where('amount_pence', $v === 'in' ? '>' : '<', 0))
             ->when($f['kind'] ?? null, fn ($q, $v) => $q->whereHas('allocations', fn ($a) => $a->where('kind', $v)))
             ->when($f['job_id'] ?? null, fn ($q, $v) => $q->whereHas('allocations', fn ($a) => $a->where('work_job_id', $v)))
-            ->when($f['category_code'] ?? null, fn ($q, $v) => $q->whereHas('allocations.category', fn ($c) => $c->where('code', $v)));
+            ->when($f['category_code'] ?? null, fn ($q, $v) => $q->whereHas('allocations.category', fn ($c) => $c->where('code', $v)))
+            ->when($client !== null, fn ($q) => $q->whereIn('id', DB::query()->fromSub(IncomeClient::scope(Allocation::query()->select('allocations.bank_transaction_id'))
+                ->whereNotNull('allocations.bank_transaction_id')->whereRaw(IncomeClient::expression().' = ?', [$client]), 'client_lines')->select('client_lines.bank_transaction_id')));
 
         // Line by line: a currency exchange split into a transfer and its fee counts the fee as spending.
         $totals = OwnAccounts::lineTotals(clone $q);
+        $byLine = ! empty($f['kind']) || ! empty($f['job_id']) || ! empty($f['category_code']) || $client !== null;
+        $linesTotal = $byLine ? (int) $lineFilters(IncomeClient::scope(Allocation::query())->whereIn('allocations.bank_transaction_id', (clone $q)->select('bank_transactions.id')))
+            ->sum('allocations.amount_pence') : null;
         $items = $q->orderByDesc('posted_on')->limit(min(50, max(1, (int) ($f['limit'] ?? 25))))->get();
+        $clients = IncomeClient::named($items->flatMap(fn (BankTransaction $t) => $t->allocations->pluck('id')));
 
         return [
             'count' => $totals['count'],
             'total_in' => self::money($totals['in_pence']),
             'total_out' => self::money($totals['out_pence']),
+        ] + ($linesTotal === null ? [] : [
+            'lines_total' => self::money($linesTotal) + ['note' => 'Only the lines matching '.implode(', ', array_keys(array_filter(['kind' => $f['kind'] ?? null, 'category_code' => $f['category_code'] ?? null,
+                'job_id' => $f['job_id'] ?? null, 'client_id' => $client]))).', of every matching transaction: the rest of a split payment is left out.'],
+        ]) + [
             'between_your_own_accounts' => ['count' => $totals['transfer_count'], 'in' => self::money($totals['transfer_in_pence']), 'out' => self::money($totals['transfer_out_pence']),
                 'note' => 'Transfers between your own accounts (card bills, top-ups, savings, currency exchanges) are not spending or income and are left out of total_in and total_out. A fee split off a transfer counts as spending.'],
             'items' => $items->map(fn (BankTransaction $t) => [
@@ -580,7 +616,7 @@ final class AssistantTools
                 'decision' => $t->allocations->map(fn ($a) => [
                     'kind' => $a->kind, 'category' => $a->category?->name, 'job' => $a->job?->title, 'amount' => self::money($a->amount_pence),
                     'decided_by' => $a->decided_by, 'confirmed' => $a->confirmed_at !== null,
-                ])->all(),
+                ] + ($a->invoice?->number ? ['invoice' => $a->invoice->number] : []) + (isset($clients[$a->id]) ? ['client' => $clients[$a->id]['name'], 'client_id' => $clients[$a->id]['id']] : []))->all(),
             ])->all(),
         ];
     }
@@ -786,24 +822,37 @@ final class AssistantTools
         ];
     }
 
+    /**
+     * Invoices as the invoices page lists them (InvoiceController::row): status is draft, issued, paid or void, where
+     * paid means nothing is still to come (whether you marked it paid in an earlier version or the payments add up), so
+     * "paid" and "issued" filter the way the page reads; state is income v3's (paid, part_paid, closed, check_currency,
+     * unpaid, draft, void) with what's still to come (outstanding).
+     */
     private function invoices(?string $status): array
     {
-        $invoices = Invoice::query()->with(['client', 'job'])->when($status, fn ($q, $v) => $q->where('status', $v))->orderByDesc('id')->limit(100)->get();
+        $byState = in_array($status, ['issued', 'paid'], true);
+        $invoices = Invoice::query()->with(['client', 'job'])
+            ->when($byState, fn ($q) => $q->whereIn('status', InvoicePayments::PAYABLE), fn ($q) => $q->when($status, fn ($q, $v) => $q->where('status', $v)))
+            ->orderByDesc('id')->limit($byState ? 500 : 100)->get();
         // What has come in for each, in its own currency: payments linked to it, and income recorded for its job.
         $received = InvoicePayments::received($invoices);
 
-        return ['invoices' => $invoices->map(function (Invoice $i) use ($received) {
-            $paid = $received[$i->id]['paid'] ?? 0;
+        $rows = $invoices->map(function (Invoice $i) use ($received) {
+            $r = $received[$i->id] ?? InvoicePayments::EMPTY;
             $currency = $i->currency ?: 'GBP';
+            $paidInFull = $i->status === 'paid' || ($i->status === 'issued' && $r['state'] === 'paid' && $i->total_minor > 0);
 
             return [
-                'invoice_id' => $i->id, 'number' => $i->number, 'status' => $i->status, 'client' => $i->client?->name ?? $i->bill_to_name,
-                'job' => $i->job?->title, 'po_number' => $i->po_number, 'total' => self::money($i->total_minor, $currency), 'paid' => self::money($paid, $currency),
+                'invoice_id' => $i->id, 'number' => $i->number, 'status' => $paidInFull ? 'paid' : $i->status, 'state' => $r['state'],
+                'client' => $i->client?->name ?? $i->bill_to_name, 'job' => $i->job?->title, 'po_number' => $i->po_number,
+                'total' => self::money($i->total_minor, $currency), 'paid' => self::money((int) $r['paid'], $currency), 'outstanding' => self::money((int) $r['outstanding'], $currency),
                 'issued' => $i->issue_date?->format('Y-m-d'), 'due' => $i->due_date?->format('Y-m-d'),
-                // Overdue from the day after it's due, as on the invoices page and the to-do list, and only while not paid in full.
-                'overdue' => $i->status === 'issued' && $paid < $i->total_minor && (bool) $i->due_date?->lt(today()),
+                // Overdue from the day after it's due, as on the invoices page and the to-do list, and only while something is still to come.
+                'overdue' => $i->status === 'issued' && $r['outstanding'] > 0 && (bool) $i->due_date?->lt(today()),
             ];
-        })->all()];
+        });
+
+        return ['invoices' => $rows->when($byState, fn ($rows) => $rows->where('status', $status))->take(100)->values()->all()];
     }
 
     private function deadlines(): array
@@ -895,22 +944,60 @@ final class AssistantTools
         return $p ? ['tax_year' => $label, 'parameters_in_pence_or_percent' => $p, 'note' => 'Amounts are in pence; rates are percentages.'] : ['tax_year' => $label, 'error' => 'No rates loaded for this year.'];
     }
 
+    /**
+     * propose_decision: one unconfirmed ai.assistant suggestion, never confirmed (income links are only ever suggested:
+     * AllocationWriter keeps automation's income links for you to accept). One kind of line (kind, category_code,
+     * job_id, business_pct, client_id), or lines for money in paid against several invoices or jobs, or with a fee or
+     * commission taken off (income design v3). Its evidence is the jobs and invoices it names.
+     */
     private function propose(array $in): array
     {
         $tx = BankTransaction::query()->find((int) ($in['transaction_id'] ?? 0));
         if (! $tx) {
             return ['error' => 'No such transaction.'];
         }
-        $categoryId = isset($in['category_code']) ? Category::query()->where('code', $in['category_code'])->value('id') : null;
-        if (in_array($in['kind'], Allocation::NEEDS_CATEGORY, true) && ! $categoryId) {
-            return ['error' => 'A business item needs a valid category_code. Codes: '.Category::query()->pluck('code')->implode(', ')];
+        $clientId = null;
+        if (is_numeric($in['client_id'] ?? null) && (int) $in['client_id'] > 0) {
+            if (! Client::query()->whereKey((int) $in['client_id'])->exists()) {
+                return ['error' => 'No client '.(int) $in['client_id'].'.'];
+            }
+            $clientId = IncomeClient::resolve((int) $in['client_id']); // a duplicate you merged means the client it went into
         }
-        $jobId = isset($in['job_id']) && WorkJob::query()->whereKey($in['job_id'])->exists() ? (int) $in['job_id'] : null;
+        if (isset($in['lines']) && is_array($in['lines']) && $in['lines'] !== []) {
+            $lines = $this->proposedLines($tx, array_values($in['lines']), $clientId);
+            if (isset($lines['error'])) {
+                return $lines;
+            }
+        } else {
+            if (! is_string($in['kind'] ?? null) || ! isset(Allocation::KINDS[$in['kind']])) {
+                return ['error' => 'Give kind, or lines. Kinds: '.implode(', ', array_keys(Allocation::KINDS))];
+            }
+            $categoryId = isset($in['category_code']) ? Category::query()->where('code', $in['category_code'])->value('id') : null;
+            if (in_array($in['kind'], Allocation::NEEDS_CATEGORY, true) && ! $categoryId) {
+                return ['error' => 'A business item needs a valid category_code. Codes: '.Category::query()->pluck('code')->implode(', ')];
+            }
+            $jobId = isset($in['job_id']) && WorkJob::query()->whereKey($in['job_id'])->exists() ? (int) $in['job_id'] : null;
+            $lines = AllocationWriter::lines($tx->amount_pence, $in['kind'], $categoryId, $jobId, (int) ($in['business_pct'] ?? 100));
+            if ($clientId !== null) {
+                // The client goes on the business line; the writer keeps it only where no invoice or job says who it's for.
+                foreach ($lines as $i => $line) {
+                    if (in_array($line['kind'], ['business_income', 'business_expense'], true)) {
+                        $lines[$i]['client_id'] = $clientId;
+                    }
+                }
+            }
+        }
+        // Its evidence: each invoice it names, and each job (its own, or its invoice's).
+        $invoiceIds = collect($lines)->pluck('invoice_id')->filter()->unique()->values()->all();
+        $invoiceJobs = $invoiceIds === [] ? collect() : Invoice::query()->whereKey($invoiceIds)->pluck('work_job_id', 'id');
+        $evidence = collect($lines)->flatMap(fn (array $l) => [
+            isset($l['invoice_id']) ? 'inv:'.$l['invoice_id'] : null,
+            ($job = $l['work_job_id'] ?? (isset($l['invoice_id']) ? $invoiceJobs[$l['invoice_id']] ?? null : null)) ? 'job:'.$job : null,
+        ])->filter()->unique()->values()->all();
 
         try {
-            // Its evidence is the job it names, if any: the conversation isn't stored until the answer is (M4 adds ask:).
-            $saved = $this->writer->decide($tx, AllocationWriter::lines($tx->amount_pence, $in['kind'], $categoryId, $jobId, (int) ($in['business_pct'] ?? 100)),
-                'ai', false, mb_substr((string) $in['reason'], 0, 240), null, new Provenance('ai.assistant', [$jobId ? 'job:'.$jobId : null]));
+            // The conversation isn't stored until the answer is, so it isn't evidence.
+            $saved = $this->writer->decide($tx, $lines, 'ai', false, mb_substr((string) ($in['reason'] ?? ''), 0, 240), null, new Provenance('ai.assistant', $evidence));
         } catch (InvalidArgumentException $e) {
             return ['error' => $e->getMessage()];
         }
@@ -923,6 +1010,82 @@ final class AssistantTools
         $why = AllocationWriter::REFUSED_WORDS[$this->writer->refused ?? 'yours'] ?? AllocationWriter::REFUSED_WORDS['yours'];
 
         return ['ok' => false, 'note' => 'Not changed. Tell the owner: '.$why.'. They can still decide it themselves in the Inbox.'];
+    }
+
+    /**
+     * propose_decision's lines as the writer takes them. Each amount is given positive and takes the transaction's
+     * sign; a deduction (a fee or commission the payer took off money in) is taken off, as a business expense (finance
+     * unless a category is given). An invoice is named by its number; a client given for the whole decision goes on
+     * every income line and deduction that names none.
+     *
+     * @param  list<mixed>  $given
+     * @return list<array<string, mixed>>|array{error:string}
+     */
+    private function proposedLines(BankTransaction $tx, array $given, ?int $clientId): array
+    {
+        if (count($given) > 20) {
+            return ['error' => 'At most 20 lines.'];
+        }
+        $sign = $tx->amount_pence < 0 ? -1 : 1;
+        $text = fn ($v): string => is_scalar($v) ? trim((string) $v) : '';
+        $lines = [];
+        foreach ($given as $n => $g) {
+            $at = 'Line '.($n + 1).': ';
+            if (! is_array($g) || ! is_numeric($g['amount_pence'] ?? null) || (int) $g['amount_pence'] === 0) {
+                return ['error' => $at.'give amount_pence, in pence, more than 0.'];
+            }
+            $pence = abs((int) $g['amount_pence']);
+            $deduction = (bool) ($g['deduction'] ?? false);
+            if ($deduction && $tx->amount_pence <= 0) {
+                return ['error' => $at.'a deduction is only for money in, for a fee or commission the payer took off.'];
+            }
+            $kind = $deduction ? 'business_expense' : $text($g['kind'] ?? null);
+            if (! isset(Allocation::KINDS[$kind])) {
+                return ['error' => $at.'give kind ('.implode(', ', array_keys(Allocation::KINDS)).'), or deduction.'];
+            }
+            $code = $text($g['category_code'] ?? null);
+            $categoryId = $code !== '' ? Category::query()->where('code', $code)->value('id') : null;
+            if ($code !== '' && ! $categoryId) {
+                return ['error' => $at.'no category '.$code.'. Codes: '.Category::query()->pluck('code')->implode(', ')];
+            }
+            $categoryId ??= $deduction ? Lines::category('finance') : ($kind === 'business_income' ? Lines::category('turnover') : null);
+            if (in_array($kind, Allocation::NEEDS_CATEGORY, true) && ! $categoryId) {
+                return ['error' => $at.'a business item needs a valid category_code. Codes: '.Category::query()->pluck('code')->implode(', ')];
+            }
+            $jobId = null;
+            if (is_numeric($g['job_id'] ?? null) && (int) $g['job_id'] > 0) {
+                if (! WorkJob::query()->whereKey((int) $g['job_id'])->exists()) {
+                    return ['error' => $at.'no job '.(int) $g['job_id'].'.'];
+                }
+                $jobId = (int) $g['job_id'];
+            }
+            $invoiceId = null;
+            $number = $text($g['invoice_number'] ?? null);
+            if ($number !== '') {
+                if ($kind !== 'business_income') {
+                    return ['error' => $at.'only business income can be for an invoice.'];
+                }
+                $invoiceId = Invoice::query()->where('number', $number)->value('id');
+                if ($invoiceId === null) {
+                    return ['error' => $at.'no invoice numbered '.$number.'.'];
+                }
+            }
+            $lineClient = $clientId;
+            if (is_numeric($g['client_id'] ?? null) && (int) $g['client_id'] > 0) {
+                if (! Client::query()->whereKey((int) $g['client_id'])->exists()) {
+                    return ['error' => $at.'no client '.(int) $g['client_id'].'.'];
+                }
+                $lineClient = IncomeClient::resolve((int) $g['client_id']);
+            }
+            $lines[] = $deduction ? Lines::deduction($pence, $categoryId, $jobId, $lineClient) : [
+                'kind' => $kind, 'category_id' => in_array($kind, Allocation::NEEDS_CATEGORY, true) ? $categoryId : null, 'work_job_id' => $jobId,
+                'invoice_id' => $invoiceId === null ? null : (int) $invoiceId,
+                'client_id' => in_array($kind, ['business_income', 'business_expense'], true) ? $lineClient : null,
+                'amount_pence' => $sign * $pence, 'business_use_pct' => in_array($kind, Allocation::NEEDS_CATEGORY, true) ? 100 : null, 'note' => null,
+            ];
+        }
+
+        return $lines;
     }
 
     private function listOpportunities(array $f): array

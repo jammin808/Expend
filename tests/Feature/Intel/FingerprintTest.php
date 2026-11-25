@@ -151,6 +151,14 @@ class FingerprintTest extends TestCase
             'fnd_snooze' => $big.':waiting', 'fnd_dismiss' => $big.':not_problem', 'trips_add' => '2025:0123456789:'.$big.':abcdef01',
             'det_raise' => 'receipt:unmatched', 'det_lower' => 'receipt:unmatched', 'veto_lift' => $big,
             'qx' => '9999999:not_card:99999999,99999999,99999999',
+            // S10: income v3's and the jobs, invoices and costs buttons, at their longest (a cost by CostRef::toId).
+            'tx_invoice' => $big.':'.$big, 'tx_client' => $big.':'.$big, 'tx_fee' => $big.':'.$big, 'tx_job' => $big.':'.$big,
+            'inv_close' => $big.':sp', 'inv_over_keep' => $big, 'inv_replace' => $big.':'.$big,
+            'job_done' => $big, 'job_not_yet' => $big, 'job_cancel' => $big.':costs', 'job_reopen' => $big, 'job_uncancel' => $big, 'todo_undo' => 'invoice_overdue:'.$big,
+            'inv_draft_later' => $big, 'inv_to_gmail' => $big, 'inv_gmail_send' => $big, 'inv_sent_self' => $big, 'inv_chase_send' => $big, 'inv_chase_later' => $big, 'inv_paid_wait' => $big,
+            'cost_charge' => 'exp:'.$big.':j'.$big, 'cost_no_charge' => 'exp:'.$big.':j'.$big, 'cost_elsewhere' => 'exp:'.$big.':j'.$big, 'cost_claimed' => 'exp:'.$big.':j'.$big,
+            'cost_invoiced' => 'exp:'.$big.':j'.$big.':'.$big, 'cost_paid_back' => 'exp:'.$big.':j'.$big, 'cost_not_paid' => 'exp:'.$big.':j'.$big, 'cost_clear' => 'exp:'.$big.':j'.$big,
+            'cost_invoice_now' => 'exp:'.$big.':j'.$big,
         ];
         $this->assertSame([], array_values(array_diff(TodoActions::CODES, array_keys($ids))), 'Every action is tried');
         foreach ($ids as $code => $id) {

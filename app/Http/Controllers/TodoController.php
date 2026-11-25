@@ -80,6 +80,8 @@ class TodoController extends Controller
         return array_map(fn (array $i) => ['actions' => Fingerprints::attach($i['actions'] ?? [])] + array_diff_key($i, array_flip(['hidden_under', 'job_ids', 'range', 'subsumes'])) + [
             'why_refs' => array_values(array_filter(array_map(fn ($r) => isset($refs[$r]) ? array_intersect_key($refs[$r], array_flip(['ref', 'label', 'href', 'state', 'check'])) : null, $i['why'] ?? []))),
             'reasons' => Dismissals::reasonsFor($i['code'] ?? null),
+            // The snooze reasons for this kind ("Not finished yet" for "Is it done?").
+            'snooze_reasons' => Dismissals::reasonsFor($i['code'] ?? null, true),
             'grade_basis' => Grades::forCode($i['code'] ?? null)[1],
         ], $items);
     }
@@ -144,6 +146,9 @@ class TodoController extends Controller
      * has changed since, it's refused with a message and nothing is done. A deciding press without one is refused the
      * same way, so a page that doesn't send it can't act on something it never showed. Every page that offers these
      * sends one: the to-do list, the why-panel's Lift and the connections map.
+     *
+     * After a press that did something, what to offer next goes with the message (TodoActions::followUp): the flash
+     * 'undo' (its code, id, label and fingerprint, for the toast's Undo) and 'follow_up' (every button, links included).
      */
     public function act(Request $request, string $code, string $id, TodoActions $actions): RedirectResponse
     {
@@ -167,6 +172,29 @@ class TodoController extends Controller
             TodoList::forget();
         }
 
-        return back()->with('success', $message);
+        [$undo, $next] = self::followUp($code, $id);
+
+        return back()->with('success', $message)->with('undo', $undo)->with('follow_up', $next);
+    }
+
+    /**
+     * What to offer after a press: its Undo, and every follow-up button with its fingerprint (links as {label, href}).
+     *
+     * @return array{0:?array, 1:list<array>}
+     */
+    private static function followUp(string $code, string $id): array
+    {
+        try {
+            $buttons = TodoActions::followUp($code, $id);
+        } catch (Throwable $e) {
+            report($e);
+
+            return [null, []];
+        }
+        $next = array_map(fn (array $b) => isset($b['url'])
+            ? ['label' => $b['text'], 'href' => $b['url']]
+            : ['code' => $b[1], 'id' => (string) $b[2], 'label' => $b[0], 'fp' => Fingerprints::of($b[1], (string) $b[2])], $buttons);
+
+        return [collect($next)->first(fn (array $b) => ($b['label'] ?? null) === 'Undo' && isset($b['code'])), $next];
     }
 }

@@ -6,6 +6,7 @@ use App\Models\Account;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
+use App\Models\Client;
 use App\Models\ManualExpense;
 use App\Models\QuickEntry;
 use App\Models\WorkJob;
@@ -100,8 +101,59 @@ final class Present
             'confirmed' => $a->confirmed_at !== null,
             'reason' => $a->reason,
             'note' => $a->note,
+            // Income design v3: the invoice a line pays (and its number, with the line's invoice loaded), the client
+            // stored on the line itself (only where its invoice and job name none), and the client it counts for, worked
+            // out as IncomeClient does (with the line's invoice, job and client loaded; null otherwise). A form sends
+            // back what it loaded, so editing a split never drops a link.
+            'invoice_id' => $a->invoice_id,
+            'invoice_number' => $a->relationLoaded('invoice') ? $a->invoice?->number : null,
+            'client_id' => $a->client_id,
+            'client' => self::clientOf($a),
         ];
     }
+
+    /**
+     * The name of the client a line counts for (its invoice's, else its own job's, else its own; a merged client as
+     * the one it went into), from what's loaded on the line: with('allocations.invoice.client.mergedInto',
+     * 'allocations.job.client.mergedInto', 'allocations.client.mergedInto'). Null when they aren't loaded or none is.
+     */
+    private static function clientOf(Allocation $a): ?string
+    {
+        foreach (['invoice', 'job'] as $via) {
+            $id = $via === 'invoice' ? $a->invoice_id : $a->work_job_id;
+            if ($id === null) {
+                continue;
+            }
+            if (! $a->relationLoaded($via)) {
+                return null;
+            }
+            $owner = $a->{$via};
+            if ($owner?->client_id !== null) {
+                return $owner->relationLoaded('client') ? self::named($owner->client) : null;
+            }
+        }
+        if ($a->client_id === null) {
+            return null;
+        }
+
+        return $a->relationLoaded('client') ? self::named($a->client) : null;
+    }
+
+    /** A client's name, or the name of the client it was merged into (when that's loaded). */
+    private static function named(?Client $client): ?string
+    {
+        if ($client === null) {
+            return null;
+        }
+        if ($client->merged_into_id !== null && $client->relationLoaded('mergedInto') && $client->mergedInto !== null) {
+            return $client->mergedInto->name;
+        }
+
+        return $client->name;
+    }
+
+    /** What a page loads with a payment's lines for allocation() to give their invoice and client. */
+    public const ALLOCATION_LINKS = ['allocations.invoice.client.mergedInto', 'allocations.job.client.mergedInto', 'allocations.client.mergedInto'];
 
     public static function job(WorkJob $job): array
     {
@@ -121,6 +173,16 @@ final class Present
             'po_not_required' => (bool) $job->po_not_required,
             'status' => $job->status,
             'notes' => $job->notes,
+            // Who the work was for when another client pays (an agency's job for a production company), the rate and
+            // how it's counted, the days agreed, when it was marked done, and what a cancelled job still owes.
+            'end_client_id' => $job->end_client_id,
+            'end_client' => $job->relationLoaded('endClient') ? $job->endClient?->name : null,
+            'rate_pence' => $job->rate_pence,
+            'rate_unit' => $job->rate_unit,
+            'days_agreed' => $job->days_agreed,
+            'done_at' => $job->done_at?->format('Y-m-d H:i'),
+            'cancel_charge' => $job->cancel_charge,
+            'cancel_fee_pence' => $job->cancel_fee_pence,
         ];
     }
 
@@ -139,6 +201,8 @@ final class Present
             'jobs' => WorkJob::query()->with('client')->orderByDesc('starts_on')->limit(500)->get()
                 ->map(fn (WorkJob $j) => ['id' => $j->id, 'title' => $j->title, 'client' => $j->client?->name, 'starts_on' => $j->starts_on->format('Y-m-d'), 'ends_on' => $j->ends_on->format('Y-m-d')])->all(),
             'accounts' => Account::query()->orderBy('name')->get(['id', 'name', 'kind', 'provider'])->toArray(),
+            // For the client picker on money in (merged duplicates left out: a name you merged finds the one it went into).
+            'clients' => Client::query()->unmerged()->orderBy('name')->get(['id', 'name'])->map(fn (Client $c) => ['id' => $c->id, 'name' => $c->name])->all(),
         ];
     }
 

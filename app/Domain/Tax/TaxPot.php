@@ -2,6 +2,8 @@
 
 namespace App\Domain\Tax;
 
+use App\Domain\Income\IncomeClient;
+use App\Domain\Income\Lines;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
@@ -240,7 +242,9 @@ final class TaxPot
      * Null when nothing new was business income, or no estimate can be made.
      *
      * Counted as business income: money in that's decided, or suggested (matched to an invoice, or by a rule), as
-     * business income. Money in that's still to be decided isn't counted yet.
+     * business income. Money in that's still to be decided isn't counted yet. A payment says what came in (its income
+     * less any fee or commission the payer took off) and who it's from: its worked-out client (the invoice's, the job's
+     * or the one set on it), else the invoice's bill-to name, else the payer's name on the statement.
      *
      * @param  list<int>  $batchIds  the imports just made
      */
@@ -251,18 +255,26 @@ final class TaxPot
         }
         $lines = BankTransaction::query()->whereIn('import_batch_id', $batchIds)->where('amount_pence', '>', 0)
             ->whereHas('allocations', fn ($q) => $q->where('kind', 'business_income'))
-            ->with(['allocations' => fn ($q) => $q->where('kind', 'business_income')->with('invoice.client')])
+            ->with(['allocations' => fn ($q) => $q->whereIn('kind', ['business_income', 'business_expense'])->orderBy('id')->with('invoice:id,bill_to_name')])
             ->orderBy('posted_on')->orderBy('id')->limit(50)->get();
+        // Who each income line is from: its worked-out client (its invoice's, its job's or its own, merges resolved).
+        $clients = IncomeClient::named($lines->flatMap(fn (BankTransaction $tx) => $tx->allocations->where('kind', 'business_income')->pluck('id')));
         $out = [];
         $total = 0;
         foreach ($lines as $tx) {
-            $amount = (int) $tx->allocations->sum('amount_pence');
+            // What came in: the income, less any fee or commission the payer took off (a deduction is a cost).
+            $income = $tx->allocations->where('kind', 'business_income');
+            $amount = (int) $income->sum('amount_pence') + (int) $tx->allocations->filter(fn (Allocation $a) => Lines::isDeduction($a))->sum('amount_pence');
+            if ($amount <= 0) {
+                continue; // nothing came in for the business (the writer never lets a fee be the whole payment)
+            }
             $aside = $this->forPayment($amount, $tx->posted_on);
             if ($aside === null) {
                 return null; // no estimate (Scottish rates): nothing to say
             }
-            $invoice = $tx->allocations->first(fn ($a) => $a->invoice !== null)?->invoice;
-            $payer = self::payer($invoice?->client?->name ?? $invoice?->bill_to_name ?? $tx->counterparty);
+            $named = $income->map(fn (Allocation $a) => $clients[$a->id]['name'] ?? null)->filter()->unique();
+            $invoice = $income->first(fn (Allocation $a) => $a->invoice !== null)?->invoice;
+            $payer = self::payer($named->count() === 1 ? $named->first() : ($invoice?->bill_to_name ?? $tx->counterparty));
             $total += $aside['pence'];
             if (count($out) < 10) {
                 $out[] = "{$payer} paid ".self::pounds($amount).': '.($aside['pence'] > 0 ? 'put about '.self::pounds($aside['pence']).' aside' : 'nothing to put aside at this year’s expected profit').' (estimate).';

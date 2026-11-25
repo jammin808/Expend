@@ -20,6 +20,7 @@ use App\Models\Setting;
 use App\Models\TravelItem;
 use App\Models\User;
 use App\Models\WorkJob;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -42,14 +43,21 @@ class TodoTest extends TestCase
         $this->actingAs(User::factory()->create());
     }
 
-    /** Issued on the given day, due 30 days later. */
-    private function issuedInvoice(string $issued, ?string $email = 'accounts@client.example'): Invoice
+    /**
+     * Issued on the given day, due 30 days later; sent that day when $sent (S10: an invoice not sent is listed to send,
+     * never as overdue).
+     */
+    private function issuedInvoice(string $issued, ?string $email = 'accounts@client.example', bool $sent = false): Invoice
     {
         $job = WorkJob::query()->create(['title' => 'Gala', 'starts_on' => '2025-05-14', 'ends_on' => '2025-05-14', 'po_number' => 'PO-1']);
         $invoice = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'total_minor' => 0, 'bill_to_name' => 'Client Ltd', 'bill_to_email' => $email]);
         app(InvoiceService::class)->updateDraft($invoice, [], [['description' => 'Show day', 'quantity' => '1', 'unit_price' => '450.00']]);
+        $invoice = app(InvoiceService::class)->issue($invoice->fresh(), $issued)->fresh();
+        if ($sent) {
+            $invoice->forceFill(['sent_at' => $issued.' 10:00:00', 'sent_to' => $email])->save();
+        }
 
-        return app(InvoiceService::class)->issue($invoice->fresh(), $issued)->fresh();
+        return $invoice->fresh();
     }
 
     public function test_one_list_most_urgent_first_with_one_tap_actions(): void
@@ -57,7 +65,7 @@ class TodoTest extends TestCase
         $account = Account::query()->create(['name' => 'Starling Business', 'kind' => 'bank', 'provider' => 'starling']);
         $path = base_path('tests/fixtures/starling.csv');
         app(Importer::class)->commit($account, $path, 'starling.csv', ProfileDetector::detect(CsvReader::read($path)['headers'], 'bank'));
-        $overdue = $this->issuedInvoice('2025-05-15');
+        $overdue = $this->issuedInvoice('2025-05-15', sent: true);
         WorkJob::query()->create(['title' => 'Unbilled show', 'starts_on' => '2025-07-01', 'ends_on' => '2025-07-01']);
         JobCandidate::query()->create(['title' => 'Maybe a job', 'starts_on' => '2025-08-01', 'ends_on' => '2025-08-01', 'sources' => [], 'reasons' => ['why' => []]]);
 
@@ -120,7 +128,9 @@ class TodoTest extends TestCase
         Setting::put('telegram_chat_id', '42');
         Setting::put('telegram_webhook_secret', 'secret');
         Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => []])]);
-        $invoice = $this->issuedInvoice('2025-05-15');
+        // The invoice nudges keep quiet at night (21:00 to 08:00 London): a morning, as they're scheduled.
+        $this->travelTo(CarbonImmutable::parse('2025-07-14 09:13:00', 'Europe/London'));
+        $invoice = $this->issuedInvoice('2025-05-15', sent: true);
         $candidate = JobCandidate::query()->create(['title' => 'Maybe a job', 'starts_on' => '2025-08-01', 'ends_on' => '2025-08-01', 'sources' => [], 'reasons' => ['why' => []]]);
 
         $this->artisan('ledger:telegram-digest')->assertSuccessful();

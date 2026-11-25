@@ -61,6 +61,31 @@ final class IncomeClient
             ->addSelect(DB::raw(self::expression().' as '.self::COLUMN));
     }
 
+    /**
+     * The worked-out client of each of these lines (merges resolved), by allocation id, with its name: two queries
+     * whatever the number of lines (the lines with scope()'s joins, then the clients' names). A line nothing names a
+     * client for is left out.
+     *
+     * @param  iterable<int>  $allocationIds
+     * @return array<int, array{id:int, name:string}>
+     */
+    public static function named(iterable $allocationIds): array
+    {
+        $ids = collect($allocationIds)->map(fn ($id) => (int) $id)->filter()->unique()->values();
+        if ($ids->isEmpty()) {
+            return [];
+        }
+        $worked = collect();
+        foreach ($ids->chunk(500) as $chunk) {
+            $worked = $worked->union(self::scope(DB::table('allocations')->select('allocations.id'))->whereIn('allocations.id', $chunk->all())
+                ->pluck(self::COLUMN, 'id'));
+        }
+        $worked = $worked->filter(fn ($client) => $client !== null)->map(fn ($client) => (int) $client);
+        $names = $worked->isEmpty() ? collect() : Client::query()->whereKey($worked->unique()->values()->all())->pluck('name', 'id');
+
+        return $worked->filter(fn (int $client) => $names->has($client))->map(fn (int $client) => ['id' => $client, 'name' => (string) $names[$client]])->all();
+    }
+
     /** One line's worked-out client (merges resolved), or null when nothing names one. */
     public static function of(Allocation $line): ?int
     {

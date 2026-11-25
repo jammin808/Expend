@@ -363,25 +363,34 @@ class GoldenInvoiceFlowTest extends TestCase
         $got = fn (string $key) => $items->has($key) ? Arr::only($items[$key], $fields) : null;
         $action = fn (string $code, int $id, string $label) => ['code' => $code, 'id' => (string) $id, 'label' => $label, 'style' => 'default'];
 
+        // S10 (changed on purpose): a booked job that finished in the last 60 days asks "Is it done?" (job_done:) in
+        // place of "Invoice <job>", with Done, Not yet and Cancelled; marking it done gets its invoice ready.
+        $ghost = fn (string $code, int|string $id, string $label) => ['code' => $code, 'id' => (string) $id, 'label' => $label, 'style' => 'ghost'];
         $this->assertSame([
-            'invoice:'.$leeds->id => ['group' => 'invoice', 'priority' => 2, 'title' => 'Invoice Leeds conference', 'detail' => 'Acme Events · finished 1 Jun 2026',
-                'href' => '/jobs/'.$leeds->id, 'actions' => [$action('job_invoice', $leeds->id, 'Draft the invoice')]],
-            'invoice:'.$bristol->id => ['group' => 'invoice', 'priority' => 2, 'title' => 'Invoice Bristol fair', 'detail' => 'Acme Events · finished 2 Jun 2026 · draft ready to check and issue',
-                'href' => '/invoices/'.$bristolDraft->id, 'actions' => []],
-        ], ['invoice:'.$leeds->id => $got('invoice:'.$leeds->id), 'invoice:'.$bristol->id => $got('invoice:'.$bristol->id)]);
-        foreach ([$cardiff, $gala, $vienna, $birmingham, $manchester, $paris, $bath, $edinburgh, $glasgow] as $job) {
-            $this->assertNull($got('invoice:'.$job->id), $job->title.': invoiced, or not finished');
+            'job_done:'.$leeds->id => ['group' => 'invoice', 'priority' => 2, 'title' => 'Is Leeds conference done?',
+                'detail' => 'Acme Events · last day was Mon 1 Jun 2026. Marking it done gets its invoice ready to check.', 'href' => '/jobs/'.$leeds->id,
+                'actions' => [$action('job_done', $leeds->id, 'Done'), $ghost('job_not_yet', $leeds->id, 'Not yet'), $ghost('job_cancel', $leeds->id, 'Cancelled…')]],
+            'job_done:'.$bristol->id => ['group' => 'invoice', 'priority' => 2, 'title' => 'Is Bristol fair done?',
+                'detail' => 'Acme Events · last day was Tue 2 Jun 2026. Marking it done gets its invoice ready to check.', 'href' => '/jobs/'.$bristol->id,
+                'actions' => [$action('job_done', $bristol->id, 'Done'), $ghost('job_not_yet', $bristol->id, 'Not yet'), $ghost('job_cancel', $bristol->id, 'Cancelled…')]],
+        ], ['job_done:'.$leeds->id => $got('job_done:'.$leeds->id), 'job_done:'.$bristol->id => $got('job_done:'.$bristol->id)]);
+        $this->assertNotNull($bristolDraft);
+        foreach ([$leeds, $bristol, $cardiff, $gala, $vienna, $birmingham, $manchester, $paris, $bath, $edinburgh, $glasgow] as $job) {
+            $this->assertNull($got('invoice:'.$job->id), $job->title.': asked whether it’s done, invoiced, or not finished');
         }
 
+        // S10 (changed on purpose): an issued invoice that hasn't been sent (INV-0001) is listed to send, never as
+        // overdue; part-paid offers "Close it" for what's short (income design v3), and money in another currency
+        // "It's paid (in another currency)". The reminder button (inv_chase) keeps its label "Send a reminder" while
+        // Gmail can't be used: it emails the reminder from Expend, only when you press it.
         $this->assertSame([
-            'unpaid' => ['group' => 'income', 'priority' => 1, 'title' => 'Invoice INV-0001 unpaid', 'detail' => '£500.00 from Acme Events, due 1 Jun 2026 (9 days ago).',
-                'href' => '/invoices/'.$unpaid->id, 'actions' => [$action('inv_chase', $unpaid->id, 'Send a reminder')], 'amount' => 50000, 'currency' => 'GBP', 'due_on' => '2026-06-01'],
+            'unpaid' => null,
             'part-paid' => ['group' => 'income', 'priority' => 1, 'title' => 'Invoice INV-0002 part-paid',
                 'detail' => '£100.00 of £450.00 received from Acme Events, due 5 Jun 2026 (5 days ago); £350.00 still to come.',
-                'href' => '/invoices/'.$partPaid->id, 'actions' => [], 'amount' => 35000, 'currency' => 'GBP', 'due_on' => '2026-06-05'],
+                'href' => '/invoices/'.$partPaid->id, 'actions' => [$ghost('inv_close', $partPaid->id.':sp', 'Close it: £350 isn’t coming')], 'amount' => 35000, 'currency' => 'GBP', 'due_on' => '2026-06-05'],
             'another currency' => ['group' => 'income', 'priority' => 1, 'title' => 'Invoice INV-0003: check it’s been paid',
                 'detail' => '€1,000.00 from Acme Events, due 7 Jun 2026 (3 days ago). £850.00 came in for this job in another currency, so Expend can’t tell how much of the invoice it covers. If it’s all paid, mark this not relevant.',
-                'href' => '/invoices/'.$euros->id, 'actions' => [], 'amount' => 100000, 'currency' => 'EUR', 'due_on' => '2026-06-07'],
+                'href' => '/invoices/'.$euros->id, 'actions' => [$ghost('inv_close', $euros->id.':fx', 'It’s paid (in another currency)')], 'amount' => 100000, 'currency' => 'EUR', 'due_on' => '2026-06-07'],
             'waiting' => ['group' => 'income', 'priority' => 1, 'title' => 'Invoice INV-0004 unpaid',
                 'detail' => '£200.00 from Acme Events, due 3 Jun 2026 (7 days ago). £200.00 that may be for it is waiting in the Inbox: decide it first.',
                 'href' => '/inbox', 'actions' => [], 'amount' => 20000, 'currency' => 'GBP', 'due_on' => '2026-06-03'],

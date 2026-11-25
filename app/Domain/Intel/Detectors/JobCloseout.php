@@ -144,7 +144,7 @@ final class JobCloseout implements Detector
         $recharges = collect();
         foreach (array_chunk($ids, 500) as $chunk) {
             $invoices = $invoices->concat(Invoice::query()->whereIn('work_job_id', $chunk)->where('status', '!=', 'void')->orderBy('id')
-                ->get(['id', 'number', 'work_job_id', 'document_id', 'status', 'currency', 'total_minor', 'po_total_minor', 'issue_date', 'synced_at']));
+                ->get(['id', 'number', 'work_job_id', 'document_id', 'status', 'currency', 'total_minor', 'po_total_minor', 'issue_date', 'issued_at', 'synced_at']));
             $recharges = $recharges->concat(TravelItem::query()->whereIn('work_job_id', $chunk)->where('decision', 'recharge')->orderBy('starts_on')->orderBy('id')
                 ->get(['id', 'kind', 'provider', 'place', 'status', 'starts_on', 'amount_minor', 'currency', 'work_job_id']));
         }
@@ -337,7 +337,10 @@ final class JobCloseout implements Detector
             }
         }
         // Each cost still owed and expected on the invoice, in the job's currency, with a known amount; and a day
-        // added after the invoice went.
+        // added after the invoice went. A cost linked after an invoice Expend tracks went is the to-do list's own item
+        // ("Charge … to Acme", with Invoice it now: TodoList::lateCosts), so it isn't counted here as well.
+        $lateListed = $invoices->contains(fn (Invoice $i) => in_array($i->status, InvoicePayments::PAYABLE, true) && $i->synced_at !== null
+            && $i->issued_at !== null && $i->issued_at->gte(now()->subDays(TodoList::LATE_COST_DAYS)));
         $mine = [];
         foreach ($units as $u) {
             $s = $statuses[$u['ref']] ?? null;
@@ -348,6 +351,9 @@ final class JobCloseout implements Detector
             $booking = collect([$u['ref'], ...$u['aliases']])->first(fn ($r) => str_starts_with($r, 'travel:'));
             $t = $booking !== null ? ($bookings[(int) substr($booking, 7)] ?? null) : null;
             if ($t !== null && isset($hidden['recharge:'.$t->id])) {
+                continue;
+            }
+            if ($s['status'] === 'owed_late' && $lateListed && $u['kind'] !== 'work' && $t === null && CostRef::valid($u['ref'])) {
                 continue;
             }
             $amount = match ($u['kind']) {

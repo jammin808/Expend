@@ -122,7 +122,8 @@ class NewFixesCategoriserTest extends TestCase
 
         $this->assertSame(['personal', 'rule', 'Your rule for SCREWFIX'], [$this->s($screwfix)['kind'], $this->s($screwfix)['by'], $this->s($screwfix)['reason']]);
         $this->assertSame($invoice->id, $this->s($fee)['invoice'], 'Matched to the invoice, so it counts as paid once you confirm it');
-        $this->assertStringStartsWith('Matches invoice INV-1', $this->s($fee)['reason']);
+        // Income design v3's wording (suggest.invoice v2): what's still to come on it.
+        $this->assertSame('Matches what’s still to come on INV-1 (£1,200)', $this->s($fee)['reason']);
     }
 
     // N4: learned meals, hotels and fuel are judged against the day.

@@ -3,6 +3,7 @@
 namespace App\Domain\Ledger;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Income\PayerAliases;
 use App\Domain\Intel\Methods;
 use App\Domain\Intel\Provenance;
 use App\Domain\Intel\Vetoes;
@@ -10,6 +11,7 @@ use App\Domain\Matching\Categoriser;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
+use App\Models\Client;
 use App\Models\MerchantRule;
 use App\Models\Setting;
 use App\Models\TaxYear;
@@ -29,6 +31,10 @@ use InvalidArgumentException;
  * A rule keeps to the direction it was learned from: one learned from payments to a crew-mate is never applied to
  * money they pay you (that's turnover, not a cost). And it only takes over what's undecided or guessed in general:
  * a payment matched to an invoice, a job, a stay or journey, or a transfer between your accounts is left for you.
+ *
+ * A turnover rule for a payer that has only ever paid for one client fills that client in (Income\PayerAliases::enrich),
+ * and then it's a suggestion for you to accept, never confirmed on its own (owner answer 3): the offer and the message
+ * say so ("filled in as Acme Events’ turnover, for you to accept").
  */
 final class RuleLearner
 {
@@ -62,7 +68,7 @@ final class RuleLearner
             $ids = $this->waiting($merchantKey, $direction, $kind)->pluck('id');
 
             return $ids->count() - count(self::saidNoTo($ids, $ruleShape));
-        }, fn (int $id) => Category::query()->find($id)?->name);
+        }, fn (int $id) => Category::query()->find($id)?->name, PayerAliases::forKeys([$merchantKey]));
     }
 
     /**
@@ -96,13 +102,15 @@ final class RuleLearner
         // What you said no to for any of them (a rule won't decide those that way): one query.
         $saidNo = Vetoes::forSubjects('allocation_shape', $waiting->flatten(1)->map(fn (BankTransaction $t) => 'tx:'.$t->id));
         $categories = Category::query()->pluck('name', 'id');
+        // Who each pays for (a turnover rule fills in a payer's sole client): one query.
+        $aliases = PayerAliases::forKeys($keys);
 
         $offers = [];
         foreach ($keys as $key) {
             $offer = $this->offerFrom($key, $latest[$key] ?? collect(), fn (?string $direction, string $kind, string $ruleShape) => ($waiting[$key] ?? collect())
                 ->filter(fn (BankTransaction $t) => self::goesWay($direction, $t->amount_pence) && ($kind === 'transfer' || ! $t->has_transfer)
                     && Vetoes::matching($saidNo->get('tx:'.$t->id) ?? collect(), null, $ruleShape, 'rule.learned')->isEmpty())->count(),
-                fn (int $id) => $categories[$id] ?? null);
+                fn (int $id) => $categories[$id] ?? null, $aliases);
             if ($offer) {
                 $offers[] = $offer;
                 if (count($offers) >= $limit) {
@@ -121,8 +129,9 @@ final class RuleLearner
      * @param  callable(?string, string, string): int  $waitingCount  how many are waiting that a rule this way, of this kind and
      *                                                                shape (Vetoes::shape()), would decide: never one you said no to that for
      * @param  callable(int): ?string  $categoryName
+     * @param  PayerAliases  $aliases  who the payer pays for: a turnover rule fills in a sole client, for you to accept
      */
-    private function offerFrom(string $merchantKey, Collection $latest, callable $waitingCount, callable $categoryName): ?array
+    private function offerFrom(string $merchantKey, Collection $latest, callable $waitingCount, callable $categoryName, PayerAliases $aliases): ?array
     {
         // Decided by you, or a suggestion you accepted, at half weight (as the Categoriser learns): never what a rule
         // decided, or what was confirmed on its own.
@@ -149,11 +158,42 @@ final class RuleLearner
             default => $name,
         };
 
+        $client = self::clientFor($shape['kind'], $direction, $merchantKey, $aliases);
+
         return $shape + [
             'merchant_key' => $merchantKey, 'name' => $name, 'count' => $decided->count(), 'waiting' => $waiting, 'example_id' => $example->id,
-            'direction' => $direction,
-            'text' => "You've marked {$whose} as {$what} {$decided->count()} times. Always do this".($waiting ? " (and apply it to the {$waiting} waiting)" : '').'?',
+            'direction' => $direction, 'client' => $client,
+            'text' => "You've marked {$whose} as {$what} {$decided->count()} times. Always do this".($waiting ? " (and apply it to the {$waiting} waiting)" : '').'?'
+                .($client ? ' '.self::forYouToAccept($name, $client['name'], $category) : ''),
         ];
+    }
+
+    /**
+     * The client a turnover rule for this payer fills in (PayerAliases::enrich): its sole client, for a rule on money in.
+     *
+     * @return array{id:int, name:string}|null
+     */
+    private static function clientFor(string $kind, ?string $direction, string $merchantKey, PayerAliases $aliases): ?array
+    {
+        if ($kind !== 'business_income' || $direction === 'out') {
+            return null;
+        }
+        $id = $aliases->sole($merchantKey, 1);
+        $name = $id === null ? null : Client::query()->whereKey($id)->value('name');
+
+        return $name === null ? null : ['id' => $id, 'name' => (string) $name];
+    }
+
+    /**
+     * "From now on payments from ACME are filled in as Acme Events’ turnover, for you to accept." (Another income
+     * category is named as it is: "… as Acme Events’ other business income, …".)
+     */
+    public static function forYouToAccept(string $payer, string $client, ?string $category = null): string
+    {
+        $whose = preg_match('/s$/i', $client) ? $client.'’' : $client.'’s';
+        $what = $category === null || str_starts_with(mb_strtolower($category), 'turnover') ? 'turnover' : mb_strtolower($category);
+
+        return "From now on payments from {$payer} are filled in as {$whose} {$what}, for you to accept.";
     }
 
     /**
@@ -197,9 +237,11 @@ final class RuleLearner
     }
 
     /**
-     * Save the rule and apply it to what's waiting from that merchant.
+     * Save the rule and apply it to what's waiting from that merchant. Turnover with no job gets the payer's client when
+     * it pays for only one (PayerAliases::enrich), so it's written as a suggestion for you to accept: the message says
+     * so ('client' names that client; null when none is filled in).
      *
-     * @return array{rule:MerchantRule, applied:int}
+     * @return array{rule:MerchantRule, applied:int, client:?string, message:string}
      */
     public function accept(string $merchantKey): array
     {
@@ -213,17 +255,24 @@ final class RuleLearner
             $learned = AuditLog::record('rule.learned', $rule, null, $rule->toArray(), "Learned from {$offer['count']} of your decisions"
                 .($offer['direction'] ? ' ('.self::DIRECTIONS[$offer['direction']].' only)' : ''));
             $applied = 0;
+            $aliases = PayerAliases::forKeys([$merchantKey]);
             foreach ($this->waiting($merchantKey, $offer['direction'], $offer['kind'])->get() as $tx) {
-                $lines = AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, null, $rule->business_pct);
+                $client = PayerAliases::enrich($tx, AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, null, $rule->business_pct), $aliases);
                 try {
-                    $applied += (int) $this->writer->decide($tx, $lines, 'rule', true, "Your rule for {$offer['name']}", $rule->id,
-                        new Provenance('rule.learned', ['rule:'.$rule->id, 'audit:'.$learned->id.'@'.substr($learned->hash, 0, 8), 'tx:'.$offer['example_id']], $offer['count']));
+                    // Confirmed on its own only when nothing is linked: turnover with a client stays a suggestion (the writer).
+                    $applied += (int) $this->writer->decide($tx, $client['lines'], 'rule', true, "Your rule for {$offer['name']}".($client['note'] ?? ''), $rule->id,
+                        new Provenance('rule.learned', ['rule:'.$rule->id, 'audit:'.$learned->id.'@'.substr($learned->hash, 0, 8), 'tx:'.$offer['example_id'], ...$client['evidence']], $offer['count']));
                 } catch (InvalidArgumentException) {
                     // a locked year, or lines that don't fit this payment: left for you
                 }
             }
+            $client = $offer['client']['name'] ?? null;
+            $category = $offer['category_id'] ? Category::query()->find($offer['category_id'])?->name : null;
+            $message = $client !== null
+                ? self::forYouToAccept($offer['name'], $client, $category).($applied ? " Filled in for {$applied} waiting." : '')
+                : 'From now on '.$offer['name'].' is done automatically'.($applied ? "; applied to {$applied} waiting" : '').'.';
 
-            return ['rule' => $rule, 'applied' => $applied];
+            return ['rule' => $rule, 'applied' => $applied, 'client' => $client, 'message' => $message];
         });
     }
 

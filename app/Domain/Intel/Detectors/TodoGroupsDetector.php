@@ -44,6 +44,11 @@ final class TodoGroupsDetector implements CoversCodes, Detector
         ['quick_waiting:', 'receipt.waiting'], ['quick_which:', 'receipt.which'], ['quick_copy:', 'receipt.second_copy'], ['quick_photo_waiting:', 'quick.photo_waiting'],
         ['quick_photo:', 'quick.photo_differs'], ['quick_line:', 'quick.line_differs'], ['quick_held:', 'quick.held'], ['quick_card:', 'quick.maybe_card'], ['quick_same:', 'quick.maybe_same'],
         ['import:', 'import.held'], ['invoice_overdue:', 'invoice.overdue'], ['underbilled:', 'invoice.underbilled'], ['recharge:', 'travel.recharge'],
+        // Income design v3: paid more than it was for, and paid then voided with nothing to replace it.
+        ['invoice_overpaid:', 'invoice.overpaid'], ['invoice_void_paid:', 'invoice.void_paid'],
+        // Clients, jobs and invoices: "Is it done?", a follow-up or client draft, a cost charged on their form a month
+        // ago, and a cost linked to a job after its invoice went.
+        ['job_done:', 'job.done_due'], ['draft:', 'invoice.draft'], ['claimed:', 'cost.claimed'], ['charge:', 'cost.late'],
         ['check:', 'check.failed'], ['deadline:', 'tax.deadline'], ['penalty:', 'tax.penalty'], ['submission:', 'tax.submission'],
         ['hmrc:', 'tax.hmrc_unallocated'], ['drift:', 'year.filed_drift'], ['opp_reply:', 'job.offer_reply'], ['opp_job:', 'job.booking'],
         ['invoice:', 'job.uninvoiced'], ['unsent:', 'invoice.unsent'], ['mileage:', 'travel.unclaimed'], ['candidate:', 'job.candidate'],
@@ -200,7 +205,11 @@ final class TodoGroupsDetector implements CoversCodes, Detector
             'year.locked_drift' => ($y = $year($parts[0])) ? $out('year:'.$y, 'none', ['ref' => 'year:'.$y]) : $out(null, 'none', null),
             'health.failed_jobs' => $out(null, 'none', null), // background work has no ref of its own
             'import.held' => $out(Ref::maybe('batch', $id), 'unrecorded', $lookup('import_batches', 'account_id', 'acct')),
-            'invoice.overdue', 'invoice.underbilled', 'invoice.unsent' => $out(Ref::maybe('inv', $id), 'owed_to_you', $lookup('invoices', 'work_job_id', 'job')),
+            'invoice.overdue', 'invoice.underbilled', 'invoice.unsent', 'invoice.draft' => $out(Ref::maybe('inv', $id), 'owed_to_you', $lookup('invoices', 'work_job_id', 'job')),
+            'invoice.overpaid', 'invoice.void_paid' => $out(Ref::maybe('inv', $id), 'none', $lookup('invoices', 'work_job_id', 'job')),
+            'job.done_due' => $out(Ref::maybe('job', $id), 'owed_to_you', $id !== null ? ['ref' => 'job:'.$id] : null),
+            // A cost's key is its button id (Charges\CostRef::toId): tx:381:j45, travel:7, trip:3.
+            'cost.claimed', 'cost.late' => self::cost($code, $parts),
             'travel.recharge' => $out(Ref::maybe('travel', $id), 'owed_to_you', $lookup('travel_items', 'work_job_id', 'job')),
             'travel.payment_missing' => $out(Ref::maybe('travel', $id), 'unrecorded', $lookup('travel_items', 'work_job_id', 'job')),
             'check.failed' => $out(self::checkSubject($rest), 'none', null),
@@ -277,6 +286,22 @@ final class TodoGroupsDetector implements CoversCodes, Detector
         }
 
         return array_values(array_unique($out));
+    }
+
+    /**
+     * What a cost's key is about: its record (the payment, expense, booking or trip) and, for one on a job, that job.
+     *
+     * @param  string  $code  cost.claimed or cost.late
+     * @param  list<string>  $parts  the key after its kind: tx, 381, j45
+     * @return array{code:string, subject_ref:?string, direction:?string, scope:?array}
+     */
+    private static function cost(string $code, array $parts): array
+    {
+        $id = ctype_digit($parts[1] ?? '') ? (int) $parts[1] : null;
+        $job = isset($parts[2]) && preg_match('/^j(\d+)$/', $parts[2], $m) === 1 ? (int) $m[1] : null;
+        $subject = in_array($parts[0] ?? null, ['tx', 'exp', 'travel', 'trip'], true) ? Ref::maybe($parts[0], $id) : null;
+
+        return ['code' => $code, 'subject_ref' => $subject, 'direction' => 'owed_to_you', 'scope' => $job !== null ? ['ref' => 'job:'.$job] : null];
     }
 
     /** The subject a failed check is about: check:document:12 is doc:12; a kind with no ref of its own stays a check ref. */

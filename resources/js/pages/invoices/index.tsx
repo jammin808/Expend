@@ -16,6 +16,10 @@ export interface InvoiceRow {
     issue_date: string | null;
     due_date: string | null;
     overdue: boolean;
+    // Income design v3: where its money stands, what's still to come, and how many days it's overdue.
+    state?: string;
+    outstanding_minor?: number;
+    overdue_days?: number | null;
 }
 
 export default function Invoices({ invoices }: { invoices: InvoiceRow[] }) {

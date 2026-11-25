@@ -14,8 +14,6 @@ use App\Domain\Intel\Cycle\Steps\RelateCategorise;
 use App\Domain\Intel\Cycle\Steps\RelateTransfers;
 use App\Domain\Intel\Cycle\Steps\VerifyAuditChain;
 use App\Domain\Intel\Detectors\Health;
-use App\Domain\Invoices\InvoiceEmails;
-use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\Opportunities;
 use App\Domain\Mail\MailboxFetcher;
@@ -24,19 +22,16 @@ use App\Domain\Matching\TransferPairer;
 use App\Domain\Quick\QuickEntries;
 use App\Domain\Quick\ReceiptAttacher;
 use App\Domain\Telegram\Telegram;
-use App\Domain\Todo\Dismissals;
 use App\Domain\Todo\FindingsRegistry;
 use App\Domain\Verification\Verifier;
+use App\Jobs\CheckInvoiceEmails;
 use App\Jobs\ScanGmail;
 use App\Jobs\SyncGmailLabels;
 use App\Models\CycleRun;
 use App\Models\CycleRunStep;
-use App\Models\Finding;
-use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\Setting;
 use App\Models\User;
-use App\Support\Money;
 use App\Support\UkTaxYear;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Artisan;
@@ -122,53 +117,6 @@ Artisan::command('ledger:telegram-digest', function () {
 
     return 0;
 })->purpose('Send the to-do list to Telegram, with buttons');
-
-Artisan::command('ledger:invoice-nudges', function () {
-    $chat = Setting::get('telegram_chat_id');
-    if (! $chat || ! Telegram::token()) {
-        return 0;
-    }
-    Telegram::allowButtons();
-    $n = 0;
-    // The overdue invoices are the to-do list's invoice.overdue findings, one logic for both: brought up to date first
-    // (FindingsRegistry::refresh(), as the Monday digest does), then those still open. One you snoozed or marked not
-    // relevant on the to-do list isn't open, so it isn't nudged about. Your snoozes are read as they are now
-    // (Dismissals::hiddenNow()), not only as last recorded: when something else is recording the findings at this
-    // moment (refresh() then doesn't wait), one whose snooze has just ended is still nudged about.
-    FindingsRegistry::refresh();
-    $ids = Finding::query()->where(fn ($q) => $q->whereNull('resolved_at')->orWhereIn('resolution', ['snoozed', 'dismissed']))
-        ->where(fn ($q) => $q->where('code', 'invoice.overdue')->orWhere(fn ($q) => $q->whereNull('code')->where('key', 'like', 'invoice_overdue:%')))
-        ->get(['key'])->filter(fn (Finding $f) => Dismissals::hiddenNow($f->key) === null)
-        ->map(fn (Finding $f) => (int) substr($f->key, strlen('invoice_overdue:')))->filter()->values()->all();
-    $overdue = Invoice::query()->whereIn('id', $ids ?: [0])->where('status', 'issued')->whereNotNull('due_date')->whereDate('due_date', '<', today())
-        ->where(fn ($q) => $q->whereNull('overdue_nudged_at')->orWhere('overdue_nudged_at', '<', now()->subDays(7)))->orderBy('id')->get();
-    // What has come in for each, counted as the to-do list counts it (payments linked to it, income for its job).
-    $received = InvoicePayments::received($overdue);
-    foreach ($overdue as $invoice) {
-        ['paid' => $paid, 'elsewhere' => $elsewhere, 'waiting' => $waiting] = $received[$invoice->id] ?? ['paid' => 0, 'elsewhere' => 0, 'waiting' => 0];
-        if ($paid >= $invoice->total_minor) {
-            continue;
-        }
-        $days = (int) $invoice->due_date->diffInDays(today());
-        $money = fn (int $minor) => Money::format($minor, $invoice->currency ?: 'GBP', false);
-        // The reminder email tells the client no payment has been seen, so it's only offered when nothing has come in,
-        // and never while the invoice itself waits unsent in your Gmail drafts.
-        $come = match (true) {
-            $waiting > 0 => ' '.Money::format($waiting, 'GBP', false).' that may be for it is waiting in the Inbox: decide it first.',
-            $paid > 0 => ' '.$money($paid).' of it has come in, so '.$money($invoice->total_minor - $paid).' is still to come.',
-            $elsewhere > 0 => ' '.Money::format($elsewhere, 'GBP', false).' came in for this job in another currency: check whether it’s been paid.',
-            default => null,
-        };
-        Telegram::sendWithButtons($chat, "Invoice {$invoice->number} to ".($invoice->bill_to_name ?: 'the client').' is '.$days.' days overdue ('
-            .$money($invoice->total_minor).').'.($come ?? '').($invoice->reminder_count ? " Reminders sent: {$invoice->reminder_count}." : ''),
-            $invoice->bill_to_email && InvoiceEmails::open($invoice) === null && $come === null ? [['Send a reminder', 'inv_chase', $invoice->id]] : []);
-        $invoice->forceFill(['overdue_nudged_at' => now()])->save();
-        $n++;
-    }
-    $this->info("Nudged about {$n} overdue invoices.");
-
-    return 0;
-})->purpose('Tell you on Telegram about invoices past their due date, with a button to send a reminder');
 
 Artisan::command('ledger:fetch-email', function (MailboxFetcher $fetcher) {
     if (! MailboxFetcher::configured()) {
@@ -389,9 +337,19 @@ Schedule::call(function () {
         }
     }
 })->dailyAt('06:41')->timezone('Europe/London')->name('starling-import')->withoutOverlapping();
-// What needs you, on Telegram every Monday morning; overdue invoices each weekday.
+// What needs you, on Telegram every Monday morning; your invoices each morning (app/Console/Commands/InvoiceNudges.php:
+// drafts waiting, invoices not sent, the deleted Gmail draft and overdue invoices, each at its own pace). It only tells
+// you: a reminder is made only when you press for one (TodoActions inv_chase). Nothing here is ever scheduled to write
+// a reminder draft or send an email.
 Schedule::command('ledger:telegram-digest')->weeklyOn(1, '08:47')->timezone('Europe/London');
-Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('Europe/London');
+Schedule::command('ledger:invoice-nudges')->dailyAt('09:13')->timezone('Europe/London')->withoutOverlapping();
+// Every draft invoice brought up to date with what's linked to its job, nightly, whatever the cycle's mode (the cycle's
+// steps never do it): app/Console/Commands/SyncDrafts.php.
+Schedule::command('ledger:sync-drafts')->dailyAt('03:37')->timezone('Europe/London')->withoutOverlapping();
+// The invoices Expend put in your Gmail drafts, looked at hourly: sent from Gmail (recorded), deleted unsent, edited;
+// and Expend's own unedited reminder drafts taken out once a payment may be for them (CheckInvoiceEmails). It never
+// writes a draft: ChaseLadder::make runs only on your press.
+Schedule::job(new CheckInvoiceEmails)->hourlyAt(23)->name('invoice-emails-check')->withoutOverlapping();
 // The morning after a job with no invoice finishes, after the night's work and the morning report: "Acme Awards
 // finished yesterday. Invoice it?", once per job (app/Console/Commands/JobFinishedNudges.php).
 Schedule::command('ledger:job-finished')->dailyAt('08:37')->timezone('Europe/London')->withoutOverlapping();

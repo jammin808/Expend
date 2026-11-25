@@ -3,15 +3,24 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Calendar\CalendarSync;
+use App\Domain\Charges\CostCharges;
+use App\Domain\Clients\ClientIds;
+use App\Domain\Income\IncomeClient;
+use App\Domain\Income\IncomeTargets;
+use App\Domain\Income\IncomeText;
+use App\Domain\Income\PayerAliases;
 use App\Domain\Intel\ReceiptMatch;
 use App\Domain\Matching\OwnAccounts;
 use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoList;
 use App\Http\Presenters\Present;
+use App\Models\Allocation;
 use App\Models\AuditEvent;
 use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
+use App\Models\Client;
+use App\Models\CostCharge;
 use App\Models\Document;
 use App\Models\JobFind;
 use App\Models\ManualExpense;
@@ -19,8 +28,10 @@ use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Support\Money;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -33,9 +44,13 @@ class TransactionController extends Controller
             'kind' => 'nullable|string', 'category' => 'nullable|integer', 'job' => 'nullable|string', 'q' => 'nullable|string|max:100',
             'direction' => 'nullable|in:in,out', 'min' => 'nullable|string', 'max' => 'nullable|string', 'decided_by' => 'nullable|in:you,rule,matcher,ai',
             'sort' => 'nullable|in:date,amount', 'page' => 'nullable|integer',
+            // Income design v3: who money in was for (the worked-out client, merges resolved), and confirmed turnover
+            // not assigned to any client, job or invoice yet.
+            'client' => 'nullable|integer', 'unassigned' => 'nullable|boolean',
         ]);
+        $client = isset($f['client']) ? ClientIds::resolve((int) $f['client']) : null;
 
-        $query = BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job'])
+        $query = BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job', ...Present::ALLOCATION_LINKS])
             ->when($f['year'] ?? null, fn ($q, $v) => $q->where('tax_year', $v))
             ->when($f['account'] ?? null, fn ($q, $v) => $q->where('account_id', $v))
             ->when($f['status'] ?? null, fn ($q, $v) => $q->where('review_status', $v))
@@ -45,7 +60,10 @@ class TransactionController extends Controller
             ->when($f['category'] ?? null, fn ($q, $v) => $q->whereHas('allocations', fn ($a) => $a->where('category_id', $v)))
             ->when($f['decided_by'] ?? null, fn ($q, $v) => $q->whereHas('allocations', fn ($a) => $a->where('decided_by', $v)))
             ->when(($f['job'] ?? null) === 'none', fn ($q) => $q->whereHas('allocations', fn ($a) => $a->where('kind', 'business_expense')->whereNull('work_job_id')))
-            ->when(is_numeric($f['job'] ?? null), fn ($q) => $q->whereHas('allocations', fn ($a) => $a->where('work_job_id', (int) $f['job'])));
+            ->when(is_numeric($f['job'] ?? null), fn ($q) => $q->whereHas('allocations', fn ($a) => $a->where('work_job_id', (int) $f['job'])))
+            ->when($client !== null, fn ($q) => $q->whereIn('id', self::paymentsWhere(fn ($a) => $a->whereRaw(IncomeClient::expression().' = ?', [$client]))))
+            ->when((bool) ($f['unassigned'] ?? false), fn ($q) => $q->whereIn('id', self::paymentsWhere(fn ($a) => $a->where('allocations.kind', 'business_income')
+                ->whereNotNull('allocations.confirmed_at')->whereNull('allocations.work_job_id')->whereNull('allocations.invoice_id')->whereRaw(IncomeClient::expression().' IS NULL'))));
 
         foreach (['min' => '>=', 'max' => '<='] as $key => $op) {
             if (! empty($f[$key])) {
@@ -62,7 +80,7 @@ class TransactionController extends Controller
         // line by line: a currency exchange split into a £1,000 transfer and its £5 fee is £5 spent and £1,000 moved.
         $sums = OwnAccounts::lineTotals((clone $query)->reorder());
 
-        $manual = ManualExpense::query()->with(['allocations.category', 'allocations.job'])
+        $manual = ManualExpense::query()->with(['allocations.category', 'allocations.job', ...Present::ALLOCATION_LINKS])
             ->when($f['year'] ?? null, fn ($q, $v) => $q->where('tax_year', $v))->orderByDesc('spent_on')->limit(100)->get();
 
         return Inertia::render('transactions/index', [
@@ -76,6 +94,45 @@ class TransactionController extends Controller
             'filters' => $f,
             'lookups' => Present::lookups(),
         ]);
+    }
+
+    /**
+     * The payments with a line matching $where, its worked-out client to hand (IncomeClient's joins), as one column for
+     * a whereIn.
+     */
+    private static function paymentsWhere(callable $where): QueryBuilder
+    {
+        $lines = IncomeClient::scope(Allocation::query()->select('allocations.bank_transaction_id'))->whereNotNull('allocations.bank_transaction_id');
+        $where($lines);
+
+        return DB::query()->fromSub($lines, 'tx_lines')->select('tx_lines.bank_transaction_id');
+    }
+
+    /**
+     * Money in, for the drawer's "What is this payment for?": who the payer usually pays for ("ACME PAYROLL · usually
+     * Acme Events (3 payments)", or "pays for several clients"), and the client to start from (the line's, else the
+     * payer's sole client).
+     *
+     * @return array{payer:?string, client_id:?int, client:?string, shared:bool, payslip_like:bool, deduction_note:string}
+     */
+    private static function income(BankTransaction|ManualExpense $item): array
+    {
+        $key = $item->merchant_key;
+        $aliases = PayerAliases::forKeys([$key]);
+        $sole = $aliases->sole($key, 1);
+        $shared = $aliases->shared($key);
+        $own = $item->allocations->map(fn (Allocation $a) => IncomeClient::of($a))->filter()->unique()->values();
+        $start = $own->count() === 1 ? (int) $own->first() : $sole;
+        $names = Client::query()->whereKey(array_filter([$sole, $start]))->pluck('name', 'id');
+        $who = $item instanceof BankTransaction ? ($item->counterparty ?: $item->description) : $item->description;
+
+        return [
+            'payer' => $shared ? $key.' · pays for several clients'
+                : ($sole !== null ? $key.' · usually '.($names[$sole] ?? 'one client').' ('.$aliases->count($key, $sole).' '.($aliases->count($key, $sole) === 1 ? 'payment' : 'payments').')' : null),
+            'client_id' => $start, 'client' => $start !== null ? ($names[$start] ?? null) : null, 'shared' => $shared,
+            'payslip_like' => IncomeText::isPayslipLike($who, $key),
+            'deduction_note' => IncomeText::DEDUCTION_NOTE,
+        ];
     }
 
     /**
@@ -98,8 +155,8 @@ class TransactionController extends Controller
     public function show(string $source, int $id): JsonResponse
     {
         $item = $source === 'manual'
-            ? ManualExpense::query()->with(['allocations.category', 'allocations.job'])->findOrFail($id)
-            : BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job', 'batch'])->findOrFail($id);
+            ? ManualExpense::query()->with(['allocations.category', 'allocations.job', ...Present::ALLOCATION_LINKS])->findOrFail($id)
+            : BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job', 'batch', ...Present::ALLOCATION_LINKS])->findOrFail($id);
 
         $history = AuditEvent::query()->where('subject_type', class_basename($item))->where('subject_id', $item->id)
             ->orderByDesc('id')->limit(50)->get()
@@ -107,12 +164,20 @@ class TransactionController extends Controller
                 + ['at' => $e->occurred_at->format('Y-m-d H:i'), 'actor' => $e->actor, 'action' => $e->action, 'reason' => $e->reason, 'after' => $e->after]);
 
         $date = $item instanceof BankTransaction ? $item->effectiveDate()->format('Y-m-d') : $item->spent_on->format('Y-m-d');
+        $moneyIn = $item->amount_pence > 0;
 
         return response()->json([
             'item' => $item instanceof BankTransaction ? Present::tx($item) + ['import' => $item->batch?->original_filename, 'raw' => $item->raw] : Present::manual($item),
             'history' => $history,
             'events' => CalendarSync::eventsOn($date),
-            'jobs_near' => Present::jobsNear($date),
+            // Money in is put on a client, a job or invoices with the chips and "Still owed by" (income design v3), so
+            // "Jobs around then" is for money out.
+            'jobs_near' => $moneyIn ? [] : Present::jobsNear($date),
+            'income' => $moneyIn ? self::income($item) : null,
+            'targets' => $item instanceof BankTransaction ? IncomeTargets::for($item) : [],
+            // Your decisions about its costs that no longer apply (it moved to another job), shown on the payment.
+            'charges_gone' => CostCharges::gone(($item instanceof BankTransaction ? 'tx:' : 'exp:').$item->id)
+                ->map(fn (CostCharge $c) => ['ref' => $c->cost_ref, 'charge' => $c->charge, 'note' => $c->note])->values(),
             'links' => self::links($item),
             // What the why-panels explain: the line's decision, and the calendar entries that day on a job.
             'why' => ['decision' => ($item instanceof BankTransaction ? 'tx:' : 'exp:').$item->id, 'calendar' => self::calendarLinksOn($date)],

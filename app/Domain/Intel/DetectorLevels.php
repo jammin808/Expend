@@ -185,12 +185,14 @@ final class DetectorLevels
     public static function name(string $code): string
     {
         return [
-            'job.closeout' => 'Jobs to close out', 'travel.double_claim' => 'Travel claimed twice', 'income.unlinked' => 'Income with no invoice or job',
+            'job.closeout' => 'Jobs to close out', 'travel.double_claim' => 'Travel claimed twice', 'income.unlinked' => 'Income not assigned to a client, job or invoice',
             'receipt.unmatched' => 'Receipts with no payment', 'cost.no_receipt' => 'Costs with no receipt', 'dupe.cross_source' => 'Cash expenses also on a card',
             'rule.drift' => 'Rules you keep changing', 'tax.saving' => 'Tax you could save', 'acct.unchecked' => 'Accounts that can’t be checked',
             'check.unverifiable' => 'Money that can’t be checked word for word', 'year.locked_drift' => 'Locked years that have changed',
             'tax.hmrc_unallocated' => 'Payments to HMRC not recorded as tax', 'travel.unclaimed' => 'Mileage to claim', 'year.filed_drift' => 'Filed returns that differ',
             'tx.duplicate' => 'Possible duplicate charges',
+            'job.done_due' => 'Jobs to mark done', 'invoice.draft' => 'Follow-up and client drafts', 'invoice.overpaid' => 'Invoices paid more than they were for',
+            'invoice.void_paid' => 'Void invoices that were paid', 'cost.claimed' => 'Costs claimed another way', 'cost.late' => 'Costs linked after the invoice went',
         ][$code] ?? str_replace(['.', '_'], ' ', $code);
     }
 

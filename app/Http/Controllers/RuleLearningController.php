@@ -15,13 +15,14 @@ class RuleLearningController extends Controller
     {
         $key = $request->validate(['merchant_key' => 'required|string|max:120'])['merchant_key'];
         try {
-            ['rule' => $rule, 'applied' => $applied] = $learner->accept($key);
+            ['rule' => $rule, 'applied' => $applied, 'client' => $client, 'message' => $message] = $learner->accept($key);
         } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
         TodoList::forget();
 
-        return back()->with('success', 'Done: it’ll happen automatically from now on'.($applied ? ", and it’s applied to {$applied} waiting" : '').'.')
+        // Turnover from a payer with one client is filled in for you to accept, never confirmed on its own: say so.
+        return back()->with('success', $client !== null ? $message : 'Done: it’ll happen automatically from now on'.($applied ? ", and it’s applied to {$applied} waiting" : '').'.')
             ->with('rule_undo', ['id' => $rule->id, 'applied' => $applied]);
     }
 

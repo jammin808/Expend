@@ -2,6 +2,8 @@
 
 namespace App\Domain\Export;
 
+use App\Domain\Income\IncomeClient;
+use App\Domain\Income\Lines;
 use App\Domain\Tax\MileageCalculator;
 use App\Domain\Tax\ReturnSummary;
 use App\Models\Allocation;
@@ -36,11 +38,15 @@ final class YearExporter
 
         $writer->addNewSheetAndMakeItCurrent()->setName('Transactions');
         // Each line as the ledger shows it: when, which account and card, where, the currency it was paid in and the rate.
+        // Client (worked out: the line's invoice's, its job's or its own, merges resolved) and Invoice come last, after
+        // Note, so every earlier column keeps its place.
         $writer->addRow(Row::fromValues(['Date', 'Time', 'Account', 'Card', 'Payment type', 'Place', 'Description', 'Amount', 'Original amount', 'Currency',
-            'Rate (per £1)', 'Rate used', 'Paid amount', 'Paid currency', 'Decision', 'Category', 'Job', 'Line amount', 'Business %', 'Status', 'Decided by', 'Note']));
+            'Rate (per £1)', 'Rate used', 'Paid amount', 'Paid currency', 'Decision', 'Category', 'Job', 'Line amount', 'Business %', 'Status', 'Decided by', 'Note',
+            'Client', 'Invoice']));
 
-        BankTransaction::query()->where('tax_year', $label)->with(['account', 'allocations.category', 'allocations.job'])
+        BankTransaction::query()->where('tax_year', $label)->with(['account', 'allocations.category', 'allocations.job', 'allocations.invoice:id,number'])
             ->orderBy('posted_on')->orderBy('id')->chunk(500, function ($txs) use ($writer) {
+                $clients = IncomeClient::named($txs->flatMap(fn (BankTransaction $tx) => $tx->allocations->pluck('id')));
                 foreach ($txs as $tx) {
                     $base = [
                         $tx->effectiveDate()->format('Y-m-d'), $tx->transacted_time ? substr((string) $tx->transacted_time, 0, 5) : '', $tx->account->name,
@@ -52,21 +58,25 @@ final class YearExporter
                         $tx->merchant_currency && $tx->merchant_amount_minor !== null ? $tx->merchant_currency : '',
                     ];
                     if ($tx->allocations->isEmpty()) {
-                        $writer->addRow(Row::fromValues([...$base, 'Undecided', '', '', '', '', 'unreviewed', '', '']));
+                        $writer->addRow(Row::fromValues([...$base, 'Undecided', '', '', '', '', 'unreviewed', '', '', '', '']));
                     }
                     foreach ($tx->allocations as $a) {
-                        $writer->addRow(Row::fromValues([...$base, ...self::allocationCells($a)]));
+                        $writer->addRow(Row::fromValues([...$base, ...self::allocationCells($a, $clients[$a->id]['name'] ?? null, $tx->amount_pence)]));
                     }
                 }
             });
 
-        ManualExpense::query()->where('tax_year', $label)->with(['allocations.category', 'allocations.job'])->orderBy('spent_on')->each(function (ManualExpense $e) use ($writer) {
-            $base = [$e->spent_on->format('Y-m-d'), '', 'Manual: '.$e->paid_with, '', '', '', self::safe($e->description), self::pounds($e->amount_pence),
-                ...self::original($e->original_amount_minor, $e->original_currency, $e->amount_pence, $e->fx_units_per_gbp, $e->fx_source), '', ''];
-            foreach ($e->allocations as $a) {
-                $writer->addRow(Row::fromValues([...$base, ...self::allocationCells($a)]));
-            }
-        });
+        ManualExpense::query()->where('tax_year', $label)->with(['allocations.category', 'allocations.job', 'allocations.invoice:id,number'])->orderBy('spent_on')->orderBy('id')
+            ->chunk(500, function ($expenses) use ($writer) {
+                $clients = IncomeClient::named($expenses->flatMap(fn (ManualExpense $e) => $e->allocations->pluck('id')));
+                foreach ($expenses as $e) {
+                    $base = [$e->spent_on->format('Y-m-d'), '', 'Manual: '.$e->paid_with, '', '', '', self::safe($e->description), self::pounds($e->amount_pence),
+                        ...self::original($e->original_amount_minor, $e->original_currency, $e->amount_pence, $e->fx_units_per_gbp, $e->fx_source), '', ''];
+                    foreach ($e->allocations as $a) {
+                        $writer->addRow(Row::fromValues([...$base, ...self::allocationCells($a, $clients[$a->id]['name'] ?? null, $e->amount_pence)]));
+                    }
+                }
+            });
 
         $mileage = MileageCalculator::forYear($label);
         $writer->addNewSheetAndMakeItCurrent()->setName('Mileage');
@@ -79,12 +89,21 @@ final class YearExporter
         $writer->close();
     }
 
-    private static function allocationCells(Allocation $a): array
+    /**
+     * A line's cells, Decision to Invoice. A fee or commission the payer took off money in (a deduction: a negative
+     * business expense beside the income) reads 'Business expense (taken off the payment)'.
+     */
+    private static function allocationCells(Allocation $a, ?string $client, int $sourcePence): array
     {
+        $decision = Allocation::KINDS[$a->kind] ?? $a->kind;
+        if ($sourcePence > 0 && Lines::isDeduction($a)) {
+            $decision .= ' (taken off the payment)';
+        }
+
         return [
-            Allocation::KINDS[$a->kind] ?? $a->kind, $a->category?->name ?? '', $a->job ? self::safe($a->job->title) : '',
+            $decision, $a->category?->name ?? '', $a->job ? self::safe($a->job->title) : '',
             self::pounds($a->amount_pence), $a->business_use_pct ?? '', $a->confirmed_at ? 'confirmed' : 'suggested',
-            $a->decided_by, self::safe((string) $a->note),
+            $a->decided_by, self::safe((string) $a->note), $client !== null ? self::safe($client) : '', $a->invoice?->number ? self::safe($a->invoice->number) : '',
         ];
     }
 

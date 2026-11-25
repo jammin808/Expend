@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Banks\StarlingSync;
 use App\Domain\Import\Importer;
+use App\Domain\Intel\Provenance;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Mail\MailboxFetcher;
@@ -17,6 +18,7 @@ use App\Models\Account;
 use App\Models\AuditEvent;
 use App\Models\BankTransaction;
 use App\Models\Category;
+use App\Models\Client;
 use App\Models\ImportBatch;
 use App\Models\Invoice;
 use App\Models\MerchantRule;
@@ -272,6 +274,28 @@ class ReviewFixesFinancialTest extends TestCase
         $kept = $paidInvoice->allocations()->sole();
         $this->assertSame([$invoice->id, $job->id, 'matcher', null], [$kept->invoice_id, $kept->work_job_id, $kept->decided_by, $kept->confirmed_at]);
         $this->assertSame(['business_income', 'rule'], [$plain->allocations()->sole()->kind, $plain->allocations()->sole()->decided_by]);
+    }
+
+    public function test_r7_a_turnover_rule_for_a_payer_with_one_client_fills_it_in_for_you_to_accept(): void
+    {
+        // Income design v3 (owner answer 3): the payer's client is filled in, and only you accept it.
+        $acme = Client::query()->create(['name' => 'Acme Events']);
+        foreach ([$this->payment('2025-05-02', 80000, 'Acme Events'), $this->payment('2025-06-02', 80000, 'Acme Events')] as $tx) {
+            app(AllocationWriter::class)->decide($tx, [['kind' => 'business_income', 'category_id' => $this->category('turnover'), 'client_id' => $acme->id, 'amount_pence' => 80000]]);
+        }
+        $invoice = Invoice::query()->create(['number' => 'INV-0001', 'status' => 'issued', 'client_id' => $acme->id, 'total_minor' => 120000, 'issue_date' => '2025-07-01']);
+        $paidInvoice = $this->payment('2025-07-10', 120000, 'Acme Events');
+        app(AllocationWriter::class)->decide($paidInvoice, [['kind' => 'business_income', 'category_id' => $this->category('turnover'), 'invoice_id' => $invoice->id, 'amount_pence' => 120000]],
+            'matcher', false, 'Matches what’s still to come on INV-0001 (£1,200)', null, new Provenance('suggest.invoice', ['inv:'.$invoice->id]));
+        $plain = $this->payment('2025-07-20', 50000, 'Acme Events');
+
+        $r = app(RuleLearner::class)->accept($plain->merchant_key);
+
+        $this->assertSame([1, 'Acme Events'], [$r['applied'], $r['client']]);
+        $this->assertStringContainsString('filled in as Acme Events’ turnover, for you to accept', $r['message']);
+        $line = $plain->allocations()->sole();
+        $this->assertSame(['business_income', 'rule', $acme->id, null, 'suggested'], [$line->kind, $line->decided_by, $line->client_id, $line->confirmed_at, $plain->fresh()->review_status]);
+        $this->assertSame([$invoice->id, 'matcher', null], [$paidInvoice->allocations()->sole()->invoice_id, $paidInvoice->allocations()->sole()->decided_by, $paidInvoice->allocations()->sole()->confirmed_at]);
     }
 
     public function test_r7_accepting_a_rule_leaves_a_stays_night_by_night_split_and_transfer_pairs(): void

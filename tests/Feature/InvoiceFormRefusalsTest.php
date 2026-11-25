@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Invoices\InvoiceDraftSync;
 use App\Models\AuditEvent;
 use App\Models\Invoice;
 use App\Models\Setting;
@@ -48,13 +49,24 @@ class InvoiceFormRefusalsTest extends TestCase
         return $invoice->fresh();
     }
 
-    /** The draft form as the page fills it (useForm in invoices/show.tsx), with one line. */
+    /**
+     * The draft form as the page fills it (useForm in invoices/show.tsx), with one line. Ported to the per-line form
+     * (build slice S9): a line the draft has carries its id, the version the page showed and its tick; a new line has
+     * none, and the form carries the lines version it opened with.
+     */
     private function form(array $overrides = [], array $lines = []): array
     {
+        $invoice = Invoice::query()->latest('id')->first();
+        $first = $invoice ? $invoice->allLines()->orderBy('sort')->orderBy('id')->first() : null;
+        $line = $first
+            ? ['id' => $first->id, 'version' => InvoiceDraftSync::version($first), 'description' => 'Show day technician', 'quantity' => '1', 'unit_price' => '450.00', 'source_quote' => null, 'included' => true]
+            : ['id' => null, 'version' => null, 'description' => 'Show day technician', 'quantity' => '1', 'unit_price' => '450.00', 'source_quote' => null, 'included' => true];
+
         return $overrides + [
+            'lines_version' => $invoice ? InvoiceDraftSync::linesVersion($invoice) : null,
             'bill_to_name' => 'Acme Events Ltd', 'bill_to_address' => "1 High Street\nLeeds LS1 1AA", 'bill_to_email' => 'accounts@acme.test',
             'po_number' => 'PO-4512', 'currency' => 'GBP', 'notes' => 'Payment due within 30 days.', 'work_job_id' => '', 'client_id' => '',
-            'lines' => [['description' => 'Show day technician', 'quantity' => '1', 'unit_price' => '450.00', 'source_quote' => null], ...$lines],
+            'lines' => [$line, ...array_map(fn (array $l) => $l + ['id' => null, 'version' => null, 'included' => true], $lines)],
         ];
     }
 
@@ -143,6 +155,36 @@ class InvoiceFormRefusalsTest extends TestCase
             ->assertSessionHasErrors(['work_job_id' => 'That job no longer exists. Choose another, or None.']);
         $this->save($invoice, $this->form(['client_id' => '999']))
             ->assertSessionHasErrors(['client_id' => 'That client no longer exists. Choose another, or None.']);
+    }
+
+    public function test_a_line_changed_since_the_page_opened_or_one_from_the_job_left_out_says_so_plainly(): void
+    {
+        $invoice = $this->draft();
+        $stale = $this->form();
+        // Changed in another tab since this page opened: the save is refused, nothing changes.
+        $line = $invoice->allLines()->first();
+        $line->forceFill(['description' => 'Changed in another tab'])->save();
+        $this->save($invoice, $stale)->assertSessionHas('error', 'The draft’s lines changed since you opened it: check them and save again.');
+        $this->assertSame('Changed in another tab', $line->fresh()->description);
+
+        // A line from the job can't be left out of the form: untick it instead.
+        $line->forceFill(['source' => 'fee', 'source_ref' => 'job:1#fee'])->save();
+        $typed = $invoice->allLines()->create(['description' => 'Get-out', 'quantity' => '1', 'unit_price_minor' => 15000, 'amount_minor' => 15000, 'sort' => 1]);
+        $form = $this->form();
+        $form['lines'] = [['id' => $typed->id, 'version' => InvoiceDraftSync::version($typed->fresh()), 'description' => 'Get-out', 'quantity' => '1', 'unit_price' => '150.00',
+            'source_quote' => null, 'included' => true]];
+        $this->save($invoice, $form)->assertSessionHas('error', '“Changed in another tab” comes from the job: untick it instead of removing it.');
+        $this->assertSame(2, $invoice->allLines()->count());
+
+        // Unticked on the page: kept on the draft, left off the invoice, as yours.
+        $form = $this->form();
+        $form['lines'][0]['description'] = 'Changed in another tab';
+        $form['lines'][0]['included'] = false;
+        $form['lines'][] = ['id' => $typed->id, 'version' => InvoiceDraftSync::version($typed->fresh()), 'description' => 'Get-out', 'quantity' => '1', 'unit_price' => '150.00',
+            'source_quote' => null, 'included' => true];
+        $this->save($invoice, $form)->assertSessionHas('success', 'Draft saved.');
+        $this->assertSame([false, 'you'], [(bool) $line->fresh()->included, $line->fresh()->ticked_by]);
+        $this->assertSame(15000, $invoice->fresh()->total_minor);
     }
 
     public function test_the_invoice_page_shows_every_refusal(): void

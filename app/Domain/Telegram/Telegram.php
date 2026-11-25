@@ -79,6 +79,23 @@ final class Telegram
     /** Telegram's limit on a button's data, in bytes. */
     public const CALLBACK_BYTES = 64;
 
+    /** Where "Open in Gmail" goes: your Gmail on the web (a link button may open it, besides this site). */
+    public const GMAIL = 'https://mail.google.com/';
+
+    /**
+     * A to-do item's actions as Telegram buttons: [label, code, id], or a link for an action that only opens a page
+     * (TodoList::link()).
+     *
+     * @param  list<array<string, mixed>>  $actions
+     * @return list<array>
+     */
+    public static function actionButtons(array $actions): array
+    {
+        return array_map(fn (array $a) => ($a['code'] ?? null) === 'link'
+            ? ['url' => str_starts_with((string) $a['href'], 'http') ? (string) $a['href'] : url((string) $a['href']), 'text' => (string) $a['label']]
+            : [$a['label'], $a['code'], $a['id']], $actions);
+    }
+
     /**
      * Send a message with buttons. Each button is [label, todo action code, id]; $more is a second row (a finding's
      * Snooze a week and Not relevant, under its own actions).
@@ -111,6 +128,22 @@ final class Telegram
             + ($keyboard ? ['reply_markup' => ['inline_keyboard' => $keyboard]] : []));
 
         return ($sent['ok'] ?? false) && is_numeric($sent['result']['message_id'] ?? null) ? (int) $sent['result']['message_id'] : null;
+    }
+
+    /**
+     * Send a message with several rows of buttons (as sendWithButtonsId() takes them): whether Telegram took it.
+     *
+     * @param  list<list<array>>  $rows
+     */
+    public static function sendRows(string|int $chatId, string $text, array $rows): bool
+    {
+        $keyboard = self::keyboard($rows);
+        if (collect($keyboard)->flatten(1)->contains(fn ($b) => isset($b['callback_data']))) {
+            self::allowButtons();
+        }
+
+        return (bool) (self::api('sendMessage', ['chat_id' => $chatId, 'text' => mb_substr($text, 0, 3900), 'disable_web_page_preview' => true]
+            + ($keyboard ? ['reply_markup' => ['inline_keyboard' => $keyboard]] : []))['ok'] ?? false);
     }
 
     /**
@@ -154,8 +187,8 @@ final class Telegram
         $row = [];
         foreach ($buttons as $b) {
             if (isset($b['url'])) {
-                // A link (Open in Expend): only to this site.
-                if (is_string($b['url']) && str_starts_with($b['url'], url('/'))) {
+                // A link (Open in Expend, Open in Gmail): only to this site, or to your Gmail.
+                if (is_string($b['url']) && (str_starts_with($b['url'], url('/')) || str_starts_with($b['url'], self::GMAIL))) {
                     $row[] = ['text' => (string) ($b['text'] ?? 'Open in Expend'), 'url' => $b['url']];
                 }
 
@@ -247,7 +280,7 @@ final class Telegram
             // (TodoList::howPaid): the time, account, card, place and the currency it was paid in.
             $amount = isset($item['amount']) && $item['amount'] !== null ? ' ('.Money::format($item['amount'], $item['currency'] ?? 'GBP').')' : '';
             self::sendWithButtons($chatId, $item['title'].$amount.($item['detail'] ? "\n".$item['detail'] : ''),
-                array_map(fn ($a) => [$a['label'], $a['code'], $a['id']], $item['actions']), self::findingButtons($item, $findings[$item['key']] ?? null));
+                self::actionButtons($item['actions']), self::findingButtons($item, $findings[$item['key']] ?? null));
             $sent++;
         }
 
@@ -358,10 +391,40 @@ final class Telegram
         }
         TodoList::forget();
         self::api('answerCallbackQuery', ['callback_query_id' => $query['id'] ?? '', 'text' => mb_substr($result, 0, 190)]);
+        // What to offer next, after a press that did something: a link to what it made, and Undo (TodoActions::followUp),
+        // each bound to what the press left. Otherwise the buttons go, as a press can't be made twice.
+        $next = str_starts_with($result, '✓ ') ? self::keyboard(array_map(fn (array $b) => [$b], self::followUpButtons($code, $id))) : [];
         self::api('editMessageText', [
             'chat_id' => $chatId, 'message_id' => $query['message']['message_id'] ?? 0,
             'text' => mb_substr(($query['message']['text'] ?? '')."\n\n".$result, 0, 4000), 'disable_web_page_preview' => true,
-        ]);
+        ] + ($next !== [] ? ['reply_markup' => ['inline_keyboard' => self::rows($next)]] : []));
+    }
+
+    /** A press's follow-up buttons; nothing when working them out goes wrong (the press itself is done). */
+    private static function followUpButtons(string $code, string $id): array
+    {
+        try {
+            return TodoActions::followUp($code, $id);
+        } catch (Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
+     * Buttons laid out two to a row, a link on a row of its own after them.
+     *
+     * @param  list<list<array<string, string>>>  $single  one button per row, as keyboard() made them
+     * @return list<list<array<string, string>>>
+     */
+    private static function rows(array $single): array
+    {
+        $buttons = array_merge(...$single);
+        $links = array_values(array_filter($buttons, fn (array $b) => isset($b['url'])));
+        $presses = array_values(array_filter($buttons, fn (array $b) => ! isset($b['url'])));
+
+        return [...array_chunk($presses, 2), ...array_map(fn (array $b) => [$b], $links)];
     }
 
     /** What a press on something changed since it was sent (or on an old button) is told: nothing was done. */

@@ -4,6 +4,7 @@ namespace App\Domain\Jobs;
 
 use App\Domain\Clients\ClientIds;
 use App\Domain\Income\IncomeText;
+use App\Domain\Invoices\ChaseLadder;
 use App\Domain\Invoices\InvoicePayments;
 use App\Models\Client;
 use App\Models\Invoice;
@@ -105,10 +106,12 @@ final class JobStage
      * @param  iterable<WorkJob>  $jobs
      * @param  array<int, int>  $draftChanges  by draft invoice id: how many changes it has since you last looked (the
      *                                         draft sync works these out; none given reads as no changes)
+     * @param  array<string, true>|null  $hidden  the to-do keys hidden now (TodoDismissal::activeKeys()), when the caller
+     *                                            has them already (the to-do list)
      * @return array<int, array{stage:string, chip:string, done_due:bool, finish_at:string, invoice_id:?int,
      *     draft_id:?int, state:?string, email:?string, overdue_days:?int}> by job id
      */
-    public static function of(iterable $jobs, ?CarbonImmutable $now = null, array $draftChanges = []): array
+    public static function of(iterable $jobs, ?CarbonImmutable $now = null, array $draftChanges = [], ?array $hidden = null): array
     {
         $now ??= CarbonImmutable::now();
         $jobs = new EloquentCollection(collect($jobs)->filter(fn ($j) => $j instanceof WorkJob)->keyBy('id')->values()->all());
@@ -127,7 +130,7 @@ final class JobStage
         $billed = JobBilling::billed($ids);
         // Paid by income short of the work (a deposit): not paid, and still asks whether it's done.
         $short = JobBilling::short($jobs, $billed);
-        $hidden = TodoDismissal::activeKeys();
+        $hidden ??= TodoDismissal::activeKeys();
         $resolved = ClientIds::resolveMany($jobs->pluck('client_id'));
         $routes = $resolved === [] ? collect() : Client::query()->whereKey(array_values($resolved))->get(['id', 'invoice_route'])->keyBy('id');
         $today = $now->setTimezone(self::TZ)->startOfDay();
@@ -139,8 +142,7 @@ final class JobStage
             $draft = $mine->where('status', 'draft')->sortByDesc('id')->first();
             $route = $job->client_id !== null ? ($routes[$resolved[(int) $job->client_id] ?? 0] ?? null)?->invoiceRoute() : null;
             $paidUp = isset($billed[$job->id]) && ! isset($short[$job->id]);
-            $due = $job->status === 'booked' && $finish->lte($now) && $finish->gt($now->subDays(self::DONE_WINDOW_DAYS))
-                && ! $paidUp && ! isset($hidden['job_done:'.$job->id]) && ! isset($hidden['invoice:'.$job->id]);
+            $due = self::isDue($job, $finish, $now, $paidUp, $hidden);
 
             $row = ['done_due' => $due, 'finish_at' => $finish->toIso8601String(), 'invoice_id' => null, 'draft_id' => $draft?->id,
                 'state' => null, 'email' => null, 'overdue_days' => null];
@@ -163,6 +165,18 @@ final class JobStage
         }
 
         return $out;
+    }
+
+    /**
+     * The rule for "Is it done?", for a reader that has what it rests on already (the to-do list): booked, finished
+     * within the last 60 days, not paid for all its work, and neither "job_done:{id}" nor "invoice:{id}" set aside.
+     *
+     * @param  array<string, true>  $hidden  TodoDismissal::activeKeys()
+     */
+    public static function isDue(WorkJob $job, CarbonImmutable $finish, CarbonImmutable $now, bool $paidUp, array $hidden): bool
+    {
+        return $job->status === 'booked' && $finish->lte($now) && $finish->gt($now->subDays(self::DONE_WINDOW_DAYS))
+            && ! $paidUp && ! isset($hidden['job_done:'.$job->id]) && ! isset($hidden['invoice:'.$job->id]);
     }
 
     /**
@@ -201,8 +215,9 @@ final class JobStage
         foreach ($invoices->filter(fn (Invoice $i) => in_array($i->status, InvoicePayments::PAYABLE, true)) as $invoice) {
             $r = $received[$invoice->id] ?? InvoicePayments::EMPTY;
             $currency = InvoicePayments::currencyOf($invoice);
-            $overdue = $invoice->due_date !== null && $r['outstanding'] > 0
-                ? max(0, (int) CarbonImmutable::parse($invoice->due_date->format('Y-m-d'), self::TZ)->diffInDays($today, false)) : 0;
+            // Overdue as the to-do list, Telegram and the reminder count it: from the later of the due date and the day it
+            // was sent plus its terms (an invoice not sent is never overdue: it's not sent).
+            $overdue = $r['outstanding'] > 0 ? (ChaseLadder::daysOverdue($invoice, $today) ?? 0) : 0;
             $email = $invoice->sent_at === null ? ($emails[$invoice->id] ?? null)?->status : null;
             $stage = match (true) {
                 $r['state'] === 'paid' => ['stage' => 'paid', 'chip' => 'Paid'],

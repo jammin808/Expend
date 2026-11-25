@@ -112,7 +112,7 @@ class YearLockSnapshotTest extends TestCase
         $this->assertSame($s['export']['sha256'], hash_file('sha256', $download->getFile()->getPathname()));
     }
 
-    public function test_locking_with_a_failing_check_needs_a_reason_and_unlocking_is_unchanged(): void
+    public function test_locking_with_a_failing_check_needs_a_reason_and_unlocking_keeps_what_it_was(): void
     {
         $year = $this->year();
         // A payment still to decide: "Nothing left undecided" fails.
@@ -131,11 +131,13 @@ class YearLockSnapshotTest extends TestCase
         $this->assertSame('fail', $e->after['snapshot']['checks']['undecided']);
         $this->assertSame(AuditLog::canonical(['unreviewed' => 1, 'suggested' => 0, 'manual_unreviewed' => 0]), $e->after['snapshot']['pending']);
 
-        // Unlocking: a reason, as before, and a bare event.
+        // Unlocking: a reason, as before. Income design v3: the event keeps the status and the return's figures it was
+        // unlocked with (before) and the status after, so locking again with nothing changed can put a filed year back.
         $this->post('/years/2025-26/lock')->assertSessionHasErrors('reason');
         $this->post('/years/2025-26/lock', ['reason' => 'Correct a receipt'])->assertSessionHas('success');
         $unlocked = AuditEvent::query()->where('action', 'tax_year.unlocked')->sole();
-        $this->assertSame(['Correct a receipt', null, null], [$unlocked->reason, $unlocked->before, $unlocked->after]);
+        $this->assertSame(['Correct a receipt', AuditLog::canonical(['status' => 'outstanding', 'figures' => YearChecks::figures(ReturnSummary::for('2025-26'))]), ['status' => 'outstanding']],
+            [$unlocked->reason, $unlocked->before, $unlocked->after]);
         $this->assertFalse($year->fresh()->isLocked());
     }
 

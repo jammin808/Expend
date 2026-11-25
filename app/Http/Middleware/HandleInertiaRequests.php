@@ -54,7 +54,7 @@ class HandleInertiaRequests extends Middleware
                 'errors' => (object) [],
                 'name' => config('app.name'),
                 'auth' => ['user' => $user ? $user->only(['name', 'email']) : null],
-                'flash' => ['success' => null, 'error' => null, 'rule_offer' => null, 'rule_undo' => null],
+                'flash' => ['success' => null, 'error' => null, 'rule_offer' => null, 'rule_undo' => null, 'undo' => null, 'follow_up' => null],
                 'nav' => null,
             ];
         }
@@ -70,6 +70,9 @@ class HandleInertiaRequests extends Middleware
                 'error' => fn () => $request->session()->get('error'),
                 'rule_offer' => fn () => $request->session()->get('rule_offer'),
                 'rule_undo' => fn () => $request->session()->get('rule_undo'),
+                // A to-do press's Undo ({code, id, label, fp}) and what else to offer after it (TodoController::act).
+                'undo' => fn () => $request->session()->get('undo'),
+                'follow_up' => fn () => $request->session()->get('follow_up'),
             ],
             'nav' => fn () => $user ? [
                 'inbox' => BankTransaction::query()->whereIn('review_status', ['unreviewed', 'suggested'])->count(),

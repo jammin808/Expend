@@ -2,6 +2,7 @@
 
 namespace App\Domain\Matching;
 
+use App\Domain\Income\PayerAliases;
 use App\Domain\Intel\Provenance;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Ledger\RuleLearner;
@@ -211,8 +212,10 @@ final class Categoriser
             return 0;
         }
 
-        // Only these merchants, words and bank categories matter here: learn just those.
+        // Only these merchants, words and bank categories matter here: learn just those. Who these payers pay for, as
+        // the Suggester would fill it in now.
         $this->learned = $this->learn($this->scopeOf($waiting));
+        $aliases = PayerAliases::forKeys($keys);
         $again = collect();
         $before = [];
         $reworded = [];
@@ -223,9 +226,12 @@ final class Categoriser
                     $ruleApplies = $rule && RuleLearner::appliesTo($rule, $tx->amount_pence);
                     $name = $tx->counterparty ?: $tx->merchant_key;
                     if ($tx->allocations->every(fn (Allocation $a) => $a->decided_by === 'rule')) {
-                        // Your rule's suggestion: left as it is while the rule still says the same.
+                        // Your rule's suggestion: left as it is while the rule still says the same, with the payer's
+                        // client the Suggester would fill in now (so an identical one isn't cleared and written again,
+                        // and one whose client you've just taught otherwise is).
                         if ($ruleApplies && $tx->allocations->every(fn (Allocation $a) => (int) $a->merchant_rule_id === $rule->id)
-                            && self::sameLines($tx->allocations, AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id, Suggester::ruleJobFor($rule, $tx), (int) ($rule->business_pct ?? 100)))) {
+                            && self::sameLines($tx->allocations, PayerAliases::enrich($tx, AllocationWriter::lines($tx->amount_pence, $rule->kind, $rule->category_id,
+                                Suggester::ruleJobFor($rule, $tx), (int) ($rule->business_pct ?? 100)), $aliases)['lines'])) {
                             continue;
                         }
                         $why = "Your rule for {$tx->merchant_key} changed: suggested again";
@@ -339,12 +345,20 @@ final class Categoriser
 
     /**
      * Write one of this class's proposals as a suggestion, marked as its own. The Suggester uses this for the last
-     * step of its chain.
+     * step of its chain. Turnover with no job gets the payer's client when the payer has only ever paid for one
+     * (Income\PayerAliases::enrich: the reason says so, and the payment it was learned from is its evidence); the
+     * writer stores that as a suggestion only, for you to accept.
      *
      * @param  array{lines:list<array>, reason:string, source?:string, n?:int, examples?:list<string>, alts?:list<array>}  $proposal
+     * @param  PayerAliases|null  $aliases  who the run's payers pay for (loaded once per run); read here when not given
      */
-    public function suggest(BankTransaction $tx, array $proposal): bool
+    public function suggest(BankTransaction $tx, array $proposal, ?PayerAliases $aliases = null): bool
     {
+        $proposal = self::withClient($tx, $proposal, $aliases);
+        if (isset($this->proposed[$tx->id])) {
+            $this->proposed[$tx->id] = $proposal['reason']; // markOwn() finds it by what's written
+        }
+
         return DB::transaction(function () use ($tx, $proposal) {
             $done = $this->writer->decide($tx, $proposal['lines'], 'matcher', false, $proposal['reason'], null, self::provenance($proposal));
             if ($done) {
@@ -353,6 +367,27 @@ final class Categoriser
 
             return $done;
         });
+    }
+
+    /**
+     * A proposal with the payer's client filled in on its turnover with no job (PayerAliases::enrich), the note added to
+     * its reason and the payment it was learned from to its evidence. Unchanged on money out, or when the payer pays for
+     * several clients or none.
+     *
+     * @param  array{lines:list<array>, reason:string}  $proposal
+     */
+    public static function withClient(BankTransaction $tx, array $proposal, ?PayerAliases $aliases = null): array
+    {
+        if ($tx->amount_pence <= 0) {
+            return $proposal;
+        }
+        $client = PayerAliases::enrich($tx, $proposal['lines'], $aliases);
+        if ($client['client_id'] === null) {
+            return $proposal;
+        }
+
+        return ['lines' => $client['lines'], 'reason' => $proposal['reason'].$client['note'],
+            'examples' => [...($proposal['examples'] ?? []), ...$client['evidence']]] + $proposal;
     }
 
     /**
@@ -375,24 +410,26 @@ final class Categoriser
         $this->proposed = [];
     }
 
-    /** @return list<string> the lines as they matter: what, where, how much, by whom */
+    /** @return list<string> the lines as they matter: what, where, for whom, how much, by whom */
     private static function lineSet(Collection $allocations): array
     {
         $set = $allocations->map(fn (Allocation $a) => json_encode([
             $a->kind, $a->category_id === null ? null : (int) $a->category_id, $a->work_job_id === null ? null : (int) $a->work_job_id,
-            $a->invoice_id === null ? null : (int) $a->invoice_id, (int) $a->amount_pence, $a->business_use_pct === null ? null : (int) $a->business_use_pct,
+            $a->invoice_id === null ? null : (int) $a->invoice_id, $a->client_id === null ? null : (int) $a->client_id, (int) $a->amount_pence,
+            $a->business_use_pct === null ? null : (int) $a->business_use_pct,
             $a->decided_by, $a->merchant_rule_id === null ? null : (int) $a->merchant_rule_id, $a->confirmed_at !== null,
         ]))->sort()->values()->all();
 
         return $set;
     }
 
-    /** Whether a suggestion's lines are the ones proposed (what, where, how much). */
+    /** Whether a suggestion's lines are the ones proposed (what, where, for whom, how much). */
     private static function sameLines(Collection $allocations, array $lines): bool
     {
         $norm = fn (array $l) => json_encode([$l['kind'], isset($l['category_id']) ? (int) $l['category_id'] : null, isset($l['work_job_id']) ? (int) $l['work_job_id'] : null,
-            isset($l['invoice_id']) ? (int) $l['invoice_id'] : null, (int) $l['amount_pence'], isset($l['business_use_pct']) ? (int) $l['business_use_pct'] : null]);
-        $have = $allocations->map(fn (Allocation $a) => $norm($a->only(['kind', 'category_id', 'work_job_id', 'invoice_id', 'amount_pence', 'business_use_pct'])))->sort()->values()->all();
+            isset($l['invoice_id']) ? (int) $l['invoice_id'] : null, isset($l['client_id']) ? (int) $l['client_id'] : null, (int) $l['amount_pence'],
+            isset($l['business_use_pct']) ? (int) $l['business_use_pct'] : null]);
+        $have = $allocations->map(fn (Allocation $a) => $norm($a->only(['kind', 'category_id', 'work_job_id', 'invoice_id', 'client_id', 'amount_pence', 'business_use_pct'])))->sort()->values()->all();
         $want = collect($lines)->map(fn (array $l) => $norm($l))->sort()->values()->all();
 
         return $have === $want;

@@ -131,6 +131,27 @@ class Setting extends Model
     }
 
     /**
+     * Inside remembering(): read these settings now, in one query, so each later get() of them reads no more (one not
+     * set is remembered as not set). Outside it, nothing is done.
+     *
+     * @param  list<string>  $keys
+     */
+    public static function preload(array $keys): void
+    {
+        if (self::$memo === null) {
+            return;
+        }
+        $keys = array_values(array_diff(array_unique($keys), array_keys(self::$memo)));
+        if ($keys === []) {
+            return;
+        }
+        $stored = static::query()->whereIn('key', $keys)->pluck('value', 'key')->all();
+        foreach ($keys as $key) {
+            self::$memo[$key] = $stored[$key] ?? null;
+        }
+    }
+
+    /**
      * Run $work reading each setting from the database once (a setting saved meanwhile is read afresh). For work that
      * reads the same settings many times, such as the penalty estimate, which asks about Making Tax Digital for every
      * year. Only for the length of the call, so a long-running process never keeps a stale value.

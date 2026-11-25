@@ -494,7 +494,8 @@ final class InvoiceEmails
     public function sendOneTap(Invoice $invoice, string $kind = 'invoice'): string
     {
         if ($problem = $this->oneTapProblem($invoice, $kind)) {
-            return 'Not sent: '.lcfirst($problem);
+            // A refusal, not a success: Telegram shows it as "⚠ Not sent: …", and the web as an error.
+            throw new InvalidArgumentException('Not sent: '.lcfirst($problem));
         }
 
         return $this->send($invoice, (string) self::open($invoice, $kind)->draft_message_id, $kind);
@@ -572,6 +573,24 @@ final class InvoiceEmails
         $out = ['checked' => 0, 'sent' => 0, 'deleted' => 0, 'removed' => 0, 'later' => 0, 'blind' => false];
         $rows = InvoiceEmail::query()->open()->when($invoiceId, fn ($q) => $q->where('invoice_id', $invoiceId))->orderBy('id')->get();
         if ($rows->isEmpty()) {
+            // Nothing open to check: on the hourly check, one small read says whether Gmail answers again, so "can't
+            // see Gmail" (which holds back every "not sent" message) doesn't outlast the draft that set it.
+            if ($invoiceId === null && self::cantSee() !== null && self::canUse()) {
+                try {
+                    GmailClient::get('drafts', ['maxResults' => 1], self::TIMEOUT);
+                    Setting::put(self::BLIND_SETTING, null);
+                } catch (Throwable $e) {
+                    if (self::isBlind($e)) {
+                        self::blind(self::why($e));
+
+                        return ['blind' => true] + $out;
+                    }
+                    if (! self::transient($e)) {
+                        report($e);
+                    }
+                }
+            }
+
             return $out;
         }
         if (! self::canUse()) {

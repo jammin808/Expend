@@ -454,7 +454,12 @@ class InvoiceEmailsTest extends TestCase
         $draftId = $row->gmail_draft_id;
         $this->gmail->edit($draftId, ['Cc' => 'boss@acme.example.test']);
         $this->assertSame('It was changed in Gmail: send it there.', $this->emails()->oneTapProblem($invoice));
-        $this->assertSame('Not sent: it was changed in Gmail: send it there.', $this->emails()->sendOneTap($invoice));
+        try {
+            $this->emails()->sendOneTap($invoice);
+            $this->fail('A one-tap Send of a draft changed in Gmail is refused');
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame('Not sent: it was changed in Gmail: send it there.', $e->getMessage()); // shown as a refusal (⚠), not a success
+        }
         $this->assertSame([], $this->gmail->sent());
     }
 

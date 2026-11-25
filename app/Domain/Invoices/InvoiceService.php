@@ -163,6 +163,56 @@ final class InvoiceService
     }
 
     /**
+     * The job's paying client changed: its open drafts bill the new client. Each draft's client changes, and its name,
+     * email, address and terms note follow the new client where they still hold what the old client's details would
+     * give them (or are empty): anything you typed on the draft yourself stays. The sync then brings its lines in line
+     * with the new client's arrangement. Audited per draft (invoice.client_changed).
+     *
+     * @return list<Invoice> the drafts that now bill the new client
+     */
+    public function rebillDrafts(WorkJob $job, ?int $fromClientId): array
+    {
+        return DB::transaction(function () use ($job, $fromClientId) {
+            AuditLog::lockHead();
+            $drafts = Invoice::query()->where('work_job_id', $job->id)->where('status', 'draft')->orderBy('id')->lockForUpdate()->get();
+            $job = WorkJob::query()->find($job->id);
+            if ($drafts->isEmpty() || $job === null) {
+                return [];
+            }
+            $new = $job->client_id !== null ? Client::query()->find(ClientIds::resolve((int) $job->client_id)) : null;
+            $old = $fromClientId !== null ? Client::query()->find(ClientIds::resolve($fromClientId)) : null;
+            $details = fn (?Client $c) => [
+                'bill_to_name' => $c ? ($c->invoice_name ?: $c->name) : null, 'bill_to_email' => self::emailAddress($c?->billing_email),
+                'bill_to_address' => $c?->billing_address ?: null, 'notes' => 'Payment due within '.self::terms($c).' days.',
+            ];
+            [$was, $now] = [$details($old), $details($new)];
+            $moved = [];
+            foreach ($drafts as $draft) {
+                $current = $draft->client_id !== null ? ClientIds::resolve((int) $draft->client_id) : null;
+                if ($current === $new?->id) {
+                    continue;
+                }
+                $changes = ['client_id' => $new?->id];
+                foreach ($now as $field => $value) {
+                    $have = $draft->{$field};
+                    if ($have === null || trim((string) $have) === '' || $have === $was[$field]) {
+                        $changes[$field] = $value;
+                    }
+                }
+                $before = $draft->only(array_keys($changes));
+                $draft->update($changes);
+                AuditLog::record('invoice.client_changed', $draft, $before, $draft->only(array_keys($changes)),
+                    'The job’s client is now '.($new?->name ?? 'no one'));
+                $this->sync->sync($draft);
+                $this->recalculate($draft);
+                $moved[] = $draft->fresh();
+            }
+
+            return $moved;
+        }, self::ATTEMPTS);
+    }
+
+    /**
      * A draft for a client with no job: their costs from earlier jobs not on an invoice yet, and their own costs you
      * marked to recharge. Their open draft with no job is reused.
      */

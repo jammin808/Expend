@@ -322,7 +322,11 @@ class HealthTest extends TestCase
             $invoice = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'total_minor' => 0, 'bill_to_name' => 'Acme Events', 'bill_to_email' => 'accounts@acme.example']);
             app(InvoiceService::class)->updateDraft($invoice, [], [['description' => 'Show day', 'quantity' => '1', 'unit_price' => '450.00']]);
 
-            return app(InvoiceService::class)->issue($invoice->fresh(), '2026-09-15')->fresh();
+            $issued = app(InvoiceService::class)->issue($invoice->fresh(), '2026-09-15')->fresh();
+            // Sent (S10: an invoice not sent is listed to send, never as overdue).
+            $issued->forceFill(['sent_at' => '2026-09-15 10:00:00', 'sent_to' => 'accounts@acme.example'])->save();
+
+            return $issued->fresh();
         };
         $snoozed = $issue('Gala');
         $dismissed = $issue('Launch');

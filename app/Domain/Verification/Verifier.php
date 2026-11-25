@@ -5,11 +5,17 @@ namespace App\Domain\Verification;
 use App\Domain\Ai\AiClient;
 use App\Domain\Ai\DocumentReader;
 use App\Domain\Audit\AuditLog;
+use App\Domain\Charges\CostRef;
+use App\Domain\Clients\ClientFigures;
 use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
 use App\Domain\Documents\Grounding;
 use App\Domain\Documents\TextExtractor;
 use App\Domain\Gmail\GmailClient;
+use App\Domain\Income\IncomeClient;
+use App\Domain\Income\Lines;
+use App\Domain\Income\PayerAliases;
+use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\JobGatherer;
@@ -18,14 +24,19 @@ use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
+use App\Models\Client;
+use App\Models\CostCharge;
 use App\Models\Document;
 use App\Models\GmailMessage;
 use App\Models\JobCandidate;
+use App\Models\MileageTrip;
 use App\Models\QuickEntry;
 use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Models\WorkJob;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
 use ZBateson\MailMimeParser\MailMimeParser;
@@ -499,9 +510,18 @@ final class Verifier
 
     // ------------------------------------------------------------------ AI suggestions on transactions
 
+    /**
+     * An automatic suggestion on a payment, checked against the payment itself, the job's dates and the invoice it
+     * names. Income design v3: a fee or commission taken off money in (a negative business expense beside larger
+     * income) is the right way round, and is checked against its job with the income's window (30 days before to 120
+     * after); a line naming an invoice is checked against that invoice (issued, and paid no more than 60 days before
+     * its date) rather than the job's dates. Money in from a payer that pays for one client, when you've charged that
+     * client costs (on an issued invoice, or another way such as their expense form), suggested as anything but
+     * turnover is warned about: it's that client paying you.
+     */
     public function transaction(BankTransaction $tx): ?Verification
     {
-        $suggested = Allocation::query()->where('bank_transaction_id', $tx->id)->whereNull('confirmed_at')->whereIn('decided_by', ['ai', 'matcher'])->with(['category', 'job'])->get();
+        $suggested = Allocation::query()->where('bank_transaction_id', $tx->id)->whereNull('confirmed_at')->whereIn('decided_by', ['ai', 'matcher'])->with(['category', 'job', 'invoice'])->get();
         if ($suggested->isEmpty()) {
             Verification::query()->where('subject_type', 'transaction')->where('subject_id', $tx->id)->delete();
 
@@ -509,9 +529,14 @@ final class Verifier
         }
         $checks = [];
         $date = $tx->effectiveDate();
+        // Deductions: on money in, negative business expenses beside income lines that are larger in total.
+        $gross = (int) $suggested->filter(fn (Allocation $a) => $a->kind === 'business_income' && $a->amount_pence > 0)->sum('amount_pence');
+        $taken = -(int) $suggested->filter(fn (Allocation $a) => $a->amount_pence < 0)->sum('amount_pence');
+        $deductions = $tx->amount_pence > 0 && $gross > $taken;
         foreach ($suggested as $a) {
             $label = Allocation::KINDS[$a->kind] ?? $a->kind;
-            if ($a->amount_pence !== 0 && ($a->amount_pence > 0) !== ($tx->amount_pence > 0)) {
+            $deduction = $deductions && Lines::isDeduction($a);
+            if ($a->amount_pence !== 0 && ($a->amount_pence > 0) !== ($tx->amount_pence > 0) && ! $deduction) {
                 $checks[] = ['what' => $label, 'ok' => false, 'note' => 'The split goes the other way from the payment'];
             }
             if ($a->kind === 'business_income' && $tx->amount_pence < 0) {
@@ -525,18 +550,104 @@ final class Verifier
                 $ok = (bool) preg_match('/HMRC|HM REVENUE|INLAND REVENUE|SELF ASSESSMENT|\bNDDS\b|CUMBERNAULD|SHIPLEY/i', $tx->description.' '.$tx->counterparty);
                 $checks[] = ['what' => $label, 'ok' => $ok, 'note' => $ok ? 'The payee is HMRC' : 'The payee doesn’t look like HMRC'];
             }
-            if ($a->work_job_id) {
+            if ($a->invoice_id) {
+                $checks[] = self::invoiceCheck($a, $date);
+            } elseif ($a->work_job_id) {
                 $job = $a->job;
-                $late = $a->kind === 'business_income' ? 120 : 5;
-                $ok = $job && $job->status !== 'cancelled' && $date->gte($job->starts_on->copy()->subDays($a->kind === 'business_income' ? 30 : 3)) && $date->lte($job->ends_on->copy()->addDays($late));
-                $checks[] = ['what' => 'Job: '.($job?->title ?? 'deleted'), 'ok' => $ok, 'note' => $ok ? 'The payment date fits the job' : ($job?->status === 'cancelled' ? 'The job is cancelled' : 'The payment date doesn’t fit the job’s dates')];
+                $income = $a->kind === 'business_income' || $deduction;
+                $late = $income ? 120 : 5;
+                // A job cancelled with a fee or its costs to charge still owes you something (relate.sweep keeps its
+                // suggestions too): only one cancelled with nothing owed fails on that alone.
+                $owing = $job?->status === 'cancelled' && in_array($job->cancel_charge, ['fee', 'costs'], true);
+                $ok = $job && ($job->status !== 'cancelled' || $owing) && $date->gte($job->starts_on->copy()->subDays($income ? 30 : 3)) && $date->lte($job->ends_on->copy()->addDays($late));
+                $note = match (true) {
+                    $ok && $owing => $job->cancel_charge === 'fee' ? 'The job was cancelled with a fee to charge' : 'The job was cancelled with its costs to charge',
+                    $ok => 'The payment date fits the job',
+                    $job?->status === 'cancelled' && ! $owing => 'The job is cancelled',
+                    default => 'The payment date doesn’t fit the job’s dates',
+                };
+                $checks[] = ['what' => 'Job: '.($job?->title ?? 'deleted'), 'ok' => $ok, 'note' => $note];
             }
+        }
+        if ($repaid = self::clientRepaying($tx, $suggested)) {
+            $checks[] = ['what' => 'Who paid', 'ok' => false, 'note' => "Looks like {$repaid} paying you: that’s turnover (box 15), not a refund or other income"];
         }
         if (! $checks) {
             $checks[] = ['what' => 'Suggestion', 'ok' => true, 'note' => 'Consistent with the payment'];
         }
 
         return $this->fromChecks('transaction', $tx->id, 'records', $checks, 'against the payment and your jobs');
+    }
+
+    /** A line naming an invoice: the invoice can be paid, and the payment came no more than 60 days before its date. */
+    private static function invoiceCheck(Allocation $a, \DateTimeInterface $date): array
+    {
+        $invoice = $a->invoice;
+        $what = 'Invoice: '.($invoice?->number ?? ($invoice ? 'draft' : 'deleted'));
+        if ($invoice === null || ! in_array($invoice->status, InvoicePayments::PAYABLE, true)) {
+            return ['what' => $what, 'ok' => false, 'note' => match ($invoice?->status) {
+                'void' => 'The invoice is void',
+                'draft' => 'The invoice hasn’t been issued yet',
+                default => 'The invoice no longer exists',
+            }];
+        }
+        $ok = ! $invoice->issue_date || CarbonImmutable::parse($date->format('Y-m-d'))->gte(CarbonImmutable::parse($invoice->issue_date->format('Y-m-d'))->subDays(60));
+
+        return ['what' => $what, 'ok' => $ok, 'note' => $ok ? 'The payment date fits the invoice' : 'The payment came long before the invoice'];
+    }
+
+    /**
+     * The client this money in looks like it's from, paying you back: the payer's sole client (PayerAliases), when
+     * you've charged that client costs (recharged on an issued invoice, or charged another way: elsewhere, or claimed on
+     * their expense form) and the suggestion makes it anything but turnover (a refund of a cost, personal, a transfer,
+     * money put in, a loan, or other business income). Null otherwise.
+     *
+     * @param  Collection<int, Allocation>  $lines
+     */
+    private static function clientRepaying(BankTransaction $tx, Collection $lines): ?string
+    {
+        $notTurnover = $lines->contains(fn (Allocation $a) => in_array($a->kind, ['personal', 'transfer', 'capital_introduced', 'loan'], true)
+            || ($a->kind === 'business_expense' && $a->amount_pence > 0)
+            || ($a->kind === 'business_income' && $a->category?->code === 'other_income'));
+        if ($tx->amount_pence <= 0 || ! $notTurnover) {
+            return null;
+        }
+        $client = PayerAliases::soleClient($tx->merchant_key, 1);
+        if ($client === null || ! self::chargedCosts($client)) {
+            return null;
+        }
+
+        return Client::query()->whereKey($client)->value('name');
+    }
+
+    /** Whether you've charged this client (merged duplicates included) costs: on an issued invoice, or another way. */
+    private static function chargedCosts(int $client): bool
+    {
+        $worked = 'COALESCE(vr_cm.merged_into_id, vr_inv.client_id, vr_job.client_id)';
+        $recharged = DB::table('invoice_lines')->join('invoices as vr_inv', 'vr_inv.id', '=', 'invoice_lines.invoice_id')
+            ->leftJoin('work_jobs as vr_job', 'vr_job.id', '=', 'vr_inv.work_job_id')
+            ->leftJoin('clients as vr_cm', 'vr_cm.id', '=', DB::raw('COALESCE(vr_inv.client_id, vr_job.client_id)'))
+            ->whereIn('vr_inv.status', InvoicePayments::PAYABLE)->where('invoice_lines.included', true)
+            ->whereIn('invoice_lines.source', ClientFigures::CHARGED_BACK)->whereRaw($worked.' = ?', [$client])->exists();
+        if ($recharged) {
+            return true;
+        }
+
+        return CostCharge::query()->where('charge', 'elsewhere')->pluck('cost_ref')->contains(function (string $ref) use ($client) {
+            if (! CostRef::valid($ref)) {
+                return false;
+            }
+            $p = CostRef::parse($ref);
+            $jobId = match ($p['type']) {
+                'tx', 'exp' => $p['job'],
+                'travel' => TravelItem::query()->whereKey($p['id'])->value('work_job_id'),
+                'trip' => MileageTrip::query()->whereKey($p['id'])->value('work_job_id'),
+                default => null,
+            };
+            $of = $p['client'] ?? ($jobId === null ? null : WorkJob::query()->whereKey($jobId)->value('client_id'));
+
+            return $of !== null && IncomeClient::resolve((int) $of) === $client;
+        });
     }
 
     // ------------------------------------------------------------------ scheduled re-checks

@@ -14,6 +14,8 @@ interface Action {
     style: 'default' | 'ghost';
     /** A fingerprint of what it acts on, as shown: a press on something changed since is refused. */
     fp?: string | null;
+    /** A link (code 'link'): it opens a page and decides nothing. */
+    href?: string;
 }
 interface Item {
     key: string;
@@ -170,11 +172,13 @@ export default function Todo({
         );
     };
     const act = (a: Action, key: string) =>
-        router.post(`/todo/${a.code}/${encodeURIComponent(a.id)}`, a.fp ? { fp: a.fp } : {}, {
-            preserveScroll: true,
-            onStart: () => setBusy(key + a.code),
-            onFinish: () => setBusy(null),
-        });
+        a.href
+            ? router.visit(a.href)
+            : router.post(`/todo/${a.code}/${encodeURIComponent(a.id)}`, a.fp ? { fp: a.fp } : {}, {
+                  preserveScroll: true,
+                  onStart: () => setBusy(key + a.code),
+                  onFinish: () => setBusy(null),
+              });
     // Snooze (days) or not relevant (no days), with your reason (kept with it). The server confirms it; this gives
     // that confirmation an Undo (the toaster shows the same message once, keeping the one with the Undo), so its words
     // must match the server's.
@@ -337,7 +341,7 @@ export default function Todo({
                 </span>
                 {i.actions.map((a) => (
                     <Button
-                        key={a.code}
+                        key={a.code + ':' + a.id}
                         size="sm"
                         variant={a.style === 'ghost' ? 'ghost' : 'outline'}
                         disabled={busy !== null}

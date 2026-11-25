@@ -68,6 +68,16 @@ final class ChaseLadder
     }
 
     /**
+     * How many days overdue an invoice is wherever it's shown (lists, the job's stage, the to-do list, Telegram): as
+     * overdue() counts them, and only once it was sent. An invoice that was never sent isn't overdue: it's "Not sent".
+     * Null when it isn't overdue.
+     */
+    public static function daysOverdue(Invoice $invoice, ?CarbonInterface $today = null): ?int
+    {
+        return $invoice->sent_at === null ? null : (self::overdue($invoice, $today)['days'] ?? null);
+    }
+
+    /**
      * Make a reminder: put it in your Gmail drafts, worded for how overdue it is.
      *
      * @param  bool  $once  a one-tap button (the to-do list, Telegram): held while something has come in that may be for

@@ -3,6 +3,7 @@
 namespace App\Domain\Tax;
 
 use App\Domain\Calendar\CalendarSync;
+use App\Domain\Income\IncomeClient;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
@@ -23,13 +24,15 @@ final class Explainer
 {
     public static function payment(BankTransaction|ManualExpense $item): array
     {
-        $item->loadMissing(['allocations.category', 'allocations.job']);
+        $item->loadMissing(['allocations.category', 'allocations.job', 'allocations.invoice:id,number']);
         $isBank = $item instanceof BankTransaction;
         $date = $isBank ? $item->effectiveDate()->format('Y-m-d') : $item->spent_on->format('Y-m-d');
         $amount = (int) $item->amount_pence;
         $name = $isBank ? ($item->counterparty ?: $item->description) : $item->description;
         $allocs = $item->allocations;
         $main = $allocs->firstWhere('kind', '!=', 'personal') ?? $allocs->first();
+        // Who each income line is for: its worked-out client (its invoice's, its job's or the one set on it, merges resolved).
+        $clients = IncomeClient::named($allocs->where('kind', 'business_income')->pluck('id'));
         $category = $main?->category;
         $guide = TaxGuide::category($category?->code);
         $notes = [];
@@ -41,6 +44,9 @@ final class Explainer
             $allocs->isEmpty() => 'Not decided yet.',
             default => ($main->confirmed_at ? 'Decided' : 'Suggested ('.($main->decided_by === 'you' ? 'by you' : 'by '.$main->decided_by).')').': '
                 .$allocs->map(fn (Allocation $a) => (Allocation::KINDS[$a->kind] ?? $a->kind).($a->category ? ' · '.$a->category->name : '').($a->job ? ' · '.$a->job->title : '')
+                    // An income line names its invoice and its client.
+                    .($a->kind === 'business_income' && $a->invoice?->number ? ' · '.$a->invoice->number : '')
+                    .($a->kind === 'business_income' && isset($clients[$a->id]) ? ' · '.$clients[$a->id]['name'] : '')
                     .($allocs->count() > 1 ? ' ('.Money::format(abs($a->amount_pence)).')' : ''))->implode('; ').'.',
         };
 
@@ -73,7 +79,8 @@ final class Explainer
             // payment or drawings has nothing to do with the job; for a personal item the job is just context.
             $work = 'You had work then: '.$jobs->pluck('title')->implode(', ').'.';
             $kind = $main?->kind;
-            $linked = $main?->job !== null;
+            // Income is done once its client, job or invoice is set: nothing asks which job a client's payment was for.
+            $linked = $main?->job !== null || ($kind === 'business_income' && ($main->invoice_id !== null || isset($clients[$main->id])));
             if ($amount < 0 && in_array($kind, [null, 'business_expense'], true)) {
                 $notes[] = $work.($isTravel || ! $category ? ' Travel to a temporary workplace like a venue, and meals and hotels when you’re away overnight for it, are normally allowable.'
                     : ($linked ? '' : ' If this was for that job, link it so it counts as the job’s cost.'));

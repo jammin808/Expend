@@ -187,6 +187,13 @@ class VetoReviewTest extends TestCase
         $beta = Client::query()->create(['name' => 'Beta Productions']);
         $first = Invoice::query()->forceCreate(['client_id' => $acme->id, 'number' => 'INV-101', 'status' => 'issued', 'currency' => 'GBP', 'total_minor' => 45000, 'issue_date' => '2025-06-01']);
         $second = Invoice::query()->forceCreate(['client_id' => $beta->id, 'number' => 'INV-102', 'status' => 'issued', 'currency' => 'GBP', 'total_minor' => 45000, 'issue_date' => '2025-06-02']);
+        // Income design v3: two invoices tied on the amount are never guessed while the payer isn't known (the chips
+        // offer both). Once you've decided one of its payments as Acme's, the tie goes to Acme's invoice.
+        $stranger = $this->tx('2025-06-20', 45000, 'NEW CREW LTD', 'New Crew Ltd');
+        app(Categoriser::class)->suggestFor(collect([$stranger]));
+        $this->assertNull(Allocation::query()->where('bank_transaction_id', $stranger->id)->value('invoice_id'), 'A tie is never guessed');
+        $earlier = $this->tx('2025-05-02', 30000, 'BETA PRODUCTIONS LTD', 'Beta Productions Ltd');
+        app(AllocationWriter::class)->decide($earlier, [['kind' => 'business_income', 'category_id' => $this->cat('turnover'), 'client_id' => $acme->id, 'amount_pence' => 30000]]);
         $pay = $this->tx('2025-06-20', 45000, 'BETA PRODUCTIONS LTD', 'Beta Productions Ltd');
         app(Categoriser::class)->suggestFor(collect([$pay]));
         $this->assertSame($first->id, Allocation::query()->where('bank_transaction_id', $pay->id)->value('invoice_id'));

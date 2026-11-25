@@ -10,11 +10,28 @@ import { type InvoiceRow } from '@/pages/invoices/index';
 import { Head, Link, router, useForm } from '@inertiajs/react';
 import { Download, Mail, Plus, Trash2 } from 'lucide-react';
 
+// A line as the form keeps it: a line from the job (or a PO) carries its id and the version you saw, so a save never
+// overwrites a change the job's sync made meanwhile; a typed line you add has no id. Only ticked lines are charged.
 type Line = {
+    id: number | null;
+    version: string | null;
     description: string;
     quantity: string;
     unit_price: string;
     source_quote: string | null;
+    included: boolean;
+    source: string | null;
+    flag: string | null;
+};
+
+// What a line's flag says, until the check screen (stage 4) shows it in full.
+const FLAG_WORDS: Record<string, string> = {
+    gone: 'No longer linked to the job: remove it, or keep it as your own line.',
+    no_amount: 'No price yet: type the price, or untick it.',
+    check: 'Check its quantity and price before issuing.',
+    maybe_same: 'Maybe the same as one of your lines: check before ticking it.',
+    unconfirmed: 'Its payment isn’t confirmed yet: issuing confirms it.',
+    no_payment: 'No payment for it yet.',
 };
 
 interface Props {
@@ -33,7 +50,7 @@ interface Props {
         client_id: number | null;
         document: { id: number; name: string } | null;
         void_reason: string | null;
-        lines: (Line & { amount_minor: number })[];
+        lines: (Line & { amount_minor: number; own_text: boolean; own_amount: boolean; ticked_by: string | null; source_job: string | null })[];
         lines_version: string | null;
         seen_up_to: number | null;
     };
@@ -60,13 +77,22 @@ function InvoicePage({ invoice, jobs, clients }: Props) {
         work_job_id: invoice.work_job_id ? String(invoice.work_job_id) : '',
         client_id: invoice.client_id ? String(invoice.client_id) : '',
         lines: invoice.lines.map((l) => ({
+            id: l.id,
+            version: l.version,
             description: l.description,
             quantity: l.quantity,
             unit_price: l.unit_price,
             source_quote: l.source_quote,
+            included: l.included,
+            source: l.source,
+            flag: l.flag,
         })) as Line[],
     });
-    const total = form.data.lines.reduce((s, l) => s + Math.round((parseFloat(l.quantity) || 0) * (toPence(l.unit_price) ?? 0)), 0);
+    // Only ticked lines are charged; an issued invoice shows only what it charged.
+    const total = form.data.lines.reduce(
+        (s, l) => (l.included ? s + Math.round((parseFloat(l.quantity) || 0) * (toPence(l.unit_price) ?? 0)) : s),
+        0,
+    );
     const setLine = (i: number, patch: Partial<Line>) =>
         form.setData(
             'lines',
@@ -284,49 +310,71 @@ function InvoicePage({ invoice, jobs, clients }: Props) {
 
                     <fieldset disabled={!draft} className="space-y-2">
                         <Label>Lines</Label>
-                        {form.data.lines.map((l, i) => (
-                            <div key={i} className="grid gap-2 rounded-lg border p-2 sm:grid-cols-[1fr_6rem_8rem_8rem_auto]">
-                                <div>
+                        {form.data.lines.map((l, i) =>
+                            !draft && !l.included ? null : (
+                                <div
+                                    key={l.id ?? `new-${i}`}
+                                    className={
+                                        'grid gap-2 rounded-lg border p-2 sm:grid-cols-[1fr_6rem_8rem_8rem_auto]' + (l.included ? '' : ' opacity-60')
+                                    }
+                                >
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            {draft && (
+                                                <input
+                                                    type="checkbox"
+                                                    className="size-5 shrink-0"
+                                                    checked={l.included}
+                                                    onChange={(e) => setLine(i, { included: e.target.checked })}
+                                                    aria-label="On the invoice"
+                                                />
+                                            )}
+                                            <Input
+                                                value={l.description}
+                                                onChange={(e) => setLine(i, { description: e.target.value })}
+                                                aria-label="Description"
+                                            />
+                                        </div>
+                                        {l.source_quote && (
+                                            <p className="text-muted-foreground mt-1 text-xs italic">From the PO: “{l.source_quote}”</p>
+                                        )}
+                                        {draft && l.flag && FLAG_WORDS[l.flag] && <p className="mt-1 text-xs text-amber-700">{FLAG_WORDS[l.flag]}</p>}
+                                    </div>
                                     <Input
-                                        value={l.description}
-                                        onChange={(e) => setLine(i, { description: e.target.value })}
-                                        aria-label="Description"
+                                        inputMode="decimal"
+                                        value={l.quantity}
+                                        onChange={(e) => setLine(i, { quantity: e.target.value })}
+                                        aria-label="Quantity"
                                     />
-                                    {l.source_quote && <p className="text-muted-foreground mt-1 text-xs italic">From the PO: “{l.source_quote}”</p>}
+                                    <Input
+                                        inputMode="decimal"
+                                        value={l.unit_price}
+                                        onChange={(e) => setLine(i, { unit_price: e.target.value })}
+                                        aria-label="Unit price"
+                                    />
+                                    <span className="self-center text-right font-medium tabular-nums">
+                                        {money(Math.round((parseFloat(l.quantity) || 0) * (toPence(l.unit_price) ?? 0)), form.data.currency)}
+                                    </span>
+                                    {/* A line from the job is unticked, not removed, unless it has gone from the job. */}
+                                    {draft && (l.source === null || l.flag === 'gone') && (
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            aria-label="Remove line"
+                                            onClick={() =>
+                                                form.setData(
+                                                    'lines',
+                                                    form.data.lines.filter((_, j) => j !== i),
+                                                )
+                                            }
+                                        >
+                                            <Trash2 />
+                                        </Button>
+                                    )}
                                 </div>
-                                <Input
-                                    inputMode="decimal"
-                                    value={l.quantity}
-                                    onChange={(e) => setLine(i, { quantity: e.target.value })}
-                                    aria-label="Quantity"
-                                />
-                                <Input
-                                    inputMode="decimal"
-                                    value={l.unit_price}
-                                    onChange={(e) => setLine(i, { unit_price: e.target.value })}
-                                    aria-label="Unit price"
-                                />
-                                <span className="self-center text-right font-medium tabular-nums">
-                                    {money(Math.round((parseFloat(l.quantity) || 0) * (toPence(l.unit_price) ?? 0)), form.data.currency)}
-                                </span>
-                                {draft && (
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        aria-label="Remove line"
-                                        onClick={() =>
-                                            form.setData(
-                                                'lines',
-                                                form.data.lines.filter((_, j) => j !== i),
-                                            )
-                                        }
-                                    >
-                                        <Trash2 />
-                                    </Button>
-                                )}
-                            </div>
-                        ))}
+                            ),
+                        )}
                         {draft && (
                             <Button
                                 type="button"
@@ -335,7 +383,17 @@ function InvoicePage({ invoice, jobs, clients }: Props) {
                                 onClick={() =>
                                     form.setData('lines', [
                                         ...form.data.lines,
-                                        { description: '', quantity: '1', unit_price: '', source_quote: null },
+                                        {
+                                            id: null,
+                                            version: null,
+                                            description: '',
+                                            quantity: '1',
+                                            unit_price: '',
+                                            source_quote: null,
+                                            included: true,
+                                            source: null,
+                                            flag: null,
+                                        },
                                     ])
                                 }
                             >

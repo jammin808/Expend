@@ -3,7 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Clients\ClientFigures;
 use App\Domain\Export\YearExporter;
+use App\Domain\Income\IncomeText;
+use App\Domain\Income\PayerAliases;
 use App\Domain\Tax\BillPreview;
 use App\Domain\Tax\FilingDates;
 use App\Domain\Tax\PenaltyEstimator;
@@ -15,7 +18,9 @@ use App\Domain\Tax\TaxSavings;
 use App\Domain\Tax\YearChecks;
 use App\Http\Presenters\Present;
 use App\Models\Allocation;
+use App\Models\AuditEvent;
 use App\Models\BankTransaction;
+use App\Models\Client;
 use App\Models\Setting;
 use App\Models\TaxSubmission;
 use App\Models\TaxYear;
@@ -262,8 +267,17 @@ class TaxYearController extends Controller
                 'reason.min' => 'Say why you are unlocking this year in a few more words (3 characters at least).',
                 'reason.max' => 'The reason is too long (250 characters at most).',
             ]);
-            $year->update(['locked_at' => null, 'status' => $year->status === 'filed' ? 'amending' : $year->status]);
-            AuditLog::record('tax_year.unlocked', $year, null, null, $request->string('reason'));
+            // What it was when unlocked (its status and the return's figures), so locking it again with nothing changed
+            // puts a filed year back to filed (income design v3): unlocking to move a client never leaves a false
+            // "amend your return".
+            $summary = ReturnSummary::for($label);
+            // On the full form the expenses go box by box: those are kept too, so moving a cost to another box isn't
+            // taken for "no figures changed".
+            $was = ['status' => $year->status, 'figures' => YearChecks::figures($summary)] + (($boxes = self::boxes($summary)) !== null ? ['boxes' => $boxes] : []);
+            DB::transaction(function () use ($year, $was, $request) {
+                $year->update(['locked_at' => null, 'status' => $year->status === 'filed' ? 'amending' : $year->status]);
+                AuditLog::record('tax_year.unlocked', $year, $was, ['status' => $year->status], $request->string('reason'));
+            });
 
             return back()->with('success', "{$label} unlocked.");
         }
@@ -276,12 +290,69 @@ class TaxYearController extends Controller
             throw ValidationException::withMessages(['reason' => 'Some checks before filing are failing ('.$names.'). Say why you’re locking it anyway: it’s kept with the lock.']);
         }
         $taken = YearChecks::lockSnapshot($label);
-        DB::transaction(function () use ($year, $taken, $reason) {
-            $year->update(['locked_at' => now()]);
-            AuditLog::record('tax_year.locked', $year, null, ['snapshot' => $taken['snapshot']] + ($taken['failing'] !== [] ? ['failing' => $taken['failing']] : []), $reason);
+        $restore = self::restoresFiled($year, $taken['snapshot']['figures'], self::boxes(ReturnSummary::for($label)));
+        DB::transaction(function () use ($year, $taken, $reason, $restore) {
+            $year->update(['locked_at' => now()] + ($restore ? ['status' => 'filed'] : []));
+            AuditLog::record('tax_year.locked', $year, null, ['snapshot' => $taken['snapshot']] + ($taken['failing'] !== [] ? ['failing' => $taken['failing']] : [])
+                + ($restore ? ['status_restored' => 'filed'] : []), $reason);
         });
 
-        return back()->with('success', "{$label} locked. Nothing in it can change without unlocking. Its figures and a copy of the spreadsheet were kept with the lock.");
+        return back()->with('success', "{$label} locked. Nothing in it can change without unlocking. Its figures and a copy of the spreadsheet were kept with the lock."
+            .($restore ? ' No figures changed, so there’s nothing to send HMRC: it’s marked filed again.' : ''));
+    }
+
+    /**
+     * Whether locking an 'amending' year puts it back to 'filed': the latest unlock was of a filed year (its before
+     * says so: unlocks recorded before this release have none, so they never restore), no save since changed its status
+     * by hand, and the return's figures are what they were when it was unlocked: on the full form (over the VAT
+     * threshold), each expense box too.
+     *
+     * @param  array<string, int>  $figures  the figures now (YearChecks::figures)
+     * @param  array<string, array{0:int, 1:int}>|null  $boxes  the full form's expenses box by box now (boxes()), or null
+     */
+    private static function restoresFiled(TaxYear $year, array $figures, ?array $boxes = null): bool
+    {
+        if ($year->status !== 'amending') {
+            return false;
+        }
+        $unlock = AuditEvent::query()->where('subject_type', 'TaxYear')->where('subject_id', $year->id)->where('action', 'tax_year.unlocked')->orderByDesc('id')->first();
+        if ($unlock === null || ($unlock->before['status'] ?? null) !== 'filed' || ! is_array($unlock->before['figures'] ?? null)) {
+            return false;
+        }
+        $changedByHand = AuditEvent::query()->where('subject_type', 'TaxYear')->where('subject_id', $year->id)->where('action', 'tax_year.updated')
+            ->where('id', '>', $unlock->id)->get()->contains(fn (AuditEvent $e) => ($e->before['status'] ?? null) !== ($e->after['status'] ?? null));
+
+        $then = is_array($unlock->before['boxes'] ?? null) ? array_map(fn ($v) => [(int) ($v[0] ?? 0), (int) ($v[1] ?? 0)], $unlock->before['boxes']) : null;
+        if ($then !== null) {
+            ksort($then, SORT_STRING); // as kept, whatever order the audit stored its keys in
+        }
+        if ($then !== $boxes) {
+            return false; // a box of the full form changed, or the form isn't the one it was
+        }
+
+        return ! $changedByHand && YearChecks::figuresDiff($unlock->before['figures'], $figures) === [];
+    }
+
+    /**
+     * The full form's expenses box by box ([allowable, disallowable] pence by box, in box order), or null when the
+     * short form can be used (it has one total for expenses, which figures() already has).
+     *
+     * @param  array<string, mixed>  $summary  ReturnSummary::for()
+     * @return array<string, array{0:int, 1:int}>|null
+     */
+    private static function boxes(array $summary): ?array
+    {
+        if ($summary['short_form_allowed'] ?? true) {
+            return null;
+        }
+        $out = [];
+        foreach ($summary['expense_lines'] ?? [] as $line) {
+            $box = (string) ($line['box'] ?? '');
+            $out[$box] = [($out[$box][0] ?? 0) + (int) $line['allowable_pence'], ($out[$box][1] ?? 0) + (int) $line['disallowable_pence']];
+        }
+        ksort($out, SORT_STRING);
+
+        return $out;
     }
 
     /** The catch-up page for one year. */
@@ -299,16 +370,27 @@ class TaxYearController extends Controller
         $groups = BankTransaction::query()->where('tax_year', $label)->whereIn('review_status', ['unreviewed', 'suggested'])
             ->selectRaw("merchant_key, COUNT(*) as n, SUM(ABS(amount_pence)) as value, SUM(CASE WHEN amount_pence > 0 THEN 1 ELSE 0 END) as money_in, SUM(CASE WHEN review_status = 'suggested' THEN 1 ELSE 0 END) as suggested, MIN(description) as sample")
             ->groupBy('merchant_key')->orderByDesc('value')->limit(60)->get()
-            ->map(function ($g) use ($label) {
-                $suggestion = null;
-                if ((int) $g->suggested === (int) $g->n) {
-                    $kinds = Allocation::query()->whereIn('bank_transaction_id', BankTransaction::query()->where('tax_year', $label)->where('merchant_key', $g->merchant_key)->where('review_status', 'suggested')->select('id'))
-                        ->distinct()->pluck('kind');
-                    $suggestion = $kinds->count() === 1 ? (Allocation::KINDS[$kinds->first()] ?? null) : 'Mixed suggestions';
-                }
+            ->values();
+        // The groups' suggested lines, read together: an all-income group is named by IncomeText ("Business income ·
+        // Acme Events · 4 invoice matches"); a money-in group's "Decide all" starts from the payer's sole client.
+        $suggested = Allocation::query()->whereIn('bank_transaction_id', BankTransaction::query()->where('tax_year', $label)->where('review_status', 'suggested')
+            ->whereIn('merchant_key', $groups->pluck('merchant_key')->all() ?: [''])->select('id'))
+            ->with('transaction:id,merchant_key')->get()->groupBy(fn (Allocation $a) => (string) $a->transaction?->merchant_key);
+        $aliases = PayerAliases::forKeys($groups->where('money_in', '>', 0)->pluck('merchant_key'));
+        $soles = $groups->mapWithKeys(fn ($g) => [(string) $g->merchant_key => (int) $g->money_in > 0 ? $aliases->sole($g->merchant_key, 1) : null]);
+        $names = Client::query()->whereKey($soles->filter()->unique()->values()->all() ?: [0])->pluck('name', 'id');
+        $groups = $groups->map(function ($g) use ($suggested, $soles, $names) {
+            $suggestion = null;
+            $lines = $suggested[(string) $g->merchant_key] ?? collect();
+            if ((int) $g->suggested === (int) $g->n) {
+                $kinds = $lines->pluck('kind')->unique();
+                $suggestion = IncomeText::group($lines) ?? ($kinds->count() === 1 ? (Allocation::KINDS[$kinds->first()] ?? null) : 'Mixed suggestions');
+            }
+            $sole = $soles[(string) $g->merchant_key] ?? null;
 
-                return ['merchant_key' => $g->merchant_key, 'count' => (int) $g->n, 'value_pence' => (int) $g->value, 'money_in' => (int) $g->money_in, 'sample' => $g->sample, 'suggested' => (int) $g->suggested, 'suggestion' => $suggestion];
-            });
+            return ['merchant_key' => $g->merchant_key, 'count' => (int) $g->n, 'value_pence' => (int) $g->value, 'money_in' => (int) $g->money_in, 'sample' => $g->sample,
+                'suggested' => (int) $g->suggested, 'suggestion' => $suggestion, 'client_id' => $sole, 'client' => $sole !== null ? ($names[$sole] ?? null) : null];
+        });
 
         // The fines and the savings review each work out every year's penalties: read the settings once for both.
         [$penalties, $savings] = Setting::remembering(fn () => [rescue(fn () => PenaltyEstimator::forYear($label), null), rescue(fn () => TaxSavings::review($label), null)]);
@@ -336,6 +418,9 @@ class TaxYearController extends Controller
             // What was kept when the year was last locked, and (when asked: "Check it") whether it still holds.
             'lock' => YearChecks::lockShown($year),
             'lock_check' => Inertia::optional(fn () => YearChecks::verifyLock($year)),
+            // Years before the cash basis was the default: client figures are counted when paid.
+            'cash_basis_note' => ClientFigures::cashBasisNote($label),
+            'unlock_note' => 'Changing a client, job or invoice doesn’t change your return.',
         ]);
     }
 

@@ -2,10 +2,12 @@
 
 namespace App\Domain\Tax;
 
+use App\Domain\Income\IncomeClient;
 use App\Domain\Matching\OwnAccounts;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
+use App\Models\Client;
 use App\Models\MileageTrip;
 use App\Models\Setting;
 use App\Models\TaxYear;
@@ -16,6 +18,7 @@ use App\Support\Money;
 use App\Support\UkTaxYear;
 use Brick\Math\RoundingMode;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Legal ways to pay less tax, checked against your own records for one tax year: what you could claim and haven't,
@@ -458,18 +461,25 @@ final class TaxSavings
             ->whereHas('transaction', fn ($q) => $q->where('posted_on', '>=', $from))->sum('amount_pence');
     }
 
-    /** @return array{name:string, pct:int}|null */
+    /**
+     * The client who paid the most of the year's confirmed income, by its worked-out client (IncomeClient: the line's
+     * invoice's client, else its job's, else its own, merges resolved), so income for a client with no job counts for
+     * that client, and a duplicate merged into another counts as one. It changes no tax figure.
+     *
+     * @return array{name:string, pct:int}|null
+     */
     private static function topClientShare(string $label): ?array
     {
-        $rows = Allocation::query()->where('tax_year', $label)->where('kind', 'business_income')->whereNotNull('confirmed_at')->whereNotNull('work_job_id')
-            ->with('job.client')->get()->groupBy(fn ($a) => $a->job?->client?->name ?? '');
         $total = (int) Allocation::query()->where('tax_year', $label)->where('kind', 'business_income')->whereNotNull('confirmed_at')->sum('amount_pence');
         if ($total <= 0) {
             return null;
         }
-        $top = $rows->reject(fn ($g, $name) => $name === '')->map(fn ($g) => (int) $g->sum('amount_pence'))->sortDesc();
-        $name = $top->keys()->first();
+        $client = IncomeClient::expression();
+        $top = IncomeClient::scope(DB::table('allocations')->selectRaw('SUM(allocations.amount_pence) as pence'))
+            ->where('allocations.tax_year', $label)->where('allocations.kind', 'business_income')->whereNotNull('allocations.confirmed_at')
+            ->whereRaw($client.' IS NOT NULL')->groupByRaw($client)->orderByDesc('pence')->orderBy(IncomeClient::COLUMN)->first();
+        $name = $top === null ? null : Client::query()->whereKey($top->{IncomeClient::COLUMN})->value('name');
 
-        return $name ? ['name' => $name, 'pct' => (int) round($top->first() * 100 / $total)] : null;
+        return $name ? ['name' => $name, 'pct' => (int) round((int) $top->pence * 100 / $total)] : null;
     }
 }

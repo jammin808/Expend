@@ -21,6 +21,9 @@ use RuntimeException;
  * for that transaction, and saved as an unconfirmed AI suggestion for you to accept or change. One you said no to
  * for that payment (Intel\Vetoes) is never saved (AllocationWriter refuses it), and payments you said no to a
  * suggestion for are sent after the others.
+ *
+ * Money in is sent with no jobs (income design v3): which job or invoice a payment is for is the invoice matcher's and
+ * yours, never put on the job worked that day by the AI. For money in it proposes the kind and category only.
  */
 final class TransactionAdvisor
 {
@@ -52,7 +55,8 @@ final class TransactionAdvisor
         $items = $txs->map(fn (BankTransaction $t) => [
             'id' => $t->id, 'date' => $t->effectiveDate()->format('Y-m-d'), 'amount_pence' => $t->amount_pence,
             'description' => $t->description, 'bank_category' => $t->bank_category, 'account_type' => $t->account->kind,
-            'jobs_around_date' => Present::jobsNear($t->effectiveDate()->format('Y-m-d')),
+            // No jobs for money in: the AI never puts income on a job (its invoice and job are matched, or yours).
+            'jobs_around_date' => $t->amount_pence > 0 ? [] : Present::jobsNear($t->effectiveDate()->format('Y-m-d')),
         ])->values();
 
         $result = $this->ai->send([
@@ -105,7 +109,7 @@ final class TransactionAdvisor
 
                 continue;
             }
-            $jobId = in_array($s['job_id'] ?? null, $jobsFor[$tx->id] ?? [], true) ? $s['job_id'] : null;
+            $jobId = $tx->amount_pence <= 0 && in_array($s['job_id'] ?? null, $jobsFor[$tx->id] ?? [], true) ? $s['job_id'] : null;
             $pct = max(1, min(100, (int) ($s['business_pct'] ?? 100)));
 
             try {
