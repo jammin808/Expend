@@ -34,14 +34,23 @@ interface Props {
         document: { id: number; name: string } | null;
         void_reason: string | null;
         lines: (Line & { amount_minor: number })[];
+        lines_version: string | null;
+        seen_up_to: number | null;
     };
     jobs: { id: number; title: string; starts_on: string }[];
     clients: { id: number; name: string }[];
 }
 
-export default function InvoiceShow({ invoice, jobs, clients }: Props) {
+// The form starts again from the draft's lines whenever they change (a cost the job's sync added, a save from another
+// tab): a page left open never saves or issues lines it didn't show.
+export default function InvoiceShow(props: Props) {
+    return <InvoicePage key={props.invoice.lines_version ?? props.invoice.status} {...props} />;
+}
+
+function InvoicePage({ invoice, jobs, clients }: Props) {
     const draft = invoice.status === 'draft';
     const form = useForm({
+        lines_version: invoice.lines_version,
         bill_to_name: invoice.bill_to_name ?? '',
         bill_to_address: invoice.bill_to_address ?? '',
         bill_to_email: invoice.bill_to_email ?? '',
@@ -121,7 +130,7 @@ export default function InvoiceShow({ invoice, jobs, clients }: Props) {
                                     if (window.confirm('Issue this invoice? It gets the next number and can’t be edited afterwards.'))
                                         router.post(
                                             `/invoices/${invoice.id}/issue`,
-                                            {},
+                                            { lines_version: invoice.lines_version, seen_up_to: invoice.seen_up_to },
                                             {
                                                 onError: (errors) =>
                                                     toast(Object.values(errors)[0] ?? 'The invoice wasn’t issued. Check it and try again.', 'error'),

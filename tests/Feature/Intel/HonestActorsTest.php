@@ -57,6 +57,9 @@ class HonestActorsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_name', 'Alex Smith Sound');
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         $this->seed();
         Setting::put('own_names', ['Alex Smith']);
         Setting::put('job_finder_auto', false);

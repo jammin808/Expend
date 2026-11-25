@@ -40,6 +40,9 @@ class HealthTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_name', 'Alex Smith Sound');
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         Setting::put('job_finder_auto', false);
         Carbon::setTestNow('2026-11-24 10:00:00');
         CarbonImmutable::setTestNow('2026-11-24 10:00:00');

@@ -52,7 +52,7 @@ final class GmailLabeller
             if (GmailLabel::query()->where('work_job_id', $job->id)->exists()) {
                 continue; // already labelled (and if you took the label off in Gmail yourself, it stays off)
             }
-            $found = $this->find($job, $status[$job->id]['po']['number'] ?? null);
+            $found = $this->find($job, fn () => $status[$job->id]['po']['number'] ?? null);
             if (! $found['ids']) {
                 $missing[] = $job->title;
 
@@ -87,8 +87,24 @@ final class GmailLabeller
         return ['added' => $added, 'removed' => $removed, 'missing' => $missing];
     }
 
-    /** @return array{ids: list<string>, how: ?string, document_id: ?int} */
-    private function find(WorkJob $job, ?string $poNumber): array
+    /**
+     * The job's PO email in Gmail, most certain first (see the class): its message ids, its conversation (threadId),
+     * how it was found and the stored email it is. Without $search, only what Expend already holds is used (emails
+     * that came from a Gmail search), so a page can ask without calling Gmail; with it, Gmail is searched by the
+     * forwarded email's Message-ID and then by the PO number.
+     *
+     * @return array{ids: list<string>, thread: ?string, how: ?string, document_id: ?int}
+     */
+    public function poMessages(WorkJob $job, bool $search = true): array
+    {
+        return $this->find($job, fn () => PoStatus::forJobs([$job])[$job->id]['po']['number'] ?? null, $search);
+    }
+
+    /**
+     * @param  callable():?string  $poNumber  the job's PO number, asked for only when Gmail is searched by it
+     * @return array{ids: list<string>, thread: ?string, how: ?string, document_id: ?int}
+     */
+    private function find(WorkJob $job, callable $poNumber, bool $search = true): array
     {
         $emails = Document::query()->where('work_job_id', $job->id)->get()
             ->filter(fn (Document $d) => PoStatus::isPo($d))
@@ -96,27 +112,30 @@ final class GmailLabeller
             ->filter()->unique('id');
 
         foreach ($emails as $email) {
-            $ids = GmailMessage::query()->where('document_id', $email->id)->pluck('message_id')->all();
-            if ($ids) {
-                return ['ids' => $ids, 'how' => 'gmail_search', 'document_id' => $email->id];
+            $rows = GmailMessage::query()->where('document_id', $email->id)->orderBy('id')->get(['message_id', 'thread_id']);
+            if ($rows->isNotEmpty()) {
+                return ['ids' => $rows->pluck('message_id')->all(), 'thread' => $rows->pluck('thread_id')->filter()->first(), 'how' => 'gmail_search', 'document_id' => $email->id];
             }
-            if ($messageId = self::messageIdOf($email)) {
+            if ($search && ($messageId = self::messageIdOf($email))) {
                 $ids = GmailClient::search('rfc822msgid:'.$messageId, null, 10)['ids'];
                 if ($ids) {
-                    return ['ids' => $ids, 'how' => 'message_id', 'document_id' => $email->id];
+                    $thread = GmailClient::get('messages/'.rawurlencode($ids[0]), ['format' => 'minimal'])['threadId'] ?? null;
+
+                    return ['ids' => $ids, 'thread' => $thread, 'how' => 'message_id', 'document_id' => $email->id];
                 }
             }
         }
 
-        if ($poNumber && mb_strlen(trim($poNumber)) >= 4) {
-            $ids = GmailClient::search('"'.str_replace('"', '', trim($poNumber)).'" -in:sent -in:drafts -in:chats', null, 20)['ids'];
+        $number = $search ? $poNumber() : null;
+        if ($number && mb_strlen(trim($number)) >= 4) {
+            $ids = GmailClient::search('"'.str_replace('"', '', trim($number)).'" -in:sent -in:drafts -in:chats', null, 20)['ids'];
             $threads = collect($ids)->map(fn ($id) => GmailClient::get('messages/'.rawurlencode($id), ['format' => 'minimal'])['threadId'] ?? $id)->unique();
             if ($ids && $threads->count() === 1) {
-                return ['ids' => $ids, 'how' => 'po_number', 'document_id' => $emails->first()?->id];
+                return ['ids' => $ids, 'thread' => $threads->first(), 'how' => 'po_number', 'document_id' => $emails->first()?->id];
             }
         }
 
-        return ['ids' => [], 'how' => null, 'document_id' => null];
+        return ['ids' => [], 'thread' => null, 'how' => null, 'document_id' => null];
     }
 
     private static function messageIdOf(Document $email): ?string

@@ -2,8 +2,10 @@
 
 namespace App\Domain\Jobs;
 
+use App\Domain\Charges\CostUnits;
 use App\Domain\Income\IncomeClient;
 use App\Domain\Invoices\InvoicePayments;
+use App\Domain\Invoices\InvoiceService;
 use App\Models\Allocation;
 use App\Models\Client;
 use App\Models\Invoice;
@@ -51,6 +53,59 @@ final class JobBilling
                 ->groupBy('work_job_id')->havingRaw('SUM(amount_pence) > 0')->pluck('work_job_id');
             foreach ($paid as $id) {
                 $out[(int) $id] = true;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Of these jobs billed by income alone (no issued invoice), those whose confirmed income is less than their work
+     * comes to (the fee, or the rate for the days or hours: CostUnits::work): a deposit, or part of the fee. Each with
+     * what came in and what the work comes to, in pence. A job whose work has no amount isn't listed (any income pays
+     * it).
+     *
+     * @param  iterable<int|WorkJob>  $jobs
+     * @param  array<int, true>|null  $billed  billed() for these jobs, when the caller has it already
+     * @return array<int, array{paid:int, expected:int}> by job id
+     */
+    public static function short(iterable $jobs, ?array $billed = null): array
+    {
+        $jobs = collect($jobs);
+        $billed ??= self::billed($jobs);
+        $ids = $jobs->map(fn ($j) => (int) ($j instanceof WorkJob ? $j->id : $j))->filter(fn (int $id) => isset($billed[$id]))->unique()->values();
+        if ($ids->isEmpty()) {
+            return [];
+        }
+        $invoiced = Invoice::query()->whereIn('work_job_id', $ids->all())->whereIn('status', InvoicePayments::PAYABLE)->distinct()->pluck('work_job_id')
+            ->map(fn ($id) => (int) $id)->flip();
+        $ids = $ids->reject(fn (int $id) => isset($invoiced[$id]))->values();
+        if ($ids->isEmpty()) {
+            return [];
+        }
+        $paid = Allocation::query()->where('kind', 'business_income')->whereNotNull('confirmed_at')->whereIn('work_job_id', $ids->all())
+            ->where(fn ($q) => $q->whereNull('bank_transaction_id')->orWhereHas('transaction'))
+            ->groupBy('work_job_id')->selectRaw('work_job_id, SUM(amount_pence) AS paid')->pluck('paid', 'work_job_id');
+        $loaded = $jobs->filter(fn ($j) => $j instanceof WorkJob)->keyBy('id');
+        $missing = $ids->reject(fn (int $id) => $loaded->has($id))->values()->all();
+        if ($missing !== []) {
+            $loaded = $loaded->union(WorkJob::query()->whereIn('id', $missing)->get()->keyBy('id'));
+        }
+        $out = [];
+        foreach ($ids as $id) {
+            $job = $loaded[$id] ?? null;
+            if ($job === null) {
+                continue;
+            }
+            $expected = 0;
+            foreach (CostUnits::work($job) as $w) {
+                if ($w['unit_price_minor'] !== null) {
+                    $expected += InvoiceService::lineAmount((string) $w['quantity'], (int) $w['unit_price_minor']);
+                }
+            }
+            $in = (int) ($paid[$id] ?? 0);
+            if ($expected > 0 && $in < $expected) {
+                $out[$id] = ['paid' => $in, 'expected' => $expected];
             }
         }
 

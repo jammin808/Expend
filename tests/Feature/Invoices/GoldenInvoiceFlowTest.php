@@ -3,6 +3,7 @@
 namespace Tests\Feature\Invoices;
 
 use App\Domain\Intel\Provenance;
+use App\Domain\Invoices\InvoiceDraftSync;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Ledger\AllocationWriter;
@@ -123,18 +124,30 @@ class GoldenInvoiceFlowTest extends TestCase
         return null;
     }
 
+    /**
+     * The three lines the Arena draft is saved with: the job's fee line changed in place (by its id, S6's per-line
+     * save), and two lines of your own.
+     */
+    private static function arenaLines(Invoice $draft): array
+    {
+        $fee = $draft->allLines()->sole();
+
+        return [
+            ['id' => $fee->id, 'version' => InvoiceDraftSync::version($fee), 'description' => 'Arena load-in: crew, 3 and 4 Jun 2026', 'quantity' => '2', 'unit_price' => '325.00'],
+            ['description' => 'Taxi to the venue', 'quantity' => '1', 'unit_price' => '18.40'],
+            ['description' => 'Overtime (hours)', 'quantity' => '1.5', 'unit_price' => '33.33'],
+        ];
+    }
+
     /** The Arena invoice as it's made today: a draft from the job, its lines changed, then issued on 5 June. */
     private function arena(): Invoice
     {
         $service = app(InvoiceService::class);
         $job = $this->job('Arena load-in', '2026-06-03', '2026-06-04', 65000);
-        $draft = $service->updateDraft($service->draftForJob($job), [
+        $draft = $service->draftForJob($job);
+        $draft = $service->updateDraft($draft, [
             'bill_to_email' => 'accounts@example.test', 'bill_to_address' => "Acme Events\n2 Dock Road\nLondon E16 1XL",
-        ], [
-            ['description' => 'Arena load-in: crew, 3 and 4 Jun 2026', 'quantity' => '2', 'unit_price' => '325.00'],
-            ['description' => 'Taxi to the venue', 'quantity' => '1', 'unit_price' => '18.40'],
-            ['description' => 'Overtime (hours)', 'quantity' => '1.5', 'unit_price' => '33.33'],
-        ]);
+        ], self::arenaLines($draft));
 
         return $service->issue($draft->fresh(), '2026-06-05')->fresh();
     }
@@ -144,20 +157,18 @@ class GoldenInvoiceFlowTest extends TestCase
         $service = app(InvoiceService::class);
         $job = $this->job('Arena load-in', '2026-06-03', '2026-06-04', 65000);
 
-        // A draft from the job: its fee as one line, the client's name, the usual terms.
+        // A draft from the job: its fee as one line, the client's name, the usual terms. S6 changes the line's words on
+        // purpose: a fee line names the job's dates (CostWords::dates), so this two-day job's says 3–4 Jun, not 3 Jun.
         $draft = $service->draftForJob($job);
         $this->assertSame(['draft', null, 'Acme Events', null, null, null, 'GBP', 65000, null, 'Payment due within 30 days.', null, null], self::fields($draft->fresh()));
         $this->assertSame([$this->client()->id, $job->id], [$draft->client_id, $draft->work_job_id]);
-        $this->assertSame([['Arena load-in (3 Jun 2026)', '1.00', 65000, 65000, 0, null]], self::lines($draft));
+        $this->assertSame([['Arena load-in (3–4 Jun 2026)', '1.00', 65000, 65000, 0, null]], self::lines($draft));
         $drafted = AuditEvent::query()->where('action', 'invoice.drafted')->sole();
         $this->assertSame(['you', null, ['from_job' => $job->id]], [$drafted->actor, $drafted->before, $drafted->after]);
 
         // Its lines changed: each priced exactly in pence (1.5 × £33.33 rounds half up to £50.00).
-        $draft = $service->updateDraft($draft, ['bill_to_email' => 'accounts@example.test', 'bill_to_address' => "Acme Events\n2 Dock Road\nLondon E16 1XL"], [
-            ['description' => 'Arena load-in: crew, 3 and 4 Jun 2026', 'quantity' => '2', 'unit_price' => '325.00'],
-            ['description' => 'Taxi to the venue', 'quantity' => '1', 'unit_price' => '18.40'],
-            ['description' => 'Overtime (hours)', 'quantity' => '1.5', 'unit_price' => '33.33'],
-        ]);
+        $draft = $service->updateDraft($draft, ['bill_to_email' => 'accounts@example.test', 'bill_to_address' => "Acme Events\n2 Dock Road\nLondon E16 1XL"],
+            self::arenaLines($draft));
         $this->assertSame([
             ['Arena load-in: crew, 3 and 4 Jun 2026', '2.00', 32500, 65000, 0, null],
             ['Taxi to the venue', '1.00', 1840, 1840, 1, null],

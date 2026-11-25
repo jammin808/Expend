@@ -7,6 +7,7 @@ use App\Domain\Telegram\Telegram;
 use App\Models\Setting;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -15,11 +16,15 @@ use RuntimeException;
 /**
  * Gmail access through Google's own API and your own Google sign-in client.
  *
- * The gmail.modify scope is requested: read, and change labels. Google's permission is broad (it can't
- * delete mail permanently, but it could change mail), so the app's code only ever reads, and adds or
- * removes its own "✓ Invoiced" label (GmailLabeller). It never sends, moves or deletes anything.
- * Connections made with read-only access keep working for reading. The refresh token is stored
- * encrypted; disconnecting revokes it at Google.
+ * The gmail.modify scope is requested: read, change labels and work with drafts. Google's permission is broad (it
+ * can't delete mail permanently, but it could change mail), so the app's code only ever reads, adds or removes its own
+ * "✓ Invoiced" label (GmailLabeller), and puts an issued invoice or a reminder you asked for in your drafts
+ * (GmailDrafts). It sends one of those drafts only when you press Send, and deletes only its own drafts you haven't
+ * edited; it never moves or deletes your mail. Connections made with read-only access keep working for reading. The
+ * refresh token is stored encrypted; disconnecting revokes it at Google.
+ *
+ * A request Gmail refuses throws a RuntimeException whose code is the HTTP status (404: it isn't there any more), so
+ * callers can tell a draft you deleted from Gmail being unreachable.
  */
 final class GmailClient
 {
@@ -145,30 +150,45 @@ final class GmailClient
         AuditLog::record('settings.gmail_disconnected', 'Settings');
     }
 
-    /** GET a Gmail API path, for example "messages" or "messages/{id}". */
-    public static function get(string $path, array $query = []): array
+    /**
+     * GET a Gmail API path, for example "messages" or "messages/{id}". The query may be a string, for a parameter Gmail
+     * takes more than once (metadataHeaders=To&metadataHeaders=Subject). With a timeout (seconds), a request made while
+     * you wait, it isn't retried.
+     */
+    public static function get(string $path, array|string $query = [], ?int $timeout = null): array
     {
         // Retry only what a retry can fix: network trouble and Google's own server errors.
         $retryable = fn ($e) => $e instanceof ConnectionException
             || ($e instanceof RequestException && $e->response->serverError());
-        $response = Http::withToken(self::accessToken())->timeout(30)->retry(2, 500, $retryable, throw: false)->get(self::API.$path, $query);
+        $request = fn () => Http::withToken(self::accessToken())->timeout($timeout ?? 30);
+        $response = ($timeout === null ? $request()->retry(2, 500, $retryable, throw: false) : $request())->get(self::API.$path, $query);
         if ($response->status() === 401) {
             Setting::put('gmail_access_token', null);
-            $response = Http::withToken(self::accessToken())->timeout(30)->get(self::API.$path, $query);
-        }
-        if ($response->failed()) {
-            throw new RuntimeException('Gmail said: '.($response->json('error.message') ?? 'HTTP '.$response->status()));
+            $response = $request()->get(self::API.$path, $query);
         }
 
-        return $response->json() ?? [];
+        return self::answer($response);
     }
 
-    /** POST to a Gmail API path, for example "labels" or "messages/batchModify". Only used for the label. */
-    public static function post(string $path, array $body): array
+    /** POST to a Gmail API path, for example "labels", "messages/batchModify", "drafts" or "drafts/send". */
+    public static function post(string $path, array $body, ?int $timeout = null): array
     {
-        $response = Http::withToken(self::accessToken())->timeout(30)->asJson()->post(self::API.$path, $body);
+        $response = Http::withToken(self::accessToken())->timeout($timeout ?? 30)->asJson()->post(self::API.$path, $body);
+
+        return self::answer($response);
+    }
+
+    /** DELETE a Gmail API path: only ever one of Expend's own drafts ("drafts/{id}"). */
+    public static function delete(string $path, ?int $timeout = null): void
+    {
+        self::answer(Http::withToken(self::accessToken())->timeout($timeout ?? 30)->delete(self::API.$path));
+    }
+
+    /** The answer's JSON, or a RuntimeException with Gmail's message and the HTTP status as its code. */
+    private static function answer(Response $response): array
+    {
         if ($response->failed()) {
-            throw new RuntimeException('Gmail said: '.($response->json('error.message') ?? 'HTTP '.$response->status()));
+            throw new RuntimeException('Gmail said: '.($response->json('error.message') ?? 'HTTP '.$response->status()), $response->status());
         }
 
         return $response->json() ?? [];

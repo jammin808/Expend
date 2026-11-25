@@ -8,6 +8,7 @@ use App\Domain\Telegram\Telegram;
 use App\Mail\InvoiceEmail;
 use App\Models\AuditEvent;
 use App\Models\Invoice;
+use App\Models\InvoiceEmail as EmailRow;
 use App\Models\Setting;
 use App\Support\Money;
 use Carbon\CarbonInterface;
@@ -21,7 +22,16 @@ use Throwable;
  * Emails an issued invoice to the client, and reminders when it's overdue. Sent from your mailbox if set up.
  *
  * The invoice is marked as sent (or reminded) when the email is queued, so a second press can see it's been done;
- * if the email then fails to send, that is undone and you're told (see failed()).
+ * if the email then fails to send, that is undone and you're told (see failed()). Each email is also a row in
+ * invoice_emails (route mailer), marked failed if it doesn't send.
+ *
+ * One route at a time: while the invoice (or its reminder) is in your Gmail drafts (InvoiceEmails), that kind isn't
+ * sent from here: it's sent from Gmail, or the draft is deleted there first (the draft is looked at in Gmail before
+ * refusing, so one you deleted or sent there is seen). A reminder isn't sent while the invoice itself waits unsent in
+ * your Gmail drafts. Emailing the invoice ends a try still putting it in Gmail, and Expend's own draft that try may
+ * have left there is taken out (InvoiceEmails::clearStray); one sent from Gmail already is recorded, not emailed
+ * again. What has come in is counted as income
+ * design v3 counts it (InvoicePayments: outstanding, refunded, payments on a voided invoice of the same client).
  */
 final class InvoiceMailer
 {
@@ -45,16 +55,42 @@ final class InvoiceMailer
         if ($invoice->status !== 'issued' && ! ($reminder === false && $invoice->status === 'paid')) {
             throw new InvalidArgumentException('Only issued invoices can be emailed.');
         }
+        $kind = $reminder ? 'reminder' : 'invoice';
+        // Its Gmail draft as it is now: one you deleted there no longer holds this back, one you sent is recorded.
+        if (($seen = $this->lookInGmail($invoice, $kind, $once)) !== null) {
+            return $seen;
+        }
+        $stray = null;
 
-        return DB::transaction(function () use ($invoice, $to, $reminder, $once, $offeredAt) {
+        $message = DB::transaction(function () use ($invoice, $to, $reminder, $once, $offeredAt, $kind, &$stray) {
             // Locked, so two presses handled at once can't both send.
             $fresh = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
 
+            if (InvoiceEmails::open($fresh, $kind) !== null) {
+                $message = $reminder
+                    ? "The reminder for invoice {$fresh->number} is in your Gmail drafts: send it from there, or delete it there first."
+                    : "Invoice {$fresh->number} is in your Gmail drafts, ready to send: send it from there, or delete it there first.";
+                if ($once) {
+                    return $message;
+                }
+                throw new InvalidArgumentException($message);
+            }
+            // A reminder is for an invoice the client has: never while the invoice itself waits unsent in your Gmail drafts.
+            if ($reminder && InvoiceEmails::open($fresh, 'invoice') !== null) {
+                $message = "Invoice {$fresh->number} hasn’t been sent yet: it’s in your Gmail drafts, send it first.";
+                if ($once) {
+                    return $message;
+                }
+                throw new InvalidArgumentException($message);
+            }
             if ($reminder && ($held = $this->holdReminder($fresh, $once))) {
                 return $held;
             }
             if ($once && ! $reminder && $fresh->sent_at) {
                 return "Invoice {$fresh->number} was already ".($fresh->sent_to ? "emailed to {$fresh->sent_to}" : 'sent').' on '.$fresh->sent_at->format('j M Y').', so it wasn’t sent again.';
+            }
+            if ($once && ! $reminder && (InvoicePayments::received([$fresh])[$fresh->id] ?? InvoicePayments::EMPTY)['outstanding'] <= 0) {
+                return "Invoice {$fresh->number} is paid or closed, so it wasn’t sent.";
             }
             $last = $fresh->reminded_at;
             if ($once && $reminder && $last && ($last->gt(now()->subHours(self::REPEAT_HOURS)) || ($offeredAt && $last->gte($offeredAt)))) {
@@ -98,11 +134,61 @@ final class InvoiceMailer
                 ? $fresh->forceFill(['reminded_at' => $at, 'reminder_count' => $fresh->reminder_count + 1, 'message_id' => $thread])->save()
                 : $fresh->forceFill(['sent_at' => $at, 'sent_to' => $to, 'message_id' => $thread])->save();
             AuditLog::record($reminder ? 'invoice.reminder_sent' : 'invoice.sent', $fresh, null, ['to' => $to, 'number' => $fresh->number, 'message_id' => $thread]);
-            Mail::to($to)->queue(new InvoiceEmail($fresh, $reminder, $before, $at->format('Y-m-d H:i:s'), $thread));
+            $mail = new InvoiceEmail($fresh, $reminder, $before, $at->format('Y-m-d H:i:s'), $thread);
+            // A try still putting it in Gmail is over: this route took it. What a try may have left there goes after.
+            if (! $reminder) {
+                InvoiceEmails::retirePending($fresh);
+                $stray = InvoiceEmails::stray($fresh);
+            }
+            EmailRow::query()->create([
+                'invoice_id' => $fresh->id, 'kind' => $reminder ? 'reminder' : 'invoice', 'route' => 'mailer', 'status' => 'sent', 'to_address' => Str::limit($to, 195, ''),
+                'subject' => Str::limit((string) $mail->envelope()->subject, 245), 'rfc_message_id' => $reminder ? null : $thread, 'sent_at' => $at,
+            ]);
+            Mail::to($to)->queue($mail);
             $invoice->setRawAttributes($fresh->getAttributes(), true);
 
             return ($reminder ? 'Reminder for ' : 'Invoice ').$fresh->number.' is on its way to '.$to.'.';
         });
+        if ($stray !== null) {
+            // Gmail may have made an earlier try's draft without saying so: it isn't left there to be sent too.
+            $note = app(InvoiceEmails::class)->clearStray($invoice, $stray);
+            $message .= $note !== '' ? ' '.$note : '';
+        }
+
+        return $message;
+    }
+
+    /**
+     * Before sending: the open Gmail draft of this kind looked at in Gmail (a few seconds at most), so a draft you
+     * deleted there doesn't hold the email back, and one you sent from there isn't sent again. A message when it was
+     * sent from Gmail; null otherwise (and when Gmail can't be read: the draft as last seen holds it back).
+     */
+    private function lookInGmail(Invoice $invoice, string $kind, bool $once): ?string
+    {
+        $open = InvoiceEmails::open($invoice, $kind);
+        // A try that Gmail may have answered without Expend hearing: its draft may be there, or sent from there.
+        $stray = $open === null ? InvoiceEmails::stray($invoice, $kind) : null;
+        if (($open === null && $stray === null) || ! InvoiceEmails::canUse()) {
+            return null;
+        }
+        try {
+            $emails = app(InvoiceEmails::class)->whileYouWait();
+            $outcome = $open !== null ? $emails->check($open) : $emails->settleStray($invoice, $stray);
+        } catch (Throwable $e) {
+            if (! InvoiceEmails::transient($e) && ! InvoiceEmails::isBlind($e)) {
+                report($e);
+            }
+
+            return null;
+        }
+        if ($outcome !== 'sent') {
+            return null;
+        }
+        $message = ($kind === 'reminder' ? "The reminder for invoice {$invoice->number}" : "Invoice {$invoice->number}").' was sent from your Gmail: it’s marked as sent.';
+        if ($once) {
+            return $message;
+        }
+        throw new InvalidArgumentException($message);
     }
 
     /**
@@ -125,18 +211,19 @@ final class InvoiceMailer
     }
 
     /**
-     * Whether a reminder should wait, by what has come in for the invoice, counted as the to-do list counts it (a
-     * payment linked to it, income recorded for its job, money in another currency, or one waiting in the Inbox).
-     * Paid in full: never. Anything else come in: not from a one-tap button, whose email tells the client no payment
+     * Whether a reminder should wait, by what has come in for the invoice, counted as income design v3 counts it (a
+     * payment linked to it, income recorded for its job, money in another currency, one waiting in the Inbox, money
+     * paid back against it, or a payment on a voided invoice of the same client that counts nowhere yet).
+     * Paid in full or closed: never. Anything else: not from a one-tap button, whose email tells the client no payment
      * has been seen (the to-do list doesn't offer it then); from the invoice's page you can still choose to.
      *
      * @return string|null why not, for a message (a one-tap button), or null to go ahead
      */
     private function holdReminder(Invoice $fresh, bool $once): ?string
     {
-        ['paid' => $paid, 'elsewhere' => $elsewhere, 'waiting' => $waiting] = InvoicePayments::received([$fresh])[$fresh->id] ?? ['paid' => 0, 'elsewhere' => 0, 'waiting' => 0];
-        if ($paid >= $fresh->total_minor) {
-            $message = "Invoice {$fresh->number} is paid in full, so no reminder was sent.";
+        $r = InvoicePayments::received([$fresh])[$fresh->id] ?? InvoicePayments::EMPTY;
+        if ($r['outstanding'] <= 0 && in_array($r['state'], ['paid', 'closed'], true)) {
+            $message = "Invoice {$fresh->number} is ".($r['state'] === 'closed' ? 'closed' : 'paid in full').', so no reminder was sent.';
             if ($once) {
                 return $message;
             }
@@ -148,9 +235,11 @@ final class InvoiceMailer
         $after = ' To send one anyway, use the invoice’s page.';
 
         return match (true) {
-            $waiting > 0 => 'No reminder was sent: '.Money::format($waiting).' that may be for invoice '.$fresh->number.' is waiting in the Inbox. Decide it first.'.$after,
-            $paid > 0 => 'No reminder was sent: '.Money::format($paid, $fresh->currency ?: 'GBP').' of it has come in, and the reminder tells the client no payment has been seen.'.$after,
-            $elsewhere > 0 => 'No reminder was sent: '.Money::format($elsewhere).' came in for this job in another currency, so check whether invoice '.$fresh->number.' has been paid first.'.$after,
+            $r['waiting'] > 0 => 'No reminder was sent: '.Money::format($r['waiting']).' that may be for invoice '.$fresh->number.' is waiting in the Inbox. Decide it first.'.$after,
+            $r['refunded'] > 0 => 'No reminder was sent: '.ChaseLadder::paidBack($fresh, $r['refunded'], InvoicePayments::currencyOf($fresh)).$after,
+            ($stranded = ChaseLadder::stranded($fresh)) !== null => 'No reminder was sent: '.$stranded.$after,
+            $r['paid'] > 0 => 'No reminder was sent: '.Money::format($r['paid'], $fresh->currency ?: 'GBP').' of it has come in, and the reminder tells the client no payment has been seen.'.$after,
+            $r['elsewhere'] > 0 => 'No reminder was sent: '.Money::format($r['elsewhere']).' came in for this job in another currency, so check whether invoice '.$fresh->number.' has been paid first.'.$after,
             default => null,
         };
     }
@@ -185,6 +274,10 @@ final class InvoiceMailer
                 $mark !== null && $mark > $claimedAt => 'later',
                 default => 'untracked',
             };
+            // This email's row (when it has one) says it didn't send.
+            EmailRow::query()->where('invoice_id', $fresh->id)->where('kind', $reminder ? 'reminder' : 'invoice')->where('route', 'mailer')
+                ->where('status', 'sent')->where('sent_at', $claimedAt)->get()
+                ->each(fn (EmailRow $row) => $row->forceFill(['status' => 'failed', 'error' => Str::limit($why, 240)])->save());
             if ($outcome === 'undone') {
                 $fresh->forceFill($restore)->save();
             } elseif ($outcome === 'later' && $reminder && (int) $fresh->reminder_count > 0) {

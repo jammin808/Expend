@@ -24,7 +24,12 @@ class InvoiceEmail extends Model
 
     public const ROUTES = ['gmail', 'mailer', 'by_hand'];
 
-    public const STATUSES = ['drafted', 'sent', 'deleted', 'failed', 'replaced', 'removed'];
+    /**
+     * pending: Expend is putting it in Gmail (Gmail didn't answer in time; a queued try follows); drafted: in your Gmail
+     * drafts; sent; deleted (in Gmail, unsent); failed (couldn't be put in Gmail, or a mailer email didn't send);
+     * replaced (another route or a later reminder took over); removed (Expend took its own draft out).
+     */
+    public const STATUSES = ['pending', 'drafted', 'sent', 'deleted', 'failed', 'replaced', 'removed'];
 
     protected $guarded = ['id'];
 

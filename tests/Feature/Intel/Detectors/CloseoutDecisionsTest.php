@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Intel\Detectors;
 
+use App\Domain\Charges\CostCharges;
 use App\Domain\Intel\Cycle\CycleContext;
 use App\Domain\Intel\Detectors\JobCloseout;
 use App\Domain\Invoices\InvoiceService;
@@ -32,7 +33,7 @@ use Tests\TestCase;
  * job.closeout and your decisions: what you snoozed or marked not relevant stays so, a close-out you hid comes back only
  * with what's new, and what it can't account for (a recharge with no amount, a shortfall in another currency) stays on
  * the list as it was. Also: income recorded for a job invoiced outside Expend, one line for several recharges, and a
- * line that only names the provider.
+ * line that only names the provider. Version 3 (build slice S6): your decision about a cost ("Not charged") takes it out.
  */
 class CloseoutDecisionsTest extends TestCase
 {
@@ -43,6 +44,9 @@ class CloseoutDecisionsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_name', 'Alex Smith Sound');
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         Setting::put('job_finder_auto', false);
         $this->at('2026-06-10');
         $this->actingAs(User::factory()->create());
@@ -307,5 +311,16 @@ class CloseoutDecisionsTest extends TestCase
 
         $items = $this->items();
         $this->assertSame([15000, 'EUR'], [$items['underbilled:'.$show->id]['amount'] ?? null, $items['underbilled:'.$show->id]['currency'] ?? null], 'Listed as before: €150 less than its PO');
+    }
+
+    public function test_not_charged_on_a_cost_takes_it_out_of_the_close_out(): void
+    {
+        [$job, , $hotel] = $this->arena();
+        app(CostCharges::class)->decide('travel:'.$hotel->id, 'no_charge');
+
+        $item = $this->items()['closeout:'.$job->id];
+        $this->assertSame([15000, 'Arena load-in: £150.00 not invoiced'], [$item['amount'], $item['title']], 'Only what’s short of the PO');
+        $this->assertStringNotContainsString('Premier Inn', $item['detail']);
+        $this->assertArrayNotHasKey('recharge:'.$hotel->id, $this->items(), 'Your decision stands: no reminder either');
     }
 }

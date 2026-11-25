@@ -1223,7 +1223,10 @@ final class AssistantTools
                 'days' => array_map(fn ($d) => ['date' => $d['date'], 'kind' => $d['kind'], 'kind_label' => JobDay::KINDS[$d['kind']] ?? $d['kind']], $job->dayList()),
                 'start_time' => $job->start_time ? substr((string) $job->start_time, 0, 5) : null, 'end_time' => $job->end_time ? substr((string) $job->end_time, 0, 5) : null,
                 'venue' => $job->location, 'postcode' => $job->postcode, 'po_number' => $job->po_number,
-                'agreed_fee' => $job->fee_pence ? self::money($job->fee_pence) : null, 'notes' => $job->notes, 'status' => $job->status,
+                'agreed_fee' => $job->fee_pence ? self::money($job->fee_pence) : null,
+                // A day or hour rate in pounds is the job's rate (JobCreator), no longer a line in its notes.
+                'rate' => $job->rate_pence ? self::money($job->rate_pence) + ['per' => $job->rate_unit] : null,
+                'notes' => $job->notes, 'status' => $job->status,
             ],
         ];
     }

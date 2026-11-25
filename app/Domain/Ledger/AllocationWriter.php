@@ -176,6 +176,9 @@ final class AllocationWriter
         }
 
         $done = DB::transaction(function () use ($source, $lines, $decidedBy, $confirm, $reason, $ruleId, $taxYear, $provenance, $method, $supersede) {
+            // The audit head first, as every audited writer does: the lines written next lock their job, invoice and
+            // client rows (foreign keys), which a writer holding the head may be waiting for.
+            AuditLog::lockHead();
             $existing = $this->lockedAllocations($source, $status);
 
             if ($decidedBy !== 'you' && $existing->contains(fn (Allocation $a) => $a->is_manual || $a->confirmed_at !== null)) {
@@ -410,6 +413,7 @@ final class AllocationWriter
         $actor = AuditContext::actor();
 
         DB::transaction(function () use ($source, $reason, $actor) {
+            AuditLog::lockHead();
             $allocations = $this->lockedAllocations($source);
             if ($allocations->isEmpty()) {
                 throw new InvalidArgumentException('There is nothing to confirm yet. Choose what this is first.');
@@ -448,6 +452,7 @@ final class AllocationWriter
         $actor ??= AuditContext::actor();
 
         DB::transaction(function () use ($source, $reason, $actor) {
+            AuditLog::lockHead();
             $before = $this->lockedAllocations($source)->map(fn ($a) => $this->snapshot($a))->all();
             $source->allocations()->delete();
             $source->forceFill(['review_status' => 'unreviewed'])->saveQuietly();

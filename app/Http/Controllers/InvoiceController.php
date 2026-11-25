@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Invoices\InvoiceDraftSync;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Invoices\InvoiceService;
@@ -43,6 +44,10 @@ class InvoiceController extends Controller
                 'sent_at' => $invoice->sent_at?->format('Y-m-d H:i'), 'sent_to' => $invoice->sent_to,
                 'reminded_at' => $invoice->reminded_at?->format('Y-m-d H:i'), 'reminder_count' => $invoice->reminder_count,
                 'email_failed' => self::lastEmailFailed($invoice),
+                // The draft's lines as this page shows them, and the last change made to them: a save or an issue from a
+                // page left open while they changed is refused, and the page starts again from the lines as they are.
+                'lines_version' => $invoice->status === 'draft' ? InvoiceDraftSync::linesVersion($invoice) : null,
+                'seen_up_to' => $invoice->status === 'draft' ? InvoiceDraftSync::lastChange($invoice) : null,
                 'lines' => $invoice->lines->map(fn ($l) => [
                     'description' => $l->description, 'quantity' => (string) $l->quantity, 'unit_price' => (string) BigDecimal::ofUnscaledValue($l->unit_price_minor, 2),
                     'amount_minor' => $l->amount_minor, 'source_quote' => $l->source_quote,
@@ -69,6 +74,7 @@ class InvoiceController extends Controller
             'work_job_id' => 'nullable|integer|exists:work_jobs,id', 'client_id' => 'nullable|integer|exists:clients,id',
             'lines' => 'array', 'lines.*.description' => 'required|string|max:500', 'lines.*.quantity' => 'required|numeric|min:0.01',
             'lines.*.unit_price' => 'required|string', 'lines.*.source_quote' => 'nullable|string',
+            'lines_version' => 'nullable|string|max:64',
         ], [
             'bill_to_name.max' => '“Bill to” is too long (200 characters at most).',
             'bill_to_address.max' => 'The address is too long (1,000 characters at most).',
@@ -89,6 +95,9 @@ class InvoiceController extends Controller
         ]);
         $lines = $data['lines'] ?? [];
         unset($data['lines']);
+        if (($data['lines_version'] ?? null) === null) {
+            unset($data['lines_version']);
+        }
         $data['currency'] = strtoupper($data['currency']);
 
         try {
@@ -102,8 +111,11 @@ class InvoiceController extends Controller
 
     public function issue(Request $request, Invoice $invoice): RedirectResponse
     {
+        // What the page showed: its lines and the last change to them (none from a page that doesn't say).
+        $shown = $request->filled('lines_version') ? ['lines_version' => $request->string('lines_version')->toString(),
+            'seen_up_to' => is_numeric($request->input('seen_up_to')) ? (int) $request->input('seen_up_to') : null] : null;
         try {
-            $issued = $this->invoices->issue($invoice, $request->string('issue_date')->toString() ?: null);
+            $issued = $this->invoices->issue($invoice, $request->string('issue_date')->toString() ?: null, $shown);
         } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }

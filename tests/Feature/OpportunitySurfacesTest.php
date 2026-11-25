@@ -157,7 +157,8 @@ class OpportunitySurfacesTest extends TestCase
         $this->assertSame(['Acme Awards', 'Acme Events', '2026-03-12', '2026-03-14', 'Leeds Arena', 'LS11 8BU'],
             [$job->title, $job->client->name, $job->starts_on->format('Y-m-d'), $job->ends_on->format('Y-m-d'), $job->location, $job->postcode]);
         $this->assertSame([['2026-03-12', 'rig'], ['2026-03-14', 'derig']], $job->days()->get()->map(fn ($d) => [$d->on_date->format('Y-m-d'), $d->kind])->all());
-        $this->assertStringContainsString('Rate: £350.00 a day', $job->notes);
+        $this->assertSame([35000, 'day', 2], [$job->rate_pence, $job->rate_unit, $job->days_agreed], 'A day rate in pounds is the job’s rate (S4)');
+        $this->assertStringNotContainsString('Rate:', (string) $job->notes);
         $this->assertSame($job->id, $doc->fresh()->work_job_id, 'its email is linked to the job');
 
         $o->refresh();
@@ -360,7 +361,7 @@ class OpportunitySurfacesTest extends TestCase
         $result = json_decode($ai->requests[1]['messages'][2]['content'][0]['content'], true);
         $this->assertSame([true, $job->id, url('/jobs/'.$job->id)], [$result['ok'], $result['job_id'], $result['link']]);
         $this->assertSame([['date' => '2026-03-12', 'kind' => 'rig', 'kind_label' => 'Rig / load-in'], ['date' => '2026-03-13', 'kind' => 'show', 'kind_label' => 'Show']], $result['created']['days']);
-        $this->assertStringContainsString('Rate: £350.00 a day', $result['created']['notes']);
+        $this->assertSame(['pence' => 35000, 'formatted' => '£350.00', 'per' => 'day'], $result['created']['rate'], 'The job’s rate, to repeat (S4: no longer in its notes)');
         $this->assertStringContainsString('only when the owner', $ai->requests[0]['system']);
 
         // Words that aren't the owner's (from an email, say) are refused, and so is a call with no question at all.

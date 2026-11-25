@@ -5,6 +5,7 @@ namespace Tests\Feature\Invoices;
 use App\Domain\Invoices\InvoiceService;
 use App\Models\Invoice;
 use App\Models\InvoiceLine;
+use App\Models\Setting;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
@@ -28,6 +29,9 @@ class InvoiceLineGuardTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_name', 'Alex Smith Sound');
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         Storage::fake('local');
     }
 

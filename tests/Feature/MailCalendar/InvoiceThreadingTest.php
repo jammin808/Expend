@@ -2,22 +2,35 @@
 
 namespace Tests\Feature\MailCalendar;
 
+use App\Domain\Invoices\InvoiceEmails;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Domain\Invoices\InvoiceService;
 use App\Mail\InvoiceEmail;
 use App\Models\AuditEvent;
+use App\Models\Document;
+use App\Models\GmailMessage;
 use App\Models\Invoice;
+use App\Models\InvoiceEmail as EmailRow;
 use App\Models\Setting;
 use App\Models\User;
 use App\Models\WorkJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
+use InvalidArgumentException;
 use LogicException;
 use Symfony\Component\Mime\Email;
+use Tests\Feature\Invoices\FakeGmail;
 use Tests\TestCase;
 
-/** Mail and calendar batch 1: each invoice email has a fixed Message-ID, and reminders point back to it. */
+/**
+ * Mail and calendar batch 1: each invoice email has a fixed Message-ID, and reminders point back to it.
+ *
+ * Build slice S7: an invoice put in Gmail goes in the booking's conversation (In-Reply-To and References to its last
+ * message), not on the invoice's own Message-ID; once it's sent from Gmail, the sent message's Message-ID becomes the
+ * invoice's when it has none, so Expend's own later reminders join that conversation. Each email is a row in
+ * invoice_emails, and Expend's mailer waits while the invoice is in your Gmail drafts.
+ */
 class InvoiceThreadingTest extends TestCase
 {
     use RefreshDatabase;
@@ -28,6 +41,9 @@ class InvoiceThreadingTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_name', 'Alex Smith Sound');
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         $this->mail = app('mail.manager');
         Storage::fake('local');
         Setting::put('job_finder_auto', false);
@@ -143,5 +159,65 @@ class InvoiceThreadingTest extends TestCase
         $mail->failed(new \RuntimeException('Mailbox refused the login'));
         $this->assertNull($invoice->fresh()->sent_at, 'Not marked as sent');
         $this->assertSame($id, $invoice->fresh()->message_id);
+    }
+
+    public function test_each_email_from_expend_is_a_row_and_a_failed_one_is_marked_failed(): void
+    {
+        Setting::put('mail_method', 'server');
+        Mail::fake();
+        $invoice = $this->issuedInvoice('2026-10-15');
+        app(InvoiceMailer::class)->send($invoice);
+        $id = $invoice->fresh()->message_id;
+        $this->travelTo(now()->setDate(2026, 11, 24));
+        app(InvoiceMailer::class)->send($invoice->fresh(), reminder: true);
+
+        $rows = EmailRow::query()->orderBy('id')->get();
+        $this->assertSame([['invoice', 'mailer', 'sent', 'accounts@acme-events.example', $id], ['reminder', 'mailer', 'sent', 'accounts@acme-events.example', null]],
+            $rows->map(fn (EmailRow $r) => [$r->kind, $r->route, $r->status, $r->to_address, $r->rfc_message_id])->all());
+        $this->assertStringStartsWith('Invoice ', $rows[0]->subject);
+        $this->assertStringStartsWith('Reminder: invoice ', $rows[1]->subject);
+
+        Mail::queued(InvoiceEmail::class)->last()->failed(new \RuntimeException('Mailbox refused the login'));
+        $this->assertSame(['sent', 'failed'], EmailRow::query()->orderBy('id')->pluck('status')->all());
+        $this->assertSame('Mailbox refused the login', EmailRow::query()->orderByDesc('id')->value('error'));
+    }
+
+    public function test_a_gmail_draft_goes_in_the_booking_conversation_and_later_reminders_follow_it(): void
+    {
+        Setting::put('mail_method', 'server');
+        Mail::fake();
+        $gmail = FakeGmail::install();
+        $po = $gmail->receive('Acme Buyer <buyer@acme-events.example>', 'PO-4471 for Acme Awards');
+        $job = WorkJob::query()->create(['title' => 'Acme Awards', 'starts_on' => '2026-10-14', 'ends_on' => '2026-10-14', 'po_number' => 'PO-4471']);
+        $doc = Document::query()->create(['source' => 'email', 'original_name' => 'po.eml', 'mime' => 'message/rfc822', 'sha256' => str_repeat('d', 64), 'stored_path' => 'x',
+            'kind' => 'po', 'work_job_id' => $job->id, 'email_from' => 'buyer@acme-events.example', 'received_at' => '2026-10-01 09:00:00']);
+        GmailMessage::query()->create(['message_id' => $po['id'], 'thread_id' => $po['thread'], 'search' => 'job_documents', 'document_id' => $doc->id]);
+        $draft = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'total_minor' => 0, 'bill_to_name' => 'Acme Events', 'bill_to_email' => 'accounts@acme-events.example']);
+        app(InvoiceService::class)->updateDraft($draft, [], [['description' => 'Show day', 'quantity' => '1', 'unit_price' => '450.00']]);
+
+        $invoice = app(InvoiceEmails::class)->issueToGmail($draft->fresh(), '2026-10-15')['invoice'];
+        $row = InvoiceEmails::open($invoice);
+        $inGmail = $gmail->draft($row->gmail_draft_id);
+        $this->assertSame($po['thread'], $inGmail['threadId']);
+        $this->assertSame('<'.$po['message_id'].'>', $inGmail['headers']['In-Reply-To'], 'Threaded on the conversation, not on the invoice’s own Message-ID');
+        $this->assertNull($invoice->fresh()->message_id, 'Not given until it’s sent');
+
+        // While it's in your Gmail drafts, Expend's mailer waits.
+        try {
+            app(InvoiceMailer::class)->send($invoice->fresh());
+            $this->fail('The mailer waits while it’s in your Gmail drafts');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('is in your Gmail drafts', $e->getMessage());
+        }
+
+        // Sent from Gmail: its Message-ID becomes the invoice's, so Expend's own reminder later joins that conversation.
+        $sent = $gmail->sendByHand($row->gmail_draft_id);
+        app(InvoiceEmails::class)->checkAll();
+        $id = trim($sent['headers']['Message-ID'], '<>');
+        $this->assertSame($id, $invoice->fresh()->message_id);
+        $this->travelTo(now()->setDate(2026, 11, 24));
+        app(InvoiceMailer::class)->send($invoice->fresh(), reminder: true);
+        $reminder = $this->built(unserialize(serialize(Mail::queued(InvoiceEmail::class)->sole())));
+        $this->assertSame('<'.$id.'>', $reminder->getHeaders()->get('In-Reply-To')->getBodyAsString());
     }
 }

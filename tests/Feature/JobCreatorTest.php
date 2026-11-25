@@ -112,19 +112,48 @@ class JobCreatorTest extends TestCase
         $this->assertSame(0, AuditEvent::query()->where('action', 'job.created')->count());
     }
 
-    public function test_a_fee_for_the_job_is_its_fee_and_a_day_rate_is_noted(): void
+    public function test_a_fee_for_the_job_is_its_fee_and_a_day_rate_is_its_rate(): void
     {
         $fee = $this->creator()->create(['title' => 'Gala', 'starts_on' => '2026-03-12', 'rate' => ['amount_minor' => 120000, 'currency' => 'GBP', 'unit' => 'job']], 'you');
         $this->assertSame([120000, null], [$fee->fee_pence, $fee->notes]);
 
+        // A day or hour rate in pounds is the job's rate, no longer a line in its notes (clients/jobs design, S4).
         $day = $this->creator()->create(['title' => 'Conference', 'starts_on' => '2026-03-12', 'ends_on' => '2026-03-13', 'note' => 'Bring IEMs',
             'rate' => ['amount_minor' => 35000, 'currency' => 'GBP', 'unit' => 'day']], 'you');
         $this->assertNull($day->fee_pence, 'What a day rate comes to depends on the days: not guessed');
-        $this->assertSame("Bring IEMs\nRate: £350.00 a day", $day->notes);
+        $this->assertSame([35000, 'day', 2, 'Bring IEMs'], [$day->rate_pence, $day->rate_unit, $day->days_agreed, $day->notes]);
 
         $euro = $this->creator()->create(['title' => 'Berlin show', 'starts_on' => '2026-03-12', 'rate' => ['amount_minor' => 50000, 'currency' => 'EUR', 'unit' => 'job']], 'you');
         $this->assertNull($euro->fee_pence, 'A fee in euros isn’t put in as pounds');
         $this->assertStringContainsString('for the job', $euro->notes);
+    }
+
+    public function test_a_fee_or_day_rate_fills_the_days_agreed_with_the_working_days_and_an_hour_rate_is_kept(): void
+    {
+        // Rig, travel day, show: two working days (travel days left out).
+        $days = $this->creator()->create(['title' => 'Expo', 'fee_pence' => 75000,
+            'dates' => [['date' => '2026-05-10', 'kind' => 'rig'], ['date' => '2026-05-11', 'kind' => 'travel'], ['date' => '2026-05-12', 'kind' => 'show']]], 'you');
+        $this->assertSame([75000, 2], [$days->fee_pence, $days->days_agreed]);
+        $this->assertSame(2, JobCreator::workingDays($days));
+
+        $given = $this->creator()->create(['title' => 'Expo 2', 'starts_on' => '2026-05-10', 'ends_on' => '2026-05-13', 'rate_pence' => 35000, 'rate_unit' => 'day', 'days_agreed' => 3], 'you');
+        $this->assertSame([35000, 'day', 3], [$given->rate_pence, $given->rate_unit, $given->days_agreed], 'Days agreed you give are kept');
+
+        $hourly = $this->creator()->create(['title' => 'Corporate', 'starts_on' => '2026-05-10', 'rate' => ['amount_minor' => 4500, 'currency' => 'GBP', 'unit' => 'hour']], 'you');
+        $this->assertSame([4500, 'hour', null, null], [$hourly->rate_pence, $hourly->rate_unit, $hourly->days_agreed, $hourly->notes], 'An hourly job agrees no days');
+
+        $plain = $this->creator()->create(['title' => 'Unpriced', 'starts_on' => '2026-05-10', 'rate_unit' => 'day'], 'you');
+        $this->assertSame([null, null, null], [$plain->rate_pence, $plain->rate_unit, $plain->days_agreed], 'A unit with no amount is no rate');
+
+        foreach ([[['rate_pence' => 0, 'rate_unit' => 'day'], 'Give the rate'], [['rate_pence' => 35000, 'rate_unit' => 'week'], 'Give the rate'],
+            [['days_agreed' => 0], 'days agreed'], [['days_agreed' => '3'], 'days agreed']] as [$fields, $message]) {
+            try {
+                $this->creator()->create($fields + ['title' => 'Gig', 'starts_on' => '2026-05-10'], 'you');
+                $this->fail('Accepted '.json_encode($fields));
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString($message, $e->getMessage());
+            }
+        }
     }
 
     public function test_everything_that_belongs_to_a_new_job_is_searched_for_after_it_is_saved(): void

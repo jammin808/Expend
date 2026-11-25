@@ -2,21 +2,30 @@
 
 namespace Tests\Feature\Intel\Detectors;
 
+use App\Domain\Charges\ChargeTermsWriter;
+use App\Domain\Charges\CostCharges;
 use App\Domain\Intel\Cycle\CycleContext;
 use App\Domain\Intel\Detectors\JobCloseout;
 use App\Domain\Intel\RefResolver;
 use App\Domain\Invoices\InvoiceService;
+use App\Domain\Jobs\JobDays;
+use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Todo\FindingsRegistry;
 use App\Domain\Todo\Fingerprints;
 use App\Domain\Todo\TodoList;
+use App\Models\Account;
+use App\Models\BankTransaction;
+use App\Models\Category;
 use App\Models\Client;
 use App\Models\Document;
 use App\Models\Finding;
+use App\Models\ImportBatch;
 use App\Models\Invoice;
 use App\Models\Setting;
 use App\Models\TravelItem;
 use App\Models\User;
 use App\Models\WorkJob;
+use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -25,6 +34,11 @@ use Tests\TestCase;
 /**
  * job.closeout: one verdict per finished job, from its PO, its invoices and the bookings you decided to recharge, which
  * says what the "less than its PO" and "recharge" items said for it, never counting them twice.
+ *
+ * Version 3 (build slice S6): for a job Expend tracks, its costs come from where each stands (ChargeStatus): a cost
+ * linked after the invoice went, and a day added since, are closed out; a covered job's booking is asked about until
+ * you say (it was on an invoice, or charge it now: then it goes on the client's next draft); a job cancelled with a fee
+ * still owed is looked at.
  */
 class JobCloseoutTest extends TestCase
 {
@@ -33,6 +47,9 @@ class JobCloseoutTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_name', 'Alex Smith Sound');
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         Setting::put('job_finder_auto', false);
         $this->at('2026-06-10');
         $this->actingAs(User::factory()->create());
@@ -220,5 +237,80 @@ class JobCloseoutTest extends TestCase
         $closeout->detect(new CycleContext);
         $this->assertArrayNotHasKey('recharge:'.$euros->id, $closeout->subsumed(), 'Never said by the close-out');
         $this->assertArrayNotHasKey('underbilled:'.$invoice->id, $items);
+    }
+
+    /** A payment decided by you as a cost of the job. */
+    private function payment(WorkJob $job, int $pence, string $payee, string $category, string $on = '2026-06-04'): BankTransaction
+    {
+        $account = Account::query()->firstOrCreate(['name' => 'Starling'], ['kind' => 'bank', 'provider' => 'starling']);
+        $batch = ImportBatch::query()->firstOrCreate(['account_id' => $account->id, 'original_filename' => 'june.csv'],
+            ['file_sha256' => str_repeat('a', 64), 'stored_path' => 'x', 'status' => 'committed']);
+        $tx = BankTransaction::query()->create(['account_id' => $account->id, 'import_batch_id' => $batch->id, 'posted_on' => $on, 'tax_year' => UkTaxYear::fromDate($on)->label(),
+            'description' => $payee, 'counterparty' => $payee, 'merchant_key' => $payee, 'amount_pence' => -$pence, 'raw' => [], 'fingerprint' => 'closeout-'.$payee.$on.$pence]);
+        app(AllocationWriter::class)->decide($tx, [['kind' => 'business_expense', 'category_id' => (int) Category::query()->where('code', $category)->value('id'),
+            'work_job_id' => $job->id, 'amount_pence' => -$pence, 'business_use_pct' => 100]]);
+
+        return $tx;
+    }
+
+    public function test_a_cost_linked_after_the_invoice_went_and_a_day_added_since_are_closed_out(): void
+    {
+        $client = Client::query()->firstOrCreate(['name' => 'Acme Events']);
+        app(ChargeTermsWriter::class)->applyPreset($client, 'at_cost');
+        $job = WorkJob::query()->create(['title' => 'Expo rig', 'client_id' => $client->id, 'starts_on' => '2026-06-03', 'ends_on' => '2026-06-04', 'status' => 'done',
+            'rate_pence' => 30000, 'rate_unit' => 'day']);
+        $service = app(InvoiceService::class);
+        $invoice = $service->issue($service->draftForJob($job), '2026-06-05');
+        $this->assertSame(60000, $invoice->total_minor);
+        $taxi = $this->payment($job, 2340, 'UBER', 'travel_taxi');
+        JobDays::add($job->fresh(), '2026-06-05');
+
+        $item = $this->items()['closeout:'.$job->id];
+        $this->assertSame([32340, 'Expo rig: £323.40 not invoiced', 'strong'], [$item['amount'], $item['title'], $item['grade']]);
+        $this->assertStringContainsString('To recharge and not on the invoice: Taxi: UBER, 4 Jun 2026 £23.40; Expo rig: 1 more day than on INV-0001 £300.00.', $item['detail']);
+        $this->assertContains('tx:'.$taxi->id, $item['why']);
+        $this->assertSame('/invoices/'.$invoice->id, $item['href']);
+    }
+
+    public function test_a_covered_jobs_booking_is_asked_about_until_you_say(): void
+    {
+        // Invoiced before Expend tracked line sources: covered. Its booking to recharge is asked about, as before.
+        $job = $this->job('Gala dinner');
+        $invoice = Invoice::query()->create(['status' => 'draft', 'number' => 'INV-0031', 'client_id' => $job->client_id, 'work_job_id' => $job->id, 'currency' => 'GBP',
+            'total_minor' => 50000, 'bill_to_name' => 'Acme Events', 'issue_date' => '2026-06-04', 'issued_at' => '2026-06-04 09:00:00']);
+        $invoice->allLines()->create(['description' => 'Crew', 'quantity' => 1, 'unit_price_minor' => 50000, 'amount_minor' => 50000]);
+        $invoice->update(['status' => 'issued']);
+        $hotel = $this->recharge($job);
+        $this->assertStringContainsString('To recharge and not on the invoice: Hotel Premier Inn Arena 2 Jun £180.00.', $this->items()['closeout:'.$job->id]['detail']);
+
+        // "It was on INV-0031": nothing to say any more, and the to-do item goes too.
+        app(CostCharges::class)->decide('travel:'.$hotel->id, 'invoiced', null, $invoice->id);
+        $items = $this->items();
+        $this->assertArrayNotHasKey('closeout:'.$job->id, $items);
+        $this->assertArrayNotHasKey('recharge:'.$hotel->id, $items);
+
+        // "Charge it": it's owed late, closed out as not on the invoice, and goes on Acme's next draft.
+        $this->at('2026-06-11');
+        app(CostCharges::class)->decide('travel:'.$hotel->id, 'recharge');
+        $this->assertSame(18000, $this->items()['closeout:'.$job->id]['amount']);
+        $next = WorkJob::query()->create(['title' => 'Awards night', 'client_id' => $job->client_id, 'starts_on' => '2026-06-12', 'ends_on' => '2026-06-12', 'fee_pence' => 40000]);
+        $draft = app(InvoiceService::class)->draftForJob($next);
+        $this->assertSame([['travel:'.$hotel->id, $job->id, true]], $draft->allLines()->where('source', 'cost')->get()
+            ->map(fn ($l) => [$l->source_ref, $l->source_job_id, (bool) $l->included])->all());
+    }
+
+    public function test_a_job_cancelled_with_a_fee_still_owed_is_looked_at(): void
+    {
+        $owed = WorkJob::query()->create(['title' => 'Festival stage', 'client_id' => Client::query()->firstOrCreate(['name' => 'Acme Events'])->id, 'starts_on' => '2026-06-05',
+            'ends_on' => '2026-06-05', 'status' => 'cancelled', 'cancel_charge' => 'fee', 'cancel_fee_pence' => 20000]);
+        $hotel = $this->recharge($owed, 9000, 'Travelodge');
+        $nothing = WorkJob::query()->create(['title' => 'Corporate dinner', 'starts_on' => '2026-06-05', 'ends_on' => '2026-06-05', 'status' => 'cancelled', 'cancel_charge' => 'none']);
+        $this->recharge($nothing, 9000, 'Ibis');
+
+        $closeout = new JobCloseout;
+        $found = collect($closeout->detect(new CycleContext))->keyBy('key');
+        $this->assertSame(1, $closeout->checked(), 'Only the job that still owes something');
+        $this->assertStringContainsString('To recharge and not on an invoice yet: Hotel Premier Inn Arena 2 Jun £90.00.', $found['closeout:'.$owed->id]->detail);
+        $this->assertSame(['recharge:'.$hotel->id => 'closeout:'.$owed->id], $closeout->subsumed());
     }
 }

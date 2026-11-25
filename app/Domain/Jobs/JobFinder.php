@@ -40,7 +40,8 @@ use Throwable;
  * uploads (POs, job invites, production packs, call sheets), and stays and journeys.
  *
  *  1. Each one is matched to an existing job when the evidence is clear: the same PO number, or the job's dates
- *     plus its client, venue, postcode or title words. A close call between two jobs is left for you.
+ *     plus its client (or its end client: who the work was for), venue, postcode or title words. A close call
+ *     between two jobs is left for you.
  *  2. What's left is grouped by date and shared words into possible jobs for you to add, add to an existing
  *     job, or dismiss. Dismissed sources aren't proposed again.
  *  3. Calendar entries the rules can't call are asked about with AI (if switched on). An AI answer only counts
@@ -175,7 +176,7 @@ final class JobFinder
         $this->clientsLoaded = true;
         $stats = ['linked' => 0, 'proposed' => 0, 'ai_checked' => 0, 'ai_rejected' => 0, 'considered' => 0, 'ai_left' => 0];
 
-        $jobs = WorkJob::query()->with(['client', 'days'])->where('status', '!=', 'cancelled')
+        $jobs = WorkJob::query()->with(['client', 'endClient', 'days'])->where('status', '!=', 'cancelled')
             ->whereDate('ends_on', '>=', $from->subDays(3)->format('Y-m-d'))->whereDate('starts_on', '<=', $to->addDays(3)->format('Y-m-d'))->get();
         $jobPos = $this->jobPoNumbers($jobs);
 
@@ -1032,6 +1033,14 @@ final class JobFinder
             if ($job->client && ($this->mentions($s['text'], $job->client->name) || ($s['client'] && self::same($s['client'], $job->client->name)))) {
                 $score += 3;
                 $why[] = 'mentions '.$job->client->name;
+            }
+            // Who the work was for (a production company or venue, booked through an agency) counts the same way, once
+            // when its name is the paying client's too.
+            $end = $job->end_client_id !== null ? $job->endClient : null;
+            if ($end && ! ($job->client && self::same($end->name, $job->client->name))
+                && ($this->mentions($s['text'], $end->name) || ($s['client'] && self::same($s['client'], $end->name)))) {
+                $score += 3;
+                $why[] = 'mentions '.$end->name;
             }
             $shared = array_values(array_intersect(self::words($s['text'].' '.$s['location']), self::words($jobText)));
             if ($shared) {

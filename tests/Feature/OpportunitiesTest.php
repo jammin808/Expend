@@ -353,7 +353,8 @@ class OpportunitiesTest extends TestCase
 
         $this->assertSame([['2026-05-10', 'rig'], ['2026-05-11', 'work'], ['2026-05-15', 'derig']], $this->days($job));
         $this->assertSame(['Acme Expo', 'Acme Events', 'NEC Birmingham', 'B40 1NT', 'booked'], [$job->title, $job->client->name, $job->location, $job->postcode, $job->status]);
-        $this->assertStringContainsString('Rate: £350.00 a day', $job->notes);
+        $this->assertSame([35000, 'day', 3], [$job->rate_pence, $job->rate_unit, $job->days_agreed], 'A day rate in pounds is the job’s rate (S4), with its working days agreed');
+        $this->assertStringNotContainsString('Rate:', (string) $job->notes);
         $this->assertStringContainsString('Contact: Alex Smith <alex@acme-events.example>', $job->notes);
         $this->assertSame(['linked' => 1, 'missed' => []], $links);
         $this->assertSame([$job->id, 'you'], [$email->fresh()->work_job_id, $email->fresh()->job_linked_by]);

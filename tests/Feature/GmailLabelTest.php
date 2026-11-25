@@ -33,6 +33,9 @@ class GmailLabelTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_name', 'Alex Smith Sound');
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         Setting::put('gmail_refresh_token', 'rt');
         Setting::put('gmail_access_token', 'at');
         Setting::put('gmail_access_expires', now()->addHour()->timestamp);

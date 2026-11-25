@@ -122,6 +122,8 @@ class DocumentsAndAiTest extends TestCase
         $this->assertSame($job->id, $doc->work_job_id);
 
         Setting::put('business_name', 'Test Freelancer');
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         $service = app(InvoiceService::class);
         $invoice = $service->draftFromDocument($doc);
         $this->assertSame(120000, $invoice->total_minor);
@@ -139,7 +141,12 @@ class DocumentsAndAiTest extends TestCase
         try {
             $issued->update(['total_minor' => 1]);
         } finally {
-            $second = $service->issue($service->draftForJob($job->fresh('client')->forceFill(['fee_pence' => 50000])));
+            // S6: the job is invoiced from its PO, so a second draft for it is a follow-up holding only what's still
+            // owed (its work is covered by the PO's invoice): the extra work is typed on it.
+            $followUp = $service->draftForJob($job->fresh('client'));
+            $this->assertSame([], $followUp->allLines()->pluck('description')->all());
+            $service->updateDraft($followUp, [], [['description' => 'Extra day', 'quantity' => '1', 'unit_price' => '500.00']]);
+            $second = $service->issue($followUp->fresh());
             $this->assertSame('INV-0002', $second->number);
 
             $bank = Account::create(['name' => 'Starling Business', 'kind' => 'bank', 'provider' => 'starling']);

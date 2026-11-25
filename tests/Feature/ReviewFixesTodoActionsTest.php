@@ -58,6 +58,8 @@ class ReviewFixesTodoActionsTest extends TestCase
         Storage::fake('local');
         Setting::put('job_finder_auto', false);
         Setting::put('business_name', 'Test Freelancer');
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         $this->actingAs(User::factory()->create());
     }
 

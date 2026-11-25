@@ -14,6 +14,7 @@ use App\Domain\Intel\Cycle\Steps\RelateCategorise;
 use App\Domain\Intel\Cycle\Steps\RelateTransfers;
 use App\Domain\Intel\Cycle\Steps\VerifyAuditChain;
 use App\Domain\Intel\Detectors\Health;
+use App\Domain\Invoices\InvoiceEmails;
 use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\Opportunities;
@@ -150,7 +151,8 @@ Artisan::command('ledger:invoice-nudges', function () {
         }
         $days = (int) $invoice->due_date->diffInDays(today());
         $money = fn (int $minor) => Money::format($minor, $invoice->currency ?: 'GBP', false);
-        // The reminder email tells the client no payment has been seen, so it's only offered when nothing has come in.
+        // The reminder email tells the client no payment has been seen, so it's only offered when nothing has come in,
+        // and never while the invoice itself waits unsent in your Gmail drafts.
         $come = match (true) {
             $waiting > 0 => ' '.Money::format($waiting, 'GBP', false).' that may be for it is waiting in the Inbox: decide it first.',
             $paid > 0 => ' '.$money($paid).' of it has come in, so '.$money($invoice->total_minor - $paid).' is still to come.',
@@ -159,7 +161,7 @@ Artisan::command('ledger:invoice-nudges', function () {
         };
         Telegram::sendWithButtons($chat, "Invoice {$invoice->number} to ".($invoice->bill_to_name ?: 'the client').' is '.$days.' days overdue ('
             .$money($invoice->total_minor).').'.($come ?? '').($invoice->reminder_count ? " Reminders sent: {$invoice->reminder_count}." : ''),
-            $invoice->bill_to_email && $come === null ? [['Send a reminder', 'inv_chase', $invoice->id]] : []);
+            $invoice->bill_to_email && InvoiceEmails::open($invoice) === null && $come === null ? [['Send a reminder', 'inv_chase', $invoice->id]] : []);
         $invoice->forceFill(['overdue_nudged_at' => now()])->save();
         $n++;
     }

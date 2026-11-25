@@ -2,13 +2,20 @@
 
 namespace App\Domain\Intel\Detectors;
 
+use App\Domain\Charges\ChargeStatus;
+use App\Domain\Charges\ChargeTerms;
+use App\Domain\Charges\CostRef;
+use App\Domain\Charges\CostUnits;
+use App\Domain\Charges\CostWords;
 use App\Domain\Intel\Contracts\Detector;
 use App\Domain\Intel\Coverage;
 use App\Domain\Intel\Cycle\CycleContext;
 use App\Domain\Intel\FindingDraft;
 use App\Domain\Intel\Grades;
 use App\Domain\Intel\Ref;
+use App\Domain\Invoices\InvoiceDraftSync;
 use App\Domain\Invoices\InvoicePayments;
+use App\Domain\Invoices\InvoiceService;
 use App\Domain\Todo\TodoList;
 use App\Models\Allocation;
 use App\Models\Document;
@@ -19,15 +26,27 @@ use App\Models\TravelItem;
 use App\Models\WorkJob;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
 
 /**
- * Jobs to close out (job.closeout, M4): one verdict per finished job, from everything that says what you're owed for
- * it. The PO's total (from its invoice, or the PO document linked to the job, cited as doc:{id}#f=po_total) against
- * what's been invoiced (or, with no invoice issued in Expend, the income you recorded for the job: it may have been
- * invoiced some other way), and the bookings you decided to recharge to the client against the invoice's lines (a line
- * of the same amount, or one line for several of them together). What's short of the PO and the recharges not found on
- * an invoice are one amount you may be owed, in the job's currency.
+ * Jobs to close out (job.closeout, M4; version 3): one verdict per finished job (and per cancelled job that still owes
+ * a fee or costs), from everything that says what you're owed for it: the PO's total against what's been invoiced, and
+ * the costs to charge that aren't on an invoice. What's short of the PO and the costs not found on an invoice are one
+ * amount you may be owed, in the job's currency.
+ *
+ * Two ways, by whether the job is covered (Charges\ChargeStatus::covered):
+ *  - Covered (invoiced before Expend tracked where lines come from, billed by income recorded with no Expend invoice,
+ *    or "Already sorted"): exactly as version 2. The PO against what the invoices total (or what came in), and the
+ *    bookings you decided to recharge against the invoice's lines (a line of the same amount, or one line for several
+ *    of them together). Its costs are asked about rather than added to a draft; one you've decided since (it was on an
+ *    invoice, not charged, or charge it now) goes by your decision.
+ *  - Otherwise (no invoice, a draft, or an invoice Expend tracks): the costs come from ChargeStatus, by ref. Each cost
+ *    still owed and expected to be charged (in the job's currency, with a known amount), plus a day added after the
+ *    invoice went, is looked for among the invoices' own lines (typed or the PO's: a line of its amount, or one line for
+ *    several), as version 2 does for bookings. The PO is compared with the ticked work lines only (the PO's, the fee,
+ *    days, hours, extra and travel days, and your own lines): costs on the invoice no longer hide a fee billed short of
+ *    the PO, unless the PO itself has a line for travel or expenses. Lines are ticked lines only.
  *
  * It subsumes the to-do list's "invoice less than its PO" and "recharge to the client" items for finished jobs
  * (underbilled:{invoice}, recharge:{booking}) that it accounts for: those aren't listed for a finished job any more,
@@ -38,20 +57,19 @@ use Illuminate\Support\Collection;
  * and starts low (Intel\DetectorLevels). A job with no invoice yet offers the usual "Draft the invoice".
  *
  * A snooze or "not relevant" on a close-out is kept by its parts as you saw them (dismissKey: closeout:{job}:{parts},
- * TodoList::dismissKeyFor()): what's short of the PO (sGBP15000) and each recharge (r{booking}). A part you hid stays
- * hidden (what's short, while it's no more than you saw); a new one (a booking decided as a recharge later) brings the
- * close-out back with only what's new.
+ * TodoList::dismissKeyFor()): what's short of the PO (sGBP15000), each booking (r{booking}) and each other cost
+ * (c{number from its ref}). A part you hid stays hidden (what's short, while it's no more than you saw); a new one (a
+ * booking decided as a recharge later, a cost linked later) brings the close-out back with only what's new.
  *
  * Grade: strong when the PO's total was found word for word in the PO, likely when it wasn't (or the PO was linked to
- * the job automatically); for recharges, strong when no line of the invoice could hold them (your decision, matched by
- * amount), likely when a line that's left could (it names the provider, or it's for travel or expenses) or the job was
- * invoiced outside Expend. Only reads.
+ * the job automatically); for costs, strong when no line of the invoice could hold them, likely when a line that's left
+ * could (it names the provider, or it's for travel or expenses) or the job was invoiced outside Expend. Only reads.
  */
 final class JobCloseout implements Detector
 {
     public const CODE = 'job.closeout';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     /** Words on an invoice line that say it may carry costs passed on to the client. */
     public const EXPENSE_WORDS = ['travel', 'hotel', 'accommodation', 'expense', 'recharge', 'train', 'rail', 'flight', 'taxi', 'parking', 'mileage', 'subsistence', 'car hire',
@@ -102,10 +120,14 @@ final class JobCloseout implements Detector
         return $this->subsumed;
     }
 
-    /** Finished, as the to-do list counts it: not cancelled, and its last day before today. */
+    /**
+     * Finished, as the to-do list counts it: its last day before today, and not cancelled unless it was cancelled with
+     * something still owed (a cancellation fee, or its costs).
+     */
     public static function finished(): Builder
     {
-        return WorkJob::query()->where('status', '!=', 'cancelled')->whereDate('ends_on', '<', today()->format('Y-m-d'));
+        return WorkJob::query()->where(fn ($q) => $q->where('status', '!=', 'cancelled')->orWhereIn('cancel_charge', ['fee', 'costs']))
+            ->whereDate('ends_on', '<', today()->format('Y-m-d'));
     }
 
     /** @return list<FindingDraft> */
@@ -116,23 +138,25 @@ final class JobCloseout implements Detector
         $this->subsumed = [];
         // Your snoozes and "not relevant"s running now: on the items a close-out would say, and on close-outs.
         $hidden = TodoDismissal::activeKeys();
-        $jobs = self::finished()->when($this->only !== null, fn ($q) => $q->whereIn('id', $this->only ?: [0]))
-            ->get(['id', 'title', 'starts_on', 'ends_on', 'client_id'])->keyBy('id');
+        $jobs = self::finished()->when($this->only !== null, fn ($q) => $q->whereIn('id', $this->only ?: [0]))->get()->keyBy('id');
         $ids = $jobs->keys()->all();
         $invoices = collect();
         $recharges = collect();
         foreach (array_chunk($ids, 500) as $chunk) {
             $invoices = $invoices->concat(Invoice::query()->whereIn('work_job_id', $chunk)->where('status', '!=', 'void')->orderBy('id')
-                ->get(['id', 'number', 'work_job_id', 'document_id', 'status', 'currency', 'total_minor', 'po_total_minor', 'issue_date']));
+                ->get(['id', 'number', 'work_job_id', 'document_id', 'status', 'currency', 'total_minor', 'po_total_minor', 'issue_date', 'synced_at']));
             $recharges = $recharges->concat(TravelItem::query()->whereIn('work_job_id', $chunk)->where('decision', 'recharge')->orderBy('starts_on')->orderBy('id')
                 ->get(['id', 'kind', 'provider', 'place', 'status', 'starts_on', 'amount_minor', 'currency', 'work_job_id']));
         }
         $invoices = $invoices->groupBy('work_job_id');
         $recharges = $recharges->groupBy('work_job_id');
-        // Lines only where there's a recharge to look for; the PO document only where no invoice carries the PO's total.
-        $withRecharges = $recharges->keys()->all();
-        $lines = InvoiceLine::query()->whereIn('invoice_id', $invoices->only($withRecharges)->flatten()->pluck('id')->all() ?: [0])
-            ->orderBy('invoice_id')->orderBy('sort')->orderBy('id')->get(['id', 'invoice_id', 'description', 'amount_minor'])->groupBy('invoice_id');
+        // Ticked lines only: what each invoice charges.
+        $lines = collect();
+        foreach ($invoices->flatten()->pluck('id')->chunk(500) as $chunk) {
+            $lines = $lines->concat(InvoiceLine::query()->whereIn('invoice_id', $chunk->values()->all())->where('included', true)
+                ->orderBy('invoice_id')->orderBy('sort')->orderBy('id')->get(['id', 'invoice_id', 'description', 'amount_minor', 'source', 'source_ref']));
+        }
+        $lines = $lines->groupBy('invoice_id');
         $needPo = array_values(array_filter($ids, fn ($id) => ! ($invoices[$id] ?? collect())->contains(fn (Invoice $i) => $i->po_total_minor !== null)));
         $poDocs = collect();
         foreach (array_chunk($needPo, 500) as $chunk) {
@@ -145,10 +169,30 @@ final class JobCloseout implements Detector
         // Income recorded for the jobs with no invoice issued in Expend: invoiced some other way, perhaps.
         $income = self::income(array_values(array_filter($ids, fn ($id) => ! ($invoices[$id] ?? collect())->contains(fn (Invoice $i) => in_array($i->status, ['issued', 'paid'], true)))));
         $closed = self::closedParts($hidden);
+        // Where each cost stands (by ref), for the jobs whose costs it looks at (every job that isn't covered, and covered
+        // jobs with bookings to recharge), with a day added after the invoice went for jobs it tracks.
+        $covered = ChargeStatus::covered($ids);
+        $costed = $jobs->filter(fn (WorkJob $j) => ! isset($covered[(int) $j->id]) || $covered[(int) $j->id]['work_only'] || isset($recharges[$j->id]));
+        $terms = $costed->isEmpty() ? [] : ChargeTerms::forJobs($costed);
+        $units = $costed->isEmpty() ? [] : CostUnits::forJobs($costed, $terms);
+        $tracked = $costed->filter(fn (WorkJob $j) => ($invoices[$j->id] ?? collect())->contains(fn (Invoice $i) => in_array($i->status, InvoicePayments::PAYABLE, true) && $i->synced_at !== null));
+        if ($tracked->isNotEmpty()) {
+            (new EloquentCollection($tracked->values()->all()))->load('days');
+            foreach ($tracked as $id => $job) {
+                array_push($units[(int) $id], ...CostUnits::work($job));
+            }
+        }
+        $all = collect($units)->flatten(1)->values()->all();
+        $statuses = $all === [] ? [] : ChargeStatus::for($all, null, $covered, $terms);
 
         $views = [];
         foreach ($jobs as $id => $job) {
-            $v = $this->verdict($job, $invoices[$id] ?? collect(), $recharges[$id] ?? collect(), $lines, $poDocs[$id] ?? collect(), $invoiceDocs, $income[$id] ?? [], $hidden);
+            $cover = $covered[(int) $id] ?? null;
+            $v = $cover !== null && ! $cover['work_only']
+                ? $this->verdict($job, $invoices[$id] ?? collect(), $recharges[$id] ?? collect(), $lines, $poDocs[$id] ?? collect(), $invoiceDocs, $income[$id] ?? [], $hidden,
+                    $units[(int) $id] ?? [], $statuses)
+                : $this->tracked($job, $invoices[$id] ?? collect(), $recharges[$id] ?? collect(), $lines, $poDocs[$id] ?? collect(), $invoiceDocs, $hidden,
+                    $units[(int) $id] ?? [], $statuses, $terms[(int) $id] ?? []);
             $parts = self::parts($v);
             foreach ($v['legacy'] as $key) {
                 $this->subsumed[$key] = $parts !== [] ? 'closeout:'.$id : null;
@@ -173,14 +217,18 @@ final class JobCloseout implements Detector
     }
 
     /**
-     * What's owed for one job: what's short of the PO and the recharges not found on an invoice line (each to be shown
-     * unless you hid it), with the to-do items it accounts for ('legacy').
+     * What's owed for a covered job (version 2's verdict): what's short of the PO and the recharges not found on an
+     * invoice line (each to be shown unless you hid it), with the to-do items it accounts for ('legacy'). A booking you
+     * decided about since (it was on an invoice, not charged, or charge it now) goes by your decision; one you said to
+     * charge now is listed as not on the invoice.
      *
      * @param  array<string, int>  $income  confirmed income recorded for the job, by currency (hundredths)
      * @param  array<string, true>  $hidden  keys you snoozed or marked not relevant
-     * @return array{currency:string, po:?array, billed:int, billed_by:string, short:int, unbilled:list<array{item:TravelItem, line:?string}>, legacy:list<string>, evidence:list<string>}
+     * @param  list<array<string, mixed>>  $units  the job's costs (CostUnits)
+     * @return array{currency:string, po:?array, billed:int, billed_by:string, short:int, unbilled:list<array{key:string, amount:int, words:string, ref:string, line:?string}>, legacy:list<string>, evidence:list<string>}
      */
-    private function verdict(WorkJob $job, Collection $invoices, Collection $recharges, Collection $lines, Collection $poDocs, Collection $invoiceDocs, array $income, array $hidden): array
+    private function verdict(WorkJob $job, Collection $invoices, Collection $recharges, Collection $lines, Collection $poDocs, Collection $invoiceDocs, array $income, array $hidden,
+        array $units, array $statuses): array
     {
         $issued = $invoices->whereIn('status', ['issued', 'paid']);
         $billedBy = $issued->isNotEmpty() ? 'issued' : ($invoices->isNotEmpty() ? 'draft' : 'none');
@@ -203,6 +251,14 @@ final class JobCloseout implements Detector
         $short = ! $setAside && $po !== null && $po['currency'] === $currency ? max(0, $po['total'] - $billed) : 0;
         $legacy = $setAside ? [] : $underbilled;
 
+        // Your decisions since: a booking's cost (its ref, or the payment it's linked to) that isn't covered any more.
+        $statusOf = [];
+        foreach ($units as $u) {
+            foreach ([$u['ref'], ...$u['aliases']] as $r) {
+                $statusOf[$r] = $statuses[$u['ref']] ?? null;
+            }
+        }
+        $late = [];
         // The recharges it counts: in the job's currency, with an amount, not cancelled, and not hidden by you. The
         // rest stay on the list as they were.
         $mine = [];
@@ -211,36 +267,32 @@ final class JobCloseout implements Detector
                 || strtoupper($t->currency ?: 'GBP') !== $currency) {
                 continue;
             }
-            $mine[] = $t;
             $legacy[] = 'recharge:'.$t->id;
+            $s = $statusOf['travel:'.$t->id] ?? null;
+            if ($s !== null && $s['status'] !== 'covered') {
+                if (in_array($s['status'], ['owed', 'owed_late'], true)) {
+                    $late[] = self::booking($t, (int) $t->amount_minor);
+                }
+
+                continue;
+            }
+            $mine[] = self::booking($t, (int) $t->amount_minor);
         }
         // Each against the invoices' lines: a line of the same amount, each line once; then one line for several
         // together ("Travel and hotel, at cost").
         $free = $invoices->flatMap(fn (Invoice $i) => $lines[$i->id] ?? collect())->values()->all();
-        $open = [];
-        foreach ($mine as $t) {
-            $hit = null;
-            foreach ($free as $n => $line) {
-                if ((int) $line->amount_minor === (int) $t->amount_minor) {
-                    $hit = $n;
-                    break;
-                }
-            }
-            if ($hit === null) {
-                $open[] = $t;
-            } else {
-                unset($free[$hit]);
-            }
-        }
-        $open = self::combined($open, $free);
+        [$open, $free] = self::match($mine, $free);
         // Not found on a line. A line that's left may still hold it (it names the provider, or it's for travel or
         // expenses, at another amount), and an invoice sent outside Expend can't be seen: then it's to check.
-        $unbilled = array_map(fn (TravelItem $t) => ['item' => $t, 'line' => $billedBy === 'income' ? '' : self::couldHold($t, $free)], $open);
+        $unbilled = array_map(fn (array $c) => ['line' => $billedBy === 'income' ? '' : CostWords::couldHold($c['words_hold'], $free)] + $c, $open);
+        $unbilled = [...$unbilled, ...array_map(fn (array $c) => ['line' => null] + $c, $late)];
 
+        $openKeys = array_flip(array_column($unbilled, 'key'));
         $evidence = [
             ...($short > 0 && $po['ref'] ? [$po['ref']] : []),
             ...$invoices->map(fn (Invoice $i) => Ref::make('inv', $i->id))->all(),
-            ...array_map(fn (TravelItem $t) => Ref::make('travel', $t->id), [...$open, ...array_filter($mine, fn (TravelItem $t) => ! in_array($t, $open, true))]),
+            ...array_column($unbilled, 'ref'),
+            ...array_column(array_filter($mine, fn (array $c) => ! isset($openKeys[$c['key']])), 'ref'),
         ];
 
         return ['currency' => $currency, 'po' => $po, 'billed' => $billed, 'billed_by' => $billedBy, 'short' => $short, 'unbilled' => $unbilled, 'legacy' => $legacy,
@@ -248,19 +300,150 @@ final class JobCloseout implements Detector
     }
 
     /**
-     * The recharges left once a line that's the sum of several of them is found ("Travel and hotel, at cost" for a
-     * train and a hotel): each such line once. Lines that say they're for expenses are tried first.
+     * What's owed for a job that isn't covered (no invoice, a draft, or an invoice Expend tracks): what's short of the
+     * PO (against the ticked work lines), and each cost still owed and expected to be charged that no line of the
+     * job's invoices holds.
      *
-     * @param  list<TravelItem>  $open
+     * @param  array<string, true>  $hidden
+     * @param  list<array<string, mixed>>  $units
+     * @param  array<string, array{charge:?string, rate_minor:?int, currency:string, from:string}>  $terms
+     * @return array{currency:string, po:?array, billed:int, billed_by:string, short:int, unbilled:list<array{key:string, amount:int, words:string, ref:string, line:?string}>, legacy:list<string>, evidence:list<string>}
+     */
+    private function tracked(WorkJob $job, Collection $invoices, Collection $recharges, Collection $lines, Collection $poDocs, Collection $invoiceDocs, array $hidden,
+        array $units, array $statuses, array $terms): array
+    {
+        $issued = $invoices->whereIn('status', ['issued', 'paid']);
+        $billedBy = $issued->isNotEmpty() ? 'issued' : ($invoices->isNotEmpty() ? 'draft' : 'none');
+        $counted = $billedBy === 'issued' ? $issued : $invoices;
+        $po = $this->po($invoices, $poDocs, $invoiceDocs);
+        $currency = self::currencyOf($invoices, $recharges, $po);
+        $inCurrency = $counted->filter(fn (Invoice $i) => strtoupper($i->currency ?: 'GBP') === $currency);
+        // The PO against the work billed: costs on the invoice don't make up for a fee billed short of it, unless the
+        // PO itself has a line for travel or expenses.
+        $billed = ($po['expenses'] ?? false) ? (int) $inCurrency->sum('total_minor')
+            : (int) $inCurrency->flatMap(fn (Invoice $i) => $lines[$i->id] ?? collect())
+                ->filter(fn ($l) => $l->source === null || in_array($l->source, InvoiceDraftSync::WORK_SOURCES, true))->sum('amount_minor');
+        $underbilled = $invoices->filter(fn (Invoice $i) => in_array($i->status, ['issued', 'draft'], true) && $i->po_total_minor !== null
+            && (int) $i->total_minor < (int) $i->po_total_minor && strtoupper($i->currency ?: 'GBP') === $currency)->map(fn (Invoice $i) => 'underbilled:'.$i->id)->values()->all();
+        $setAside = collect($underbilled)->contains(fn (string $k) => isset($hidden[$k])) || ($billedBy !== 'issued' && isset($hidden['invoice:'.$job->id]));
+        $short = ! $setAside && $po !== null && $po['currency'] === $currency ? max(0, $po['total'] - $billed) : 0;
+        $legacy = $setAside ? [] : $underbilled;
+
+        $bookings = $recharges->keyBy('id');
+        foreach ($recharges as $t) {
+            if (! isset($hidden['recharge:'.$t->id]) && $t->status !== 'cancelled' && $t->amount_minor !== null && (int) $t->amount_minor > 0
+                && strtoupper($t->currency ?: 'GBP') === $currency) {
+                $legacy[] = 'recharge:'.$t->id;
+            }
+        }
+        // Each cost still owed and expected on the invoice, in the job's currency, with a known amount; and a day
+        // added after the invoice went.
+        $mine = [];
+        foreach ($units as $u) {
+            $s = $statuses[$u['ref']] ?? null;
+            if ($s === null || ! in_array($s['status'], ['owed', 'owed_late'], true) || ! $s['expected'] || $u['kind'] === 'credit'
+                || strtoupper((string) $u['currency']) !== $currency || $s['remaining'] === null) {
+                continue;
+            }
+            $booking = collect([$u['ref'], ...$u['aliases']])->first(fn ($r) => str_starts_with($r, 'travel:'));
+            $t = $booking !== null ? ($bookings[(int) substr($booking, 7)] ?? null) : null;
+            if ($t !== null && isset($hidden['recharge:'.$t->id])) {
+                continue;
+            }
+            $amount = match ($u['kind']) {
+                'work' => $s['difference'] && $u['unit_price_minor'] !== null ? InvoiceService::lineAmount((string) $s['remaining'], (int) $u['unit_price_minor']) : 0,
+                'trip' => ($terms['mileage']['charge'] ?? null) === 'per_mile' && strtoupper($terms['mileage']['currency'] ?? 'GBP') === $currency
+                    ? InvoiceService::lineAmount((string) $s['remaining'], (int) $terms['mileage']['rate_minor']) : 0,
+                default => abs((int) ($s['difference'] ? $s['remaining'] : $s['amount'])),
+            };
+            if ($amount <= 0) {
+                continue;
+            }
+            $mine[] = $t !== null ? self::booking($t, $amount) : [
+                'key' => 'c'.sprintf('%u', crc32($u['ref'])), 'amount' => $amount, 'ref' => self::evidenceRef($u, $job),
+                'words' => ($u['kind'] === 'work' && $s['note'] ? $job->title.': '.$s['note'] : $u['description']).' '.Money::format($amount, $currency, false),
+                'words_hold' => $u['words'] ?? [],
+            ];
+        }
+        $free = $invoices->flatMap(fn (Invoice $i) => ($lines[$i->id] ?? collect())->filter(fn ($l) => $l->source === null || $l->source === 'po'))->values()->all();
+        [$open, $free] = self::match($mine, $free);
+        $unbilled = array_map(fn (array $c) => ['line' => CostWords::couldHold($c['words_hold'], $free)] + $c, $open);
+
+        $openKeys = array_flip(array_column($unbilled, 'key'));
+        $evidence = [
+            ...($short > 0 && $po['ref'] ? [$po['ref']] : []),
+            ...$invoices->map(fn (Invoice $i) => Ref::make('inv', $i->id))->all(),
+            ...array_column($unbilled, 'ref'),
+            ...array_column(array_filter($mine, fn (array $c) => ! isset($openKeys[$c['key']])), 'ref'),
+        ];
+
+        return ['currency' => $currency, 'po' => $po, 'billed' => $billed, 'billed_by' => $billedBy, 'short' => $short, 'unbilled' => $unbilled, 'legacy' => $legacy,
+            'evidence' => $evidence];
+    }
+
+    /** A booking as a close-out says it: "Hotel Premier Inn Arena 2 Jun £180.00". */
+    private static function booking(TravelItem $t, int $amount): array
+    {
+        $currency = strtoupper($t->currency ?: 'GBP');
+
+        return ['key' => 'r'.$t->id, 'amount' => $amount, 'ref' => Ref::make('travel', $t->id), 'words_hold' => [$t->provider],
+            'words' => (TravelItem::KINDS[$t->kind] ?? 'Booking').' '.($t->kind === 'hotel' ? ($t->place ?: $t->provider) : $t->provider).' '.$t->starts_on->format('j M')
+                .' '.Money::format($amount, $currency, false)];
+    }
+
+    /** What a cost's evidence cites: its payment, expense, booking or trip, or the job for its work. */
+    private static function evidenceRef(array $u, WorkJob $job): string
+    {
+        $p = CostRef::parse($u['ref']);
+
+        return match ($p['type']) {
+            'tx', 'exp', 'travel', 'trip' => Ref::make($p['type'], $p['id']),
+            default => Ref::make('job', $job->id),
+        };
+    }
+
+    /**
+     * Costs against the invoices' lines: a line of the same amount, each line once; then one line for several together.
+     *
+     * @param  list<array{key:string, amount:int}>  $costs
+     * @param  array<int, object>  $free
+     * @return array{0:list<array>, 1:array<int, object>} the costs not found, and the lines not used
+     */
+    private static function match(array $costs, array $free): array
+    {
+        $open = [];
+        foreach ($costs as $c) {
+            $hit = null;
+            foreach ($free as $n => $line) {
+                if ((int) $line->amount_minor === (int) $c['amount']) {
+                    $hit = $n;
+                    break;
+                }
+            }
+            if ($hit === null) {
+                $open[] = $c;
+            } else {
+                unset($free[$hit]);
+            }
+        }
+
+        return [self::combined($open, $free), $free];
+    }
+
+    /**
+     * The costs left once a line that's the sum of several of them is found ("Travel and hotel, at cost" for a train
+     * and a hotel): each such line once. Lines that say they're for expenses are tried first.
+     *
+     * @param  list<array{key:string, amount:int}>  $open
      * @param  array<int, InvoiceLine>  $free  the lines not yet used (those used here are taken out)
-     * @return list<TravelItem>
+     * @return list<array{key:string, amount:int}>
      */
     private static function combined(array $open, array &$free): array
     {
         if (count($open) < 2 || $free === []) {
             return $open;
         }
-        $order = collect($free)->sortBy(fn (InvoiceLine $l) => self::forExpenses((string) $l->description) ? 0 : 1)->keys()->all();
+        $order = collect($free)->sortBy(fn (InvoiceLine $l) => CostWords::forExpenses((string) $l->description) ? 0 : 1)->keys()->all();
         foreach ($order as $n) {
             $pool = array_slice($open, 0, self::MAX_COMBINED);
             if (count($pool) < 2) {
@@ -269,43 +452,17 @@ final class JobCloseout implements Detector
             $target = (int) $free[$n]->amount_minor;
             for ($mask = 3; $target > 0 && $mask < (1 << count($pool)); $mask++) {
                 $picked = array_keys(array_filter($pool, fn ($t, $b) => (($mask >> $b) & 1) === 1, ARRAY_FILTER_USE_BOTH));
-                if (count($picked) < 2 || array_sum(array_map(fn ($b) => (int) $pool[$b]->amount_minor, $picked)) !== $target) {
+                if (count($picked) < 2 || array_sum(array_map(fn ($b) => (int) $pool[$b]['amount'], $picked)) !== $target) {
                     continue;
                 }
                 unset($free[$n]);
-                $taken = array_map(fn ($b) => $pool[$b], $picked);
-                $open = array_values(array_filter($open, fn (TravelItem $t) => ! in_array($t, $taken, true)));
+                $taken = array_flip(array_map(fn ($b) => $pool[$b]['key'], $picked));
+                $open = array_values(array_filter($open, fn (array $c) => ! isset($taken[$c['key']])));
                 break;
             }
         }
 
         return $open;
-    }
-
-    /** The first line left that may hold a recharge at another amount: one naming its provider, or one for expenses. */
-    private static function couldHold(TravelItem $t, array $free): ?string
-    {
-        $provider = mb_strtolower(trim((string) $t->provider));
-        foreach ($free as $line) {
-            $text = mb_strtolower((string) $line->description);
-            if ((mb_strlen($provider) >= 3 && str_contains($text, $provider)) || self::forExpenses($text)) {
-                return (string) $line->description;
-            }
-        }
-
-        return null;
-    }
-
-    private static function forExpenses(string $text): bool
-    {
-        $text = mb_strtolower($text);
-        foreach (self::EXPENSE_WORDS as $w) {
-            if (preg_match('/\b'.preg_quote($w, '/').'/u', $text)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
@@ -341,8 +498,8 @@ final class JobCloseout implements Detector
     }
 
     /**
-     * A close-out's parts, by name: what's short of the PO (s{currency}{amount}) and each recharge not found on an
-     * invoice (r{booking}), with their amounts.
+     * A close-out's parts, by name: what's short of the PO (s{currency}{amount}), each booking not found on an invoice
+     * (r{booking}) and each other cost (c{number}), with their amounts.
      *
      * @return array<string, int>
      */
@@ -350,7 +507,7 @@ final class JobCloseout implements Detector
     {
         $out = $v['short'] > 0 ? ['s'.$v['currency'].$v['short'] => $v['short']] : [];
         foreach ($v['unbilled'] as $u) {
-            $out['r'.$u['item']->id] = (int) $u['item']->amount_minor;
+            $out[$u['key']] = (int) $u['amount'];
         }
 
         return $out;
@@ -366,10 +523,10 @@ final class JobCloseout implements Detector
 
     /**
      * The parts of close-outs you snoozed or marked not relevant (closeout:{job}:{parts}), by job: what's short of the
-     * PO by currency, and each recharge, with the key each is hidden under.
+     * PO by currency, and each booking or cost, with the key each is hidden under.
      *
      * @param  array<string, true>  $hidden
-     * @return array<int, array{keys:array<string, true>, short?:array<string, array<string, int>>, r?:array<int, string>}>
+     * @return array<int, array{keys:array<string, true>, short?:array<string, array<string, int>>, parts?:array<string, string>}>
      */
     private static function closedParts(array $hidden): array
     {
@@ -383,8 +540,8 @@ final class JobCloseout implements Detector
             foreach (explode('.', $m[2]) as $part) {
                 if (preg_match('/^s([A-Z]{3})(\d+)$/', $part, $s)) {
                     $out[$job]['short'][$s[1]][$key] = (int) $s[2];
-                } elseif (preg_match('/^r(\d+)$/', $part, $r)) {
-                    $out[$job]['r'][(int) $r[1]] = $key;
+                } elseif (preg_match('/^[rc]\d+$/', $part)) {
+                    $out[$job]['parts'][$part] = $key;
                 }
             }
         }
@@ -394,7 +551,7 @@ final class JobCloseout implements Detector
 
     /**
      * The parts not hidden by a snooze or "not relevant" on the close-out, and the keys hiding the rest. What's short
-     * of the PO stays hidden while it's no more than you saw; a recharge, by itself.
+     * of the PO stays hidden while it's no more than you saw; a booking or a cost, by itself.
      *
      * @param  array<string, int>  $parts
      * @return array{0: array<string, int>, 1: list<string>}
@@ -421,7 +578,7 @@ final class JobCloseout implements Detector
                     }
                 }
             } else {
-                $key = $c['r'][(int) substr($name, 1)] ?? null;
+                $key = $c['parts'][$name] ?? null;
             }
             if ($key === null) {
                 $left[$name] = $amount;
@@ -437,7 +594,7 @@ final class JobCloseout implements Detector
     private static function only(array $v, array $parts): array
     {
         $v['short'] = isset($parts['s'.$v['currency'].$v['short']]) ? $v['short'] : 0;
-        $v['unbilled'] = array_values(array_filter($v['unbilled'], fn (array $u) => isset($parts['r'.$u['item']->id])));
+        $v['unbilled'] = array_values(array_filter($v['unbilled'], fn (array $u) => isset($parts[$u['key']])));
 
         return $v;
     }
@@ -469,7 +626,8 @@ final class JobCloseout implements Detector
             $doc = $carrying->document_id ? ($invoiceDocs[$carrying->document_id] ?? null) : null;
 
             return ['total' => (int) $carrying->po_total_minor, 'currency' => strtoupper($carrying->currency ?: 'GBP'),
-                'ref' => $doc ? Ref::make('doc', $doc->id, 'f=po_total', $doc->sha256) : null, 'checked' => $doc !== null && ($doc->extraction['po']['total_verified'] ?? false) === true];
+                'ref' => $doc ? Ref::make('doc', $doc->id, 'f=po_total', $doc->sha256) : null, 'checked' => $doc !== null && ($doc->extraction['po']['total_verified'] ?? false) === true,
+                'expenses' => $doc !== null && self::poExpenses($doc)];
         }
         $totals = $poDocs->filter(fn (Document $d) => is_int($d->extraction['po']['stated_total_minor'] ?? null))
             ->map(fn (Document $d) => ['doc' => $d, 'total' => (int) $d->extraction['po']['stated_total_minor'], 'currency' => strtoupper((string) ($d->extraction['po']['currency'] ?? 'GBP'))]);
@@ -480,7 +638,13 @@ final class JobCloseout implements Detector
         $auto = in_array($t['doc']->job_linked_by, ['rules', 'matcher', 'ai'], true);
 
         return ['total' => $t['total'], 'currency' => $t['currency'], 'ref' => Ref::make('doc', $t['doc']->id, 'f=po_total', $t['doc']->sha256),
-            'checked' => ! $auto && ($t['doc']->extraction['po']['total_verified'] ?? false) === true];
+            'checked' => ! $auto && ($t['doc']->extraction['po']['total_verified'] ?? false) === true, 'expenses' => self::poExpenses($t['doc'])];
+    }
+
+    /** Whether a PO has a line for travel or expenses: then what it covers includes costs. */
+    private static function poExpenses(Document $doc): bool
+    {
+        return collect($doc->extraction['po']['lines'] ?? [])->contains(fn ($l) => is_array($l) && CostWords::forExpenses((string) ($l['description'] ?? '')));
     }
 
     /**
@@ -505,13 +669,11 @@ final class JobCloseout implements Detector
             $jobInvoices = $invoices[$id] ?? collect();
             $latest = $jobInvoices->whereIn('status', ['issued', 'paid'])->sortByDesc('id')->first() ?? $jobInvoices->where('status', 'draft')->sortByDesc('id')->first();
             $paid = $jobInvoices->whereIn('status', ['issued', 'paid'])->sum(fn (Invoice $i) => $received[$i->id]['paid'] ?? 0);
-            $recharge = fn (array $u) => (TravelItem::KINDS[$u['item']->kind] ?? 'Booking').' '.($u['item']->kind === 'hotel' ? ($u['item']->place ?: $u['item']->provider) : $u['item']->provider)
-                .' '.$u['item']->starts_on->format('j M').' '.Money::format((int) $u['item']->amount_minor, strtoupper($u['item']->currency ?: 'GBP'), false);
-            $listed = fn (array $us) => implode('; ', array_map($recharge, array_slice($us, 0, 3))).(count($us) > 3 ? ' and '.(count($us) - 3).' more' : '');
+            $listed = fn (array $us) => implode('; ', array_map(fn (array $u) => $u['words'], array_slice($us, 0, 3))).(count($us) > 3 ? ' and '.(count($us) - 3).' more' : '');
             // Not on any line of the invoice, for sure; or not found by its amount, where a line could still hold it.
             $missing = array_values(array_filter($v['unbilled'], fn (array $u) => $u['line'] === null));
             $toCheck = array_values(array_filter($v['unbilled'], fn (array $u) => $u['line'] !== null));
-            $owed = $v['short'] + array_sum(array_map(fn (array $u) => (int) $u['item']->amount_minor, $v['unbilled']));
+            $owed = $v['short'] + array_sum(array_map(fn (array $u) => (int) $u['amount'], $v['unbilled']));
             $grade = Grades::weakest([
                 $v['short'] > 0 ? ($v['po']['checked'] ? Grades::STRONG : Grades::LIKELY) : null,
                 $missing !== [] ? Grades::STRONG : null,

@@ -25,6 +25,8 @@ class InvoiceFormRefusalsTest extends TestCase
         parent::setUp();
         Storage::fake('local');
         Setting::put('business_name', 'Alex Smith');
+        // Issuing needs your name and address on the invoice (S6).
+        Setting::put('business_address', "1 High Street\nLeeds LS1 1AA");
         Setting::put('invoice_terms_days', 30);
         $this->actingAs(User::factory()->create(['name' => 'Alex Smith', 'email' => 'alex@example.test']));
     }
