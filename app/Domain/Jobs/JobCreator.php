@@ -32,7 +32,8 @@ final class JobCreator
      * @param  array{
      *     title: string,
      *     client_id?: ?int, client_name?: ?string, client?: ?string,
-     *     starts_on?: ?string, ends_on?: ?string, dates?: list<string|array{date: string, kind?: string}>,
+     *     starts_on?: ?string, ends_on?: ?string,
+     *     dates?: list<string|array{date: string, kind?: string, start_time?: ?string, end_time?: ?string, note?: ?string}>,
      *     start_time?: ?string, end_time?: ?string,
      *     venue?: ?string, location?: ?string, postcode?: ?string,
      *     po_number?: ?string, po_not_required?: bool,
@@ -58,7 +59,7 @@ final class JobCreator
             if (! $clientId && $data['client_name'] !== null) {
                 $clientId = self::client($data['client_name'], $by)->id;
             }
-            $job = WorkJob::query()->create([
+            $make = fn () => WorkJob::query()->create([
                 'title' => $data['title'], 'client_id' => $clientId,
                 'starts_on' => $data['starts_on'], 'ends_on' => $data['ends_on'],
                 'start_time' => $data['start_time'], 'end_time' => $data['end_time'],
@@ -66,10 +67,12 @@ final class JobCreator
                 'fee_pence' => $data['fee_pence'], 'po_number' => $data['po_number'], 'po_not_required' => $data['po_not_required'],
                 'status' => $data['status'], 'notes' => $data['notes'],
             ]);
+            // With its days listed, only those are made (not every date from the first to the last, then deleted).
+            $job = $data['dates'] !== null ? JobDays::withoutRange($make) : $make();
             self::setDays($job, $data['dates']);
 
             AuditLog::record('job.created', $job, null, $job->fresh()->toArray() + [
-                'days' => $job->dayList(),
+                'days' => self::dayList($job),
                 'evidence' => self::evidenceForHistory($evidence),
             ], $reason, $by);
 
@@ -125,7 +128,8 @@ final class JobCreator
      * The details, checked and tidied.
      *
      * @return array{title: string, client_id: ?int, client_name: ?string, starts_on: string, ends_on: string,
-     *     dates: ?list<array{date: string, kind: string}>, start_time: ?string, end_time: ?string, location: ?string,
+     *     dates: ?list<array{date: string, kind: string, start_time?: string, end_time?: string, note?: string}>,
+     *     start_time: ?string, end_time: ?string, location: ?string,
      *     postcode: ?string, fee_pence: ?int, po_number: ?string, po_not_required: bool, status: string, notes: ?string}
      */
     public static function check(array $fields): array
@@ -154,14 +158,35 @@ final class JobCreator
         }
         $clientName = $clientId ? null : $text('client_name', 'client', 'new_client');
 
-        // Its days: the dates listed (each with its kind), or every day from the first to the last.
+        $time = function (mixed $v): ?string {
+            if ($v === null || $v === '') {
+                return null;
+            }
+            if (! is_string($v) || ! preg_match('/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/', $v)) {
+                throw new InvalidArgumentException('Give times as HH:MM (24-hour).');
+            }
+
+            return substr($v, 0, 5);
+        };
+
+        // Its days: the dates listed (each with its kind, and its own times and note if it has them), or every day
+        // from the first to the last. Which calendar entry a day came from is never taken from here: only the calendar
+        // pick (DayPick) sets it, from the entries it links.
         $dates = null;
         if (! empty($fields['dates']) && is_array($fields['dates'])) {
             $dates = [];
             foreach ($fields['dates'] as $d) {
                 $date = self::date(is_array($d) ? ($d['date'] ?? null) : $d, 'date');
                 $kind = is_array($d) && array_key_exists((string) ($d['kind'] ?? ''), JobDay::KINDS) ? $d['kind'] : 'work';
-                $dates[$date] = ['date' => $date, 'kind' => $kind];
+                $day = ['date' => $date, 'kind' => $kind];
+                if (is_array($d)) {
+                    $note = isset($d['note']) && is_scalar($d['note']) && trim((string) $d['note']) !== '' ? trim((string) $d['note']) : null;
+                    if ($note !== null && mb_strlen($note) > 200) {
+                        throw new InvalidArgumentException('A day’s note is too long (200 characters at most).');
+                    }
+                    $day += array_filter(['start_time' => $time($d['start_time'] ?? null), 'end_time' => $time($d['end_time'] ?? null), 'note' => $note], fn ($v) => $v !== null);
+                }
+                $dates[$date] = $day;
             }
             ksort($dates);
             $dates = array_values($dates);
@@ -177,18 +202,6 @@ final class JobCreator
         if ((int) CarbonImmutable::parse($starts)->diffInDays(CarbonImmutable::parse($ends)) + 1 > JobDays::MAX_DAYS) {
             throw new InvalidArgumentException('A job can cover at most '.JobDays::MAX_DAYS.' days. Make it separate jobs.');
         }
-
-        $time = function (string $key) use ($fields): ?string {
-            $v = $fields[$key] ?? null;
-            if ($v === null || $v === '') {
-                return null;
-            }
-            if (! is_string($v) || ! preg_match('/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/', $v)) {
-                throw new InvalidArgumentException('Give times as HH:MM (24-hour).');
-            }
-
-            return substr($v, 0, 5);
-        };
 
         $status = $text('status') ?? 'booked';
         if (! in_array($status, ['booked', 'done', 'cancelled'], true)) {
@@ -225,8 +238,8 @@ final class JobCreator
             'starts_on' => $starts,
             'ends_on' => $ends,
             'dates' => $dates,
-            'start_time' => $time('start_time'),
-            'end_time' => $time('end_time'),
+            'start_time' => $time($fields['start_time'] ?? null),
+            'end_time' => $time($fields['end_time'] ?? null),
             'location' => $location !== null ? mb_substr($location, 0, 200) : null,
             'postcode' => $postcode !== null ? mb_substr(strtoupper($postcode), 0, 10) : null,
             'fee_pence' => $fee,
@@ -239,29 +252,48 @@ final class JobCreator
 
     /**
      * A new job gets every day from its first to last (JobDays::fromRange). With dates listed, only those days are
-     * kept, each with its kind (a rig, then a de-rig days later), as days you set.
+     * made (create() skips the range), each with its kind (a rig, then a de-rig days later) and any times and note
+     * given for it, as days you set.
      *
-     * @param  ?list<array{date: string, kind: string}>  $dates
+     * @param  ?list<array{date: string, kind: string, start_time?: string, end_time?: string, note?: string}>  $dates
      */
     private static function setDays(WorkJob $job, ?array $dates): void
     {
         if ($dates === null) {
             return;
         }
-        $wanted = array_column($dates, 'kind', 'date');
+        $wanted = array_column($dates, null, 'date');
+        $fields = fn (array $d) => ['kind' => $d['kind'], 'start_time' => $d['start_time'] ?? null, 'end_time' => $d['end_time'] ?? null, 'note' => $d['note'] ?? null];
         foreach (JobDay::query()->where('work_job_id', $job->id)->get() as $day) {
             $date = $day->on_date->format('Y-m-d');
             if (! isset($wanted[$date])) {
                 $day->delete();
             } else {
-                $day->update(['kind' => $wanted[$date], 'source' => 'you']);
+                $day->update(array_filter($fields($wanted[$date]), fn ($v) => $v !== null) + ['source' => 'you']);
                 unset($wanted[$date]);
             }
         }
-        foreach ($wanted as $date => $kind) {
-            JobDay::query()->create(['work_job_id' => $job->id, 'on_date' => $date, 'kind' => $kind, 'source' => 'you']);
+        foreach ($wanted as $date => $d) {
+            // Named after its calendar entry only when the days were picked on the calendar (JobDays::withCalendarKeys).
+            JobDay::query()->create(['work_job_id' => $job->id, 'on_date' => $date, 'source' => 'you', 'calendar_key' => JobDays::pendingKey($date)] + $fields($d));
         }
         $job->unsetRelation('days');
+    }
+
+    /**
+     * The job's days for its history: WorkJob::dayList(), with a day's note and the calendar entry it's named after
+     * only when it has them, so a job made without either is recorded exactly as before.
+     *
+     * @return list<array{date: string, kind: string, start_time: ?string, end_time: ?string, note?: string, calendar_key?: string}>
+     */
+    private static function dayList(WorkJob $job): array
+    {
+        $extra = [];
+        foreach (JobDay::query()->where('work_job_id', $job->id)->get(['on_date', 'note', 'calendar_key']) as $day) {
+            $extra[$day->on_date->format('Y-m-d')] = array_filter(['note' => $day->note, 'calendar_key' => $day->calendar_key], fn ($v) => $v !== null && $v !== '');
+        }
+
+        return array_map(fn (array $d) => $d + ($extra[$d['date']] ?? []), $job->dayList());
     }
 
     private static function date(mixed $value, string $what): string

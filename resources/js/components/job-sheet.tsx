@@ -58,8 +58,9 @@ export function JobSheet({ job, facts, documents }: { job: JobData & { id: numbe
         if (!field || value === null) return;
         // Only what the job needs to save and the one detail: the job keeps its PO number, fee and everything else.
         const body: Record<string, string> = { title: job.title, starts_on: job.starts_on, ends_on: job.ends_on, [field]: value };
-        // A start after the job's end is refused with the reason: moving the job's dates is done on the job form,
-        // which keeps each day's kind and times in view.
+        // A one-day job given a start date moves to that date, and its day moves with its kind, times and note
+        // (JobDays::rangeChanged). A longer job keeps its end date, so a start after it is refused with the reason.
+        if (field === 'starts_on' && job.starts_on === job.ends_on) body.ends_on = value;
         router.patch(`/jobs/${job.id}`, body, {
             preserveScroll: true,
             onError: (errors) => toast(Object.values(errors)[0] ?? 'That wasn’t saved. Try again.', 'error'),

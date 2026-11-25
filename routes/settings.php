@@ -22,12 +22,12 @@ Route::middleware('auth')->group(function () {
     Route::post('settings/integrations/telegram', [IntegrationSettingsController::class, 'connectTelegram'])->name('integrations.telegram');
     Route::delete('settings/integrations/telegram', [IntegrationSettingsController::class, 'disconnectTelegram'])->name('integrations.telegram.disconnect');
     Route::put('settings/integrations/mail', [IntegrationSettingsController::class, 'updateMail'])->name('integrations.mail');
-    Route::post('settings/integrations/mail/test', [IntegrationSettingsController::class, 'testMail'])->middleware('throttle:5,1')->name('integrations.mail.test');
+    Route::post('settings/integrations/mail/test', [IntegrationSettingsController::class, 'testMail'])->middleware('throttle:5,1,mail-test')->name('integrations.mail.test');
     Route::put('settings/integrations/gmail', [IntegrationSettingsController::class, 'updateGmail'])->name('integrations.gmail');
-    Route::post('settings/starling', [IntegrationSettingsController::class, 'connectStarling'])->middleware('throttle:10,1')->name('starling.connect');
+    Route::post('settings/starling', [IntegrationSettingsController::class, 'connectStarling'])->middleware('throttle:10,1,starling-connect')->name('starling.connect');
     Route::patch('settings/starling', [IntegrationSettingsController::class, 'linkStarling'])->name('starling.link');
-    Route::put('settings/starling/tax-pot', [IntegrationSettingsController::class, 'chooseTaxPot'])->middleware('throttle:10,1')->name('starling.tax_pot');
-    Route::post('settings/starling/sync', [IntegrationSettingsController::class, 'syncStarling'])->middleware('throttle:10,1')->name('starling.sync');
+    Route::put('settings/starling/tax-pot', [IntegrationSettingsController::class, 'chooseTaxPot'])->middleware('throttle:10,1,starling-tax-pot')->name('starling.tax_pot');
+    Route::post('settings/starling/sync', [IntegrationSettingsController::class, 'syncStarling'])->middleware('throttle:10,1,starling-sync')->name('starling.sync');
     Route::delete('settings/starling', [IntegrationSettingsController::class, 'disconnectStarling'])->name('starling.disconnect');
     Route::post('settings/gmail/connect', [IntegrationSettingsController::class, 'connectGmail'])->name('gmail.connect');
     Route::delete('settings/gmail', [IntegrationSettingsController::class, 'disconnectGmail'])->name('gmail.disconnect');

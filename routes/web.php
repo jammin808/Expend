@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AccountController;
 use App\Http\Controllers\AssistantController;
+use App\Http\Controllers\CalendarPickController;
 use App\Http\Controllers\ConnectionsController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DecisionController;
@@ -40,10 +41,10 @@ use Illuminate\View\Middleware\ShareErrorsFromSession;
 // Before the owner exists, a live site (with a setup code) still shows the sign-in page, so the sign-up page stays hidden.
 Route::get('/', fn () => redirect()->route(User::query()->exists() || config('app.setup_code') ? 'dashboard' : 'register'))->name('home');
 
-Route::post('hooks/telegram', TelegramWebhookController::class)->middleware('throttle:120,1')->name('hooks.telegram');
+Route::post('hooks/telegram', TelegramWebhookController::class)->middleware('throttle:120,1,telegram-hook')->name('hooks.telegram');
 
 // Google's redirect back after you allow Gmail access. No session here: see IntegrationSettingsController::gmailCallback.
-Route::get('settings/gmail/callback', [IntegrationSettingsController::class, 'gmailCallback'])->middleware('throttle:20,1')
+Route::get('settings/gmail/callback', [IntegrationSettingsController::class, 'gmailCallback'])->middleware('throttle:20,1,gmail-callback')
     ->withoutMiddleware([
         StartSession::class, ShareErrorsFromSession::class,
         ValidateCsrfToken::class, AddQueuedCookiesToResponse::class,
@@ -110,20 +111,29 @@ Route::middleware(['auth'])->group(function () {
     Route::post('calendar/job', [JobFinderController::class, 'fromCalendar'])->name('calendar.job');
     Route::get('jobs/calendar', [JobCalendarController::class, 'index'])->name('jobs.calendar');
     Route::post('calendar/link-job', [JobCalendarController::class, 'linkToJob'])->name('calendar.linkJob');
-    Route::post('jobs/{job}/gather', [JobCalendarController::class, 'gather'])->middleware('throttle:20,1')->name('jobs.gather');
+    Route::post('jobs/{job}/gather', [JobCalendarController::class, 'gather'])->middleware('throttle:20,1,jobs-gather')->name('jobs.gather');
     Route::post('jobs/{job}/days', [JobCalendarController::class, 'addDay'])->name('jobs.days.store');
     Route::patch('job-days/{day}', [JobCalendarController::class, 'updateDay'])->name('jobs.days.update');
     Route::delete('job-days/{day}', [JobCalendarController::class, 'removeDay'])->name('jobs.days.destroy');
     Route::post('job-finds/{find}/accept', [JobCalendarController::class, 'accept'])->name('jobFinds.accept');
     Route::post('job-finds/{find}/reject', [JobCalendarController::class, 'reject'])->name('jobFinds.reject');
     Route::post('calendar/not-job', [JobFinderController::class, 'calendarNotJob'])->name('calendar.notJob');
+    // Picking days on the calendar (or "Add days" on a job) and making them one job, or adding them to one. The month,
+    // the review (a POST so a long pick isn't held to URL limits) and the job search only read. Each limit has its own
+    // count (the third part): without one, every limited route shares one count per person, so flicking through
+    // months could use up the saves'.
+    Route::get('calendar/month', [CalendarPickController::class, 'month'])->middleware('throttle:120,1,calendar-month')->name('calendar.month');
+    Route::post('calendar/pick/preview', [CalendarPickController::class, 'preview'])->middleware('throttle:60,1,calendar-preview')->name('calendar.pick.preview');
+    Route::get('calendar/pick/jobs', [CalendarPickController::class, 'jobs'])->middleware('throttle:60,1,calendar-jobs')->name('calendar.pick.jobs');
+    Route::post('calendar/pick', [CalendarPickController::class, 'store'])->middleware('throttle:20,1,calendar-pick')->name('calendar.pick.store');
+    Route::post('jobs/{job}/days/pick', [CalendarPickController::class, 'addToJob'])->middleware('throttle:20,1,calendar-pick')->name('jobs.days.pick');
     Route::get('connections', [ConnectionsController::class, 'index'])->name('connections');
     Route::get('todo', [TodoController::class, 'index'])->name('todo');
     Route::get('todo/history', [TodoController::class, 'history'])->name('todo.history');
     // What Expend found and did overnight, "Check now", and the nightly cycle's run log.
     Route::get('intel', [IntelController::class, 'index'])->name('intel.index');
     Route::get('intel/runs', [IntelController::class, 'runs'])->name('intel.runs');
-    Route::post('intel/check', [IntelController::class, 'check'])->middleware('throttle:6,1')->name('intel.check');
+    Route::post('intel/check', [IntelController::class, 'check'])->middleware('throttle:6,1,intel-check')->name('intel.check');
     // Links Expend made on its own: accept, or "Not this one" (remembered, so it isn't linked again).
     Route::get('intel/proposals', [IntelController::class, 'proposals'])->name('intel.proposals');
     Route::post('intel/proposals', [IntelController::class, 'decideProposal'])->name('intel.proposals.decide');
@@ -177,8 +187,8 @@ Route::middleware(['auth'])->group(function () {
     Route::delete('invoices/{invoice}', [InvoiceController::class, 'destroy'])->name('invoices.destroy');
 
     Route::get('assistant', [AssistantController::class, 'index'])->name('assistant');
-    Route::post('assistant/ask', [AssistantController::class, 'ask'])->middleware('throttle:30,1')->name('assistant.ask');
-    Route::post('ai/suggest', [AssistantController::class, 'suggest'])->middleware('throttle:10,1')->name('ai.suggest');
+    Route::post('assistant/ask', [AssistantController::class, 'ask'])->middleware('throttle:30,1,assistant-ask')->name('assistant.ask');
+    Route::post('ai/suggest', [AssistantController::class, 'suggest'])->middleware('throttle:10,1,ai-suggest')->name('ai.suggest');
 
     Route::get('mileage', [MileageController::class, 'index'])->name('mileage.index');
     Route::post('vehicles', [MileageController::class, 'storeVehicle'])->name('vehicles.store');

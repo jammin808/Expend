@@ -84,10 +84,16 @@ class JobSheetUseInJobTest extends TestCase
         ];
     }
 
-    /** The body the job sheet sends now: what the job needs to save, and the one field the fact fills in. */
+    /**
+     * The body the job sheet sends now: what the job needs to save, and the one field the fact fills in. A one-day job
+     * given a start date moves to it whole.
+     */
     private function body(array $job, array $fact): array
     {
-        return ['title' => $job['title'], 'starts_on' => $job['starts_on'], 'ends_on' => $job['ends_on'], self::JOB_FIELD[$fact['field']] => $this->value($fact)];
+        $field = self::JOB_FIELD[$fact['field']];
+        $body = ['title' => $job['title'], 'starts_on' => $job['starts_on'], 'ends_on' => $job['ends_on'], $field => $this->value($fact)];
+
+        return $field === 'starts_on' && $job['starts_on'] === $job['ends_on'] ? ['ends_on' => $body['starts_on']] + $body : $body;
     }
 
     public function test_using_a_fact_keeps_the_po_number_and_the_no_po_needed_tick(): void

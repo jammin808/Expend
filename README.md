@@ -115,6 +115,14 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   if the words it quotes are in the entry. Links you make are never changed automatically; automatic ones can be
   confirmed or undone. Adding a job lines up stays around its dates again and links an invoice that quotes its PO.
   It runs nightly and after new documents, bookings or calendar entries arrive.
+- **Pick a job's days on the calendar** (`Jobs › Calendar`, or **Add days** on a job): the month shows your calendar
+  entries, each job's days and the tax years you've locked. Tap the days of one job (a rig, the show days and the
+  de-rig, even when they aren't one after another), drag across a run, fill a gap, or tap an entry's circle to pick all
+  of its days. Then check them in one list (each day's kind and times, the entries that come with them, days that are
+  already another job's, days in a locked year) and make one job or add them to one you have. An entry Expend ticked
+  that you untick is remembered as not part of that job, so it's never linked there automatically. Days in a locked year
+  are added and flagged, and that year's figures don't change. A double tap or a retry on a poor signal saves once.
+  Moving a whole job to new dates moves every day with its kind, times and note.
 - **Connections** map: jobs in the middle of a timeline, joined to calendar entries, documents and POs, stays,
   costs, income, invoices and mileage. Solid links are yours, dashed are automatic, dotted are possible (a cost on a
   job's day: is it that job's?). "Needs attention" flags jobs with no PO, calendar entries that look like jobs but

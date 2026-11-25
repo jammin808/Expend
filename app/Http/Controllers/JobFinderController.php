@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Domain\Audit\AuditLog;
 use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
@@ -166,9 +165,7 @@ class JobFinderController extends Controller
         if ($data['type'] === 'calendar') {
             $link = CalendarJobLink::query()->findOrFail($data['id']);
             if ($data['action'] === 'confirm') {
-                $before = $link->only(['work_job_id', 'linked_by']);
-                $link->update(['linked_by' => 'you']);
-                AuditLog::record('calendar.link_confirmed', $link, $before, $link->only(['work_job_id', 'linked_by']));
+                $finder->confirmCalendarLink($link); // read again under the audit head, as every link writer does
             } else {
                 $event = CalendarEvent::query()->where('uid', $link->event_uid)->get()->first(fn (CalendarEvent $e) => $e->key() === $link->event_key);
                 if ($event) {

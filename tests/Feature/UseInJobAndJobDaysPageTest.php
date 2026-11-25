@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Domain\Jobs\JobDays;
+use App\Models\AuditEvent;
 use App\Models\Client;
 use App\Models\Document;
 use App\Models\DocumentFact;
@@ -98,17 +99,43 @@ class UseInJobAndJobDaysPageTest extends TestCase
             [substr((string) $fresh->end_time, 0, 5), $fresh->location, substr((string) $fresh->start_time, 0, 5), $fresh->po_number, $fresh->fee_pence]);
     }
 
-    public function test_a_later_start_date_on_a_one_day_job_is_refused_plainly_and_changes_nothing(): void
+    public function test_a_later_start_date_moves_a_one_day_job_and_its_day_keeps_its_kind_times_and_note(): void
     {
         $job = $this->job();
+        JobDay::query()->where('work_job_id', $job->id)->sole()->update(['kind' => 'show', 'start_time' => '10:00', 'end_time' => '23:30', 'note' => 'Doors at 7']);
         $this->fact($job, 'start_date', 'Monday 12 May', ['on_date' => '2025-05-12']);
 
         [$press] = $this->sheet($job);
 
-        // Moving a job's dates is left to the job form: moving here would replace the day's kind and times.
-        $this->assertEquals(['title' => 'Product launch', 'starts_on' => '2025-05-12', 'ends_on' => '2025-05-10'], $press['body']);
-        $this->send($press)->assertSessionHasErrors(['ends_on' => 'The job can’t end before it starts.']);
-        $this->assertSame(['2025-05-10'], $job->fresh()->workDates());
+        // A one-day job moves to the date: both of its dates go, so the whole job moves (JobDays::rangeChanged).
+        $this->assertEquals(['title' => 'Product launch', 'starts_on' => '2025-05-12', 'ends_on' => '2025-05-12'], $press['body']);
+        $this->send($press)->assertSessionHasNoErrors()->assertSessionHas('success');
+
+        $fresh = $job->fresh();
+        $this->assertSame(['2025-05-12', '2025-05-12'], [$fresh->starts_on->format('Y-m-d'), $fresh->ends_on->format('Y-m-d')]);
+        $this->assertSame(['2025-05-12'], $fresh->workDates());
+        $day = JobDay::query()->where('work_job_id', $job->id)->sole();
+        $this->assertSame(['show', '10:00', '23:30', 'Doors at 7'], [$day->kind, substr((string) $day->start_time, 0, 5), substr((string) $day->end_time, 0, 5), $day->note]);
+        // The job keeps everything else, and the history shows the day moving with its kind, times and note.
+        $this->assertSame(['PO-4471', 45000, 'Old venue'], [$fresh->po_number, $fresh->fee_pence, $fresh->location]);
+        $audit = AuditEvent::query()->where('action', 'job.days_changed')->where('subject_id', $job->id)->latest('id')->firstOrFail();
+        $this->assertEquals([['date' => '2025-05-12', 'kind' => 'show', 'start_time' => '10:00', 'end_time' => '23:30', 'note' => 'Doors at 7']], $audit->after['days']);
+        $this->assertEquals([['date' => '2025-05-10', 'kind' => 'show', 'start_time' => '10:00', 'end_time' => '23:30', 'note' => 'Doors at 7']], $audit->before['days']);
+    }
+
+    public function test_an_earlier_start_date_moves_a_one_day_job_too(): void
+    {
+        $job = $this->job();
+        JobDay::query()->where('work_job_id', $job->id)->sole()->update(['kind' => 'rig', 'start_time' => '07:00', 'end_time' => '19:00']);
+        $this->fact($job, 'start_date', 'Thursday 8 May', ['on_date' => '2025-05-08']);
+
+        [$press] = $this->sheet($job);
+
+        $this->assertEquals(['title' => 'Product launch', 'starts_on' => '2025-05-08', 'ends_on' => '2025-05-08'], $press['body']);
+        $this->send($press)->assertSessionHasNoErrors()->assertSessionHas('success');
+        $this->assertSame(['2025-05-08'], $job->fresh()->workDates());
+        $day = JobDay::query()->where('work_job_id', $job->id)->sole();
+        $this->assertSame(['rig', '07:00', '19:00'], [$day->kind, substr((string) $day->start_time, 0, 5), substr((string) $day->end_time, 0, 5)]);
     }
 
     public function test_a_start_date_after_a_longer_job_ends_is_still_refused_plainly(): void

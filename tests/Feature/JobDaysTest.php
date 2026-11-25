@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\JobGatherer;
 use App\Domain\Mileage\JobTrips;
@@ -127,5 +128,18 @@ class JobDaysTest extends TestCase
         $this->delete("/job-days/{$last->id}")->assertSessionHas('error');
 
         $this->get("/jobs/{$job->id}")->assertOk()->assertInertia(fn ($p) => $p->has('days', 1)->where('days.0.kind', 'work'));
+    }
+
+    public function test_a_calendar_title_as_a_jobs_title_keeps_day_words_that_are_part_of_the_name(): void
+    {
+        $cases = [
+            'Spring Trade Show' => 'Spring Trade Show', 'Frost Festival build and show' => 'Frost Festival build and show',
+            'Ideal Home Show' => 'Ideal Home Show', 'Rig/Show/De-rig: Spring Trade Show' => 'Spring Trade Show',
+            'Show: Lumiere night install' => 'Lumiere night install', 'Rig: Winter Expo' => 'Winter Expo', 'Show - Acme Awards' => 'Acme Awards',
+            'Acme Awards (de-rig)' => 'Acme Awards', 'Acme Awards – Day 2' => 'Acme Awards', 'De-rig | Acme Awards' => 'Acme Awards', 'Rig' => '',
+        ];
+        foreach ($cases as $title => $want) {
+            $this->assertSame($want, JobDays::cleanTitle($title), $title);
+        }
     }
 }

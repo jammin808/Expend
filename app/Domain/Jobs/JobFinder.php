@@ -29,6 +29,7 @@ use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -223,6 +224,12 @@ final class JobFinder
         // dates is left as it is, and what it was found from isn't grouped again here: this run may see only part
         // of it (paperwork from just inside the dates, without the calendar entry from outside them).
         DB::transaction(function () use ($left, $from, $to, &$stats) {
+            // What was read before the AI step (up to a minute ago) may be out of date: days picked on the calendar
+            // meanwhile link entries and close possible jobs. The audit head first (as every audited writer takes it),
+            // so a pick being saved is finished; then entries linked or marked "not a job" since, and the sources of
+            // possible jobs decided or edited since, are left out.
+            AuditLog::lockHead();
+            $left = $this->stillFree($left);
             $open = JobCandidate::query()->where('status', 'open')->whereNull('edited_at')->orderBy('id')->get();
             $within = fn (JobCandidate $c) => $c->ends_on->format('Y-m-d') >= $from->format('Y-m-d') && $c->starts_on->format('Y-m-d') <= $to->format('Y-m-d');
             $byPrint = [];
@@ -242,8 +249,14 @@ final class JobFinder
                     continue;
                 }
                 if ($existing = $byPrint[$candidate['fingerprint']] ?? null) {
-                    $existing->update($candidate);
-                    $kept[] = $existing->id;
+                    // Only while it's still open and not edited by you: a possible job closed or edited meanwhile
+                    // keeps what it has (its status included).
+                    $fresh = JobCandidate::query()->whereKey($existing->id)->lockForUpdate()->first();
+                    if (! $fresh || $fresh->status !== 'open' || $fresh->edited_at !== null) {
+                        continue;
+                    }
+                    $fresh->update(array_diff_key($candidate, ['status' => true]));
+                    $kept[] = $fresh->id;
                 } else {
                     $byPrint[$candidate['fingerprint']] = JobCandidate::query()->create($candidate);
                     $kept[] = $byPrint[$candidate['fingerprint']]->id;
@@ -262,6 +275,30 @@ final class JobFinder
         AuditLog::record('jobs.finder_run', 'JobFinder', null, $kept, null, 'matcher');
 
         return $stats;
+    }
+
+    /**
+     * Signals still free to propose, read again now: calendar entries not linked to a job or marked "not a job", and
+     * nothing a possible job you decided or edited was found from.
+     */
+    private function stillFree(Collection $left): Collection
+    {
+        $links = collect();
+        foreach (array_chunk($left->where('type', 'calendar')->pluck('id')->unique()->values()->all(), 500) as $keys) {
+            $links = $links->concat(CalendarJobLink::query()->whereIn('event_key', $keys)->get(['event_key', 'work_job_id', 'not_job']));
+        }
+        $links = $links->keyBy('event_key');
+        $taken = JobCandidate::query()->where(fn ($q) => $q->where('status', '!=', 'open')->orWhereNotNull('edited_at'))
+            ->get()->flatMap(fn (JobCandidate $c) => $c->sourceKeys())->flip();
+
+        return $left->reject(function (array $s) use ($links, $taken) {
+            if (isset($taken[$s['key']])) {
+                return true;
+            }
+            $link = $s['type'] === 'calendar' ? ($links[$s['id']] ?? null) : null;
+
+            return $link && ($link->not_job || $link->work_job_id);
+        })->values();
     }
 
     public static function aiAllowed(): bool
@@ -361,14 +398,22 @@ final class JobFinder
      *
      * @param  array{0:string, 1:string}|null  $within  for a new job, the dates you gave it: its calendar entries' days
      *                                                  outside them aren't added
-     * @return array{linked:int, missed:list<string>} how many were linked, and the labels of those that couldn't be
+     * @param  list<string>|null  $types  only sources of these types (calendar, document, travel); every type when null
+     * @param  bool  $vetoes  leave off a document you said isn't part of this job (when the link comes from a tick that
+     *                        was on for you, not one you gave it)
+     * @return array{linked:int, missed:list<string>, vetoed:list<string>} how many were linked, the labels of those that
+     *                                                                     couldn't be, and of those left off for $vetoes
      */
-    public function linkSources(JobCandidate $candidate, WorkJob $job, ?array $within = null): array
+    public function linkSources(JobCandidate $candidate, WorkJob $job, ?array $within = null, ?array $types = null, bool $vetoes = false): array
     {
         $linked = 0;
         $missed = [];
+        $vetoed = [];
         $pos = null;
         foreach ($candidate->sources ?? [] as $source) {
+            if ($types !== null && ! in_array($source['type'] ?? null, $types, true)) {
+                continue;
+            }
             $done = false;
             if ($source['type'] === 'calendar' && ($event = self::event($source['id'], $source['date'] ?? null))) {
                 $link = CalendarJobLink::query()->where('event_key', $event->key())->first();
@@ -380,6 +425,12 @@ final class JobFinder
                 $pos ??= $this->poOwners($job, $candidate->po_number);
                 [$target, $attachments] = $this->linkTarget($doc, $job, $pos);
                 $yours = fn (Document $d) => $d->job_linked_by === 'you' && $d->work_job_id && $d->work_job_id !== $job->id;
+                $notThis = fn (Document $d) => in_array($job->id, $d->job_rejected ?? [], true);
+                if ($vetoes && ($notThis($doc) || $notThis($target))) {
+                    $vetoed[] = (string) ($source['label'] ?? '');
+
+                    continue;
+                }
                 if (! $yours($doc) && ! $yours($target)) {
                     $done = $this->linkDocument($target, $job, 'you', $attachments);
                 }
@@ -396,43 +447,90 @@ final class JobFinder
             }
         }
 
-        return ['linked' => $linked, 'missed' => $missed];
+        return ['linked' => $linked, 'missed' => $missed, 'vetoed' => $vetoed];
     }
 
     /**
      * Link a calendar entry to a job. Automation never changes a link you made, an entry you marked "not a job", or
      * link it to a job you unlinked it from. An entry you link adds its days to the job; with $within (the dates you
-     * typed when making the job from it) only its days within those dates.
+     * typed when making the job from it) only its days within those dates, and with $days false none (the days you
+     * picked on the calendar are the job's days). An entry that is yours on this job already is left exactly as it
+     * is: linking it again (a possible job added to the job, say) changes nothing and brings back no day you took off.
+     *
+     * The link is read again under its lock, after the audit head (AuditLog::lockHead, the one lock order every audited
+     * writer takes), so the checks and what is saved go by the link as it is now: a "not this job" you gave a moment
+     * ago is never written over. When the entry's link is made by someone else meanwhile, it's read and checked again.
      *
      * @param  array{0:string, 1:string}|null  $within
      * @param  Provenance|null  $why  why an automatic link is made (the job finder's own when not given)
      */
-    public function linkCalendar(CalendarEvent $event, WorkJob $job, string $by, ?string $reason = null, ?array $within = null, ?Provenance $why = null): CalendarJobLink
+    public function linkCalendar(CalendarEvent $event, WorkJob $job, string $by, ?string $reason = null, ?array $within = null, ?Provenance $why = null, bool $days = true): CalendarJobLink
     {
-        $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
-        if ($by !== 'you' && $link->exists && (($link->linked_by === 'you' && ($link->work_job_id || $link->not_job)) || in_array($job->id, $link->rejected ?? [], true))) {
-            return $link;
-        }
-
-        $previous = $link->work_job_id && $link->work_job_id !== $job->id ? WorkJob::query()->find($link->work_job_id) : null;
-        $saved = DB::transaction(function () use ($link, $event, $job, $by, $reason, $why) {
+        $key = $event->key();
+        $attempt = fn () => DB::transaction(function () use ($event, $key, $job, $by, $reason, $why) {
+            AuditLog::lockHead();
+            $link = CalendarJobLink::query()->where('event_key', $key)->lockForUpdate()->first() ?? new CalendarJobLink(['event_key' => $key]);
+            if ($by !== 'you' && $link->exists && (($link->linked_by === 'you' && ($link->work_job_id || $link->not_job)) || in_array($job->id, $link->rejected ?? [], true))) {
+                return [$link, null, false];
+            }
+            if ($by === 'you' && $link->exists && $link->work_job_id === $job->id && $link->linked_by === 'you' && ! $link->not_job) {
+                return [$link, null, false];
+            }
+            $previous = $link->work_job_id && $link->work_job_id !== $job->id ? WorkJob::query()->find($link->work_job_id) : null;
             $saved = $this->saveCalendarLink($link, $event, ['work_job_id' => $job->id, 'linked_by' => $by, 'not_job' => false,
                 'rejected' => array_values(array_diff($link->rejected ?? [], [$job->id])) ?: null, 'reason' => $reason], $by);
             if ($by !== 'you') {
-                ($why ?? new Provenance($by === 'ai' ? 'jobs.calendar_ai' : 'jobs.calendar_rules', ['cal:'.$event->key(), 'job:'.$job->id]))
-                    ->recordLink('calendar_job', 'cal:'.$event->key(), 'job:'.$job->id);
+                ($why ?? new Provenance($by === 'ai' ? 'jobs.calendar_ai' : 'jobs.calendar_rules', ['cal:'.$key, 'job:'.$job->id]))
+                    ->recordLink('calendar_job', 'cal:'.$key, 'job:'.$job->id);
             }
 
-            return $saved;
+            return [$saved, $previous, true];
         });
-        if ($previous) {
+        try {
+            [$saved, $previous, $changed] = $attempt();
+        } catch (UniqueConstraintViolationException) {
+            [$saved, $previous, $changed] = $attempt(); // its link was made meanwhile: read again, checked again
+        }
+        if ($changed && $previous) {
             JobDays::forgetCalendar($previous, $event);
         }
-        if ($by === 'you') {
+        if ($changed && $by === 'you' && $days) {
             JobDays::fromCalendar($job, $event, $within[0] ?? null, $within[1] ?? null); // an entry you link is one of the job's days (a rig day, a de-rig days later)
         }
 
         return $saved;
+    }
+
+    /**
+     * An entry linked automatically to the job becomes yours (you ticked it when you picked the job's days, as
+     * "Confirm" does on the job finder's page): automation never changes it again. A link you made already, or one
+     * that puts the entry on no job, is left as it is.
+     */
+    public function confirmCalendarLink(CalendarJobLink $link): CalendarJobLink
+    {
+        return DB::transaction(function () use ($link) {
+            $link = $this->lockedLink($link->event_key);
+            if (! $link->exists || $link->linked_by === 'you' || ! $link->work_job_id || $link->not_job) {
+                return $link;
+            }
+            $before = $link->only(['work_job_id', 'linked_by']);
+            $link->update(['linked_by' => 'you']);
+            AuditLog::record('calendar.link_confirmed', $link, $before, $link->only(['work_job_id', 'linked_by']));
+
+            return $link;
+        });
+    }
+
+    /**
+     * An entry's link read again under its lock, after the audit head (the one lock order every audited writer takes),
+     * so what's checked and saved is the link as it is now, not as it was read a moment ago. A new one when it has
+     * none. Only inside a transaction.
+     */
+    private function lockedLink(string $key): CalendarJobLink
+    {
+        AuditLog::lockHead();
+
+        return CalendarJobLink::query()->where('event_key', $key)->lockForUpdate()->first() ?? new CalendarJobLink(['event_key' => $key]);
     }
 
     /**
@@ -442,17 +540,19 @@ final class JobFinder
      */
     public function unlinkCalendar(CalendarEvent $event, ?int $fromJobId = null, ?string $reason = null): CalendarJobLink
     {
-        $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
-        if ($fromJobId && $link->work_job_id && $link->work_job_id !== $fromJobId) {
-            return $this->rejectCalendarFor($event, $fromJobId, $reason);
-        }
-        $reject = $fromJobId ?? $link->work_job_id;
-        if ($link->work_job_id && ($was = WorkJob::query()->find($link->work_job_id))) {
-            JobDays::forgetCalendar($was, $event);
-        }
+        return DB::transaction(function () use ($event, $fromJobId, $reason) {
+            $link = $this->lockedLink($event->key());
+            if ($fromJobId && $link->work_job_id && $link->work_job_id !== $fromJobId) {
+                return $this->rejectCalendarFor($event, $fromJobId, $reason);
+            }
+            $reject = $fromJobId ?? $link->work_job_id;
+            if ($link->work_job_id && ($was = WorkJob::query()->find($link->work_job_id))) {
+                JobDays::forgetCalendar($was, $event);
+            }
 
-        return $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false,
-            'rejected' => array_values(array_unique([...($link->rejected ?? []), ...($reject ? [$reject] : [])])) ?: null, 'reason' => $reason ?? 'Not this job'], 'you');
+            return $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false,
+                'rejected' => array_values(array_unique([...($link->rejected ?? []), ...($reject ? [$reject] : [])])) ?: null, 'reason' => $reason ?? 'Not this job'], 'you');
+        });
     }
 
     /**
@@ -462,11 +562,12 @@ final class JobFinder
      */
     public function unlinkAutomatic(CalendarEvent $event, WorkJob $job, string $reason): void
     {
-        $link = CalendarJobLink::query()->where('event_key', $event->key())->first();
-        if (! $link || $link->work_job_id !== $job->id || $link->linked_by === 'you') {
-            return;
-        }
-        DB::transaction(function () use ($link, $event, $job, $reason) {
+        DB::transaction(function () use ($event, $job, $reason) {
+            // Checked on the link as it is now: a pick saved a moment ago (it's yours there now) is never undone.
+            $link = $this->lockedLink($event->key());
+            if (! $link->exists || $link->work_job_id !== $job->id || $link->linked_by === 'you') {
+                return;
+            }
             $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'rules', 'not_job' => false, 'rejected' => $link->rejected, 'reason' => $reason], 'rules');
             (new Provenance('jobs.gather', ['cal:'.$event->key(), 'job:'.$job->id]))->recordLink('calendar_job', 'cal:'.$event->key(), null);
         });
@@ -478,18 +579,20 @@ final class JobFinder
      */
     public function rejectCalendarFor(CalendarEvent $event, int $jobId, ?string $reason = null): CalendarJobLink
     {
-        $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
-        if ($link->work_job_id === $jobId) {
-            return $this->unlinkCalendar($event, $jobId, $reason);
-        }
-        if (in_array($jobId, $link->rejected ?? [], true)) {
-            return $link;
-        }
-        $fields = ['rejected' => array_values(array_unique([...($link->rejected ?? []), $jobId]))];
+        return DB::transaction(function () use ($event, $jobId, $reason) {
+            $link = $this->lockedLink($event->key());
+            if ($link->work_job_id === $jobId) {
+                return $this->unlinkCalendar($event, $jobId, $reason);
+            }
+            if (in_array($jobId, $link->rejected ?? [], true)) {
+                return $link;
+            }
+            $fields = ['rejected' => array_values(array_unique([...($link->rejected ?? []), $jobId]))];
 
-        return $this->saveCalendarLink($link, $event, $fields + ($link->exists
-            ? ['reason' => $link->reason]
-            : ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false, 'reason' => $reason ?? 'Not this job']), 'you');
+            return $this->saveCalendarLink($link, $event, $fields + ($link->exists
+                ? ['reason' => $link->reason]
+                : ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => false, 'reason' => $reason ?? 'Not this job']), 'you');
+        });
     }
 
     /**
@@ -539,9 +642,8 @@ final class JobFinder
     /** "Not a job": never proposed or linked automatically. */
     public function markNotJob(CalendarEvent $event): CalendarJobLink
     {
-        $link = CalendarJobLink::query()->firstOrNew(['event_key' => $event->key()]);
-
-        return $this->saveCalendarLink($link, $event, ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => true, 'reason' => 'Not a job'], 'you');
+        return DB::transaction(fn () => $this->saveCalendarLink($this->lockedLink($event->key()), $event,
+            ['work_job_id' => null, 'linked_by' => 'you', 'not_job' => true, 'reason' => 'Not a job'], 'you'));
     }
 
     /** Undo "not a job" (and any "not this job"): the entry is treated as new again. */
@@ -554,14 +656,18 @@ final class JobFinder
         }
     }
 
+    /** Saved and audited together, the audit head taken first (AuditLog::lockHead: one lock order for every writer). */
     private function saveCalendarLink(CalendarJobLink $link, CalendarEvent $event, array $fields, string $by): CalendarJobLink
     {
-        $before = $link->exists ? $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected']) : null;
-        $fields['reason'] = isset($fields['reason']) ? mb_substr((string) $fields['reason'], 0, 300) : null;
-        $link->fill($fields + ['event_uid' => $event->uid, 'event_starts_at' => $event->starts_at, 'summary' => mb_substr((string) $event->summary, 0, 250)])->save();
-        AuditLog::record('calendar.linked', $link, $before, $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected', 'summary']), $fields['reason'], self::actor($by));
+        return DB::transaction(function () use ($link, $event, $fields, $by) {
+            AuditLog::lockHead();
+            $before = $link->exists ? $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected']) : null;
+            $fields['reason'] = isset($fields['reason']) ? mb_substr((string) $fields['reason'], 0, 300) : null;
+            $link->fill($fields + ['event_uid' => $event->uid, 'event_starts_at' => $event->starts_at, 'summary' => mb_substr((string) $event->summary, 0, 250)])->save();
+            AuditLog::record('calendar.linked', $link, $before, $link->only(['work_job_id', 'linked_by', 'not_job', 'rejected', 'summary']), $fields['reason'], self::actor($by));
 
-        return $link;
+            return $link;
+        });
     }
 
     /**
@@ -1305,7 +1411,8 @@ final class JobFinder
         return [$from, $to ?? $from];
     }
 
-    private static function isLink(string $location): bool
+    /** Whether a calendar entry's location is a link (a video call) rather than a place. */
+    public static function isLink(string $location): bool
     {
         return (bool) preg_match('#^https?://|zoom\.us|teams\.microsoft|meet\.google#i', trim($location));
     }

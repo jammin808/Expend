@@ -8,6 +8,7 @@ use App\Models\Setting;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use LogicException;
 
 /**
  * Tamper-evident, append-only record of every change: who, what, when, why, before and after.
@@ -53,17 +54,35 @@ final class AuditLog
         // One writer at a time: the chain head row is locked until this write (and any surrounding
         // transaction) commits, so two processes can never both chain onto the same previous event.
         return DB::transaction(function () use ($action, $type, $id, $before, $after, $reason, $actor, $context) {
-            $head = DB::table('audit_heads')->where('id', 1)->lockForUpdate()->first();
-            if (! $head) {
-                DB::table('audit_heads')->insertOrIgnore(['id' => 1, 'hash' => null, 'event_id' => null, 'created_at' => now(), 'updated_at' => now()]);
-                $head = DB::table('audit_heads')->where('id', 1)->lockForUpdate()->first();
-            }
+            $head = self::lockHead();
             $event = self::make($action, $type, $id, $before, $after, $reason, $actor, $head->hash, $context);
             $event->save();
             DB::table('audit_heads')->where('id', 1)->update(['hash' => $event->hash, 'event_id' => $event->id, 'updated_at' => now()]);
 
             return $event;
         });
+    }
+
+    /**
+     * Lock the chain's head row (adding it the first time) until the surrounding transaction commits, and return it.
+     * record() takes it for each event. Work that writes several things and audits them (picking a job's days) takes it
+     * first, before locking anything else, so every audited writer takes its locks in one order: the head, then the
+     * job, then the rows it changes.
+     *
+     * @throws LogicException outside a transaction, where the lock would be let go at once
+     */
+    public static function lockHead(): object
+    {
+        if (DB::transactionLevel() === 0) {
+            throw new LogicException('The audit head can only be locked inside a transaction.');
+        }
+        $head = DB::table('audit_heads')->where('id', 1)->lockForUpdate()->first();
+        if (! $head) {
+            DB::table('audit_heads')->insertOrIgnore(['id' => 1, 'hash' => null, 'event_id' => null, 'created_at' => now(), 'updated_at' => now()]);
+            $head = DB::table('audit_heads')->where('id', 1)->lockForUpdate()->first();
+        }
+
+        return $head;
     }
 
     /** @param  array{channel:?string, correlation:?string, run_id:?int}  $context */

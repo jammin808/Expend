@@ -26,6 +26,11 @@ per-sender parsers, the Calendar API, refund tracking for cancellations, and mea
 number, dates, client or venue change, leaving out your Sent mail (docs/mail-and-calendar.md, batch 1). The Gmail
 connection asks for `gmail.modify`, so it can read and add Expend's own labels; it never sends, moves or deletes.
 
+**Update (25 Nov 2026):** you can pick several days, dates and runs of dates on the calendar (Jobs › Calendar) or with
+**Add days** on a job, and make them one job or add them to one you have (§6.3, "Picking a job's days"). Moving a whole
+job (its first and last dates by the same number of days, or a year typed wrong and put right) now moves every day with
+its kind, times and note, so "Use in job" on a job sheet can move a one-day job to the start date it found.
+
 ---
 
 ## 0. What changed from v1
@@ -476,6 +481,41 @@ the columns once, check a preview, save the profile.
   than Gmail's "restricted" one.
 - If Gmail's "Events from Gmail" setting is on, hotel reservations may already show up as calendar events.
   Treat them as one more source for stays (§6.5) and deduplicate them against the booking email.
+
+**Picking a job's days (built 25 Nov 2026).** A job is often a rig day, show days and a de-rig, with travel days, and
+not always one after another. On the calendar page you tap the days of one job (or drag across a run, Fill a gap of up
+to 62 days, or tap an entry's circle to pick all of its days), up to 120 days, then check them in one list and make one
+job or add them to one you have. A job page's **Add days** opens the same picker for that job, with its own days shown
+and never picked twice. The pick is kept on the phone for 24 hours, so a lost signal or a reload loses nothing. The
+rules:
+
+- **Picked days are yours.** Each day is saved with the kind and times you see in the review (the kind comes from its
+  first entry that isn't a plain work day; a small-hours entry before 06:00, such as a 01:30 load-out, belongs to the
+  evening before). If you later say an entry is "Not part of this job", the days you picked stay on the job; you remove
+  one with its ✕.
+- **What you were shown is what's acted on.** Each entry is sent with what the review showed (free, on this job, on
+  another job, not a job, not part of this job). If that changed in the meantime, it's left alone and the message says
+  so ("you confirmed it on X since", "Gone from your calendar", "Moved since you picked, so not linked").
+- **Other jobs.** A day that's already a day of another job is added and flagged ("Also a day of X: it keeps that
+  day"). An entry Expend linked to another job automatically is ticked to move here, and the review says which days
+  that job loses; one you linked yourself only moves when you tick it.
+- **Entries you leave out.** Unticking an entry Expend ticked for you records "not part of this job", so automation
+  never links it there; the row says so before you save, and linking it yourself later lifts it.
+- **Locked years.** Days in a tax year you've locked are added and flagged with a "locked year" note; that year's
+  figures and lines stay exactly as filed.
+- **Limits.** Adding to a job refuses a day more than four months from it, or one that would make it longer than 400
+  days; the review flags both before you save. A cancelled job can't be added to.
+- **One save, once.** Each pick carries a key (a ULID, kept with the selection until it saves) in the `calendar_picks`
+  table (token unique, mode, job). A double tap or a retry on a poor connection finds the key and opens the job ("Already
+  saved: X."); a save still waiting on another one says "Still saving your last tap. Look at the job in a moment." Every
+  change is audited under the pick's key. The save locks the history's head first, then the job, then the entries'
+  links, always in that order.
+
+The endpoints, all signed in, each with its own rate limit: `GET /calendar/month?m=YYYY-MM` (the month's entries,
+including ones that began earlier, each job's days and the locked years), `POST /calendar/pick/preview` (the review;
+reads only), `GET /calendar/pick/jobs?q=&near=` (jobs to add to), `POST /calendar/pick` (make a job) and
+`POST /jobs/{job}/days/pick` (add to a job). The rules live in `app/Domain/Jobs/DayPick.php` and `CalendarMonth.php`,
+and the phone's ticking in `resources/js/lib/day-pick.ts`, which mirrors the server's and is tested in node.
 
 ### 6.4 Suggestions: rules, matching and AI
 
@@ -1146,6 +1186,15 @@ all can be changed later in Settings.
   and "never auto-confirm" rule still apply.
 - Control: the owner must be able to review everything, allocate expenses to jobs by hand, and get AI
   suggestions, with a final manual override in every case.
+
+**Recorded decisions (25 Nov 2026): picking a job's days on the calendar**
+
+- Days in a locked tax year: added to the job and flagged. A job's days are just dates; that year's figures and lines
+  stay exactly as filed, and the day shows a "locked year" note.
+- An entry picked with its days and later marked "Not part of this job": the days the owner picked stay on the job
+  (each can be removed with its ✕).
+- Unticking an entry Expend ticked: remembered as "not part of this job", so automation never links it there. The row
+  says so before saving, and linking it yourself lifts it.
 
 ---
 

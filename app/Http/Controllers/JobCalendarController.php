@@ -3,13 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
-use App\Domain\Documents\Grounding;
+use App\Domain\Jobs\CalendarMonth;
 use App\Domain\Jobs\JobDays;
 use App\Domain\Jobs\JobFinder;
 use App\Domain\Jobs\JobGatherer;
 use App\Jobs\GatherForJob;
-use App\Models\CalendarEvent;
-use App\Models\CalendarJobLink;
 use App\Models\Client;
 use App\Models\JobDay;
 use App\Models\JobFind;
@@ -36,15 +34,16 @@ class JobCalendarController extends Controller
         'note.max' => 'A note on a day is 200 characters at most.',
     ];
 
-    public function index(Request $request, JobFinder $finder): Response
+    public function index(Request $request, CalendarMonth $calendar): Response
     {
-        $month = preg_match('/^\d{4}-\d{2}$/', (string) $request->query('m')) ? CarbonImmutable::parse($request->query('m').'-01') : CarbonImmutable::today()->startOfMonth();
+        // The month in the UK (the server runs on UTC), unless one is asked for.
+        // Only a month that exists (2026-13 isn't one, nor is 2026-00), as GET /calendar/month checks.
+        $month = preg_match('/^(19|20)\d{2}-(0[1-9]|1[0-2])$/', (string) $request->query('m')) ? CarbonImmutable::parse($request->query('m').'-01') : CarbonImmutable::parse(CalendarMonth::today())->startOfMonth();
         $from = $month->startOfMonth();
         $to = $month->endOfMonth();
-        $events = CalendarEvent::query()->whereBetween('starts_at', [$from->subDay()->format('Y-m-d 00:00:00'), $to->addDay()->format('Y-m-d 23:59:59')])
-            ->orderBy('starts_at')->limit(1500)->get()
-            ->filter(fn (CalendarEvent $e) => $e->day() >= $from->format('Y-m-d') && $e->day() <= $to->format('Y-m-d'))->values();
-        $links = CalendarJobLink::query()->whereIn('event_key', $events->map->key())->get()->keyBy('event_key');
+        // Every entry covering a day of the month, one that began last month included; each with its state, and
+        // whether picking its day ticks it for you (CalendarMonth).
+        $grid = $calendar->build($month);
         $jobs = WorkJob::query()->with(['client', 'days'])->where('status', '!=', 'cancelled')
             ->whereDate('starts_on', '<=', $to->addDays(14)->format('Y-m-d'))->whereDate('ends_on', '>=', $from->subDays(14)->format('Y-m-d'))
             ->orderBy('starts_on')->get();
@@ -55,27 +54,18 @@ class JobCalendarController extends Controller
             'open' => preg_match('/^[0-9a-f]{40}$/', (string) $request->query('entry'))
                 ? ['key' => (string) $request->query('entry'), 'job_id' => ctype_digit((string) $request->query('job')) ? (int) $request->query('job') : null]
                 : null,
-            'month' => $month->format('Y-m'),
-            'prev' => $month->subMonth()->format('Y-m'),
-            'next' => $month->addMonth()->format('Y-m'),
-            'events' => $events->map(function (CalendarEvent $e) use ($links, $jobs, $clients, $finder) {
-                $link = $links[$e->key()] ?? null;
-                $job = $link?->work_job_id ? $jobs->firstWhere('id', $link->work_job_id) ?? WorkJob::query()->find($link->work_job_id) : null;
-
-                return [
-                    // A gig that ends in the small hours is one day's work, so the form suggests one day.
-                    'key' => $e->key(), 'date' => $e->day(), 'last_day' => JobDays::lastDay($e), 'summary' => $e->summary ?: '(no title)', 'location' => $e->location,
-                    'all_day' => $e->all_day, 'start_time' => $e->all_day ? null : $e->localStart()->format('H:i'), 'end_time' => $e->all_day || ! $e->ends_at ? null : $e->localEnd()->format('H:i'),
-                    'job' => $job ? ['id' => $job->id, 'title' => $job->title] : null, 'by' => $link?->linked_by, 'not_job' => (bool) $link?->not_job,
-                    'looks_like_work' => ! $job && ! $link?->not_job && $finder->workScore($e) >= 2,
-                    'postcode' => self::postcode((string) $e->location),
-                    'client_id' => $clients->first(fn ($c) => self::mentions($e->text(), $c->name))?->id,
-                ];
-            })->values(),
+            'month' => $grid['month'],
+            'prev' => $grid['prev'],
+            'next' => $grid['next'],
+            'today' => $grid['today'],
+            'events' => $grid['events'],
             // With the days each job works, so the page can say which of an entry's dates linking it adds.
             'jobs' => $jobs->map(fn (WorkJob $j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d'), 'ends_on' => $j->ends_on->format('Y-m-d'),
                 'client' => $j->client?->name, 'days' => $j->workDates()])->values(),
             'clients' => $clients,
+            // For the month grid: whose days each date is (a cancelled job's faded), and the years you've locked.
+            'job_days' => $grid['job_days'],
+            'locked_years' => $grid['locked_years'],
         ]);
     }
 
@@ -178,13 +168,6 @@ class JobCalendarController extends Controller
 
     public static function postcode(string $text): ?string
     {
-        return preg_match('/\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b/i', $text, $m) ? strtoupper($m[1].' '.$m[2]) : null;
-    }
-
-    private static function mentions(string $text, string $name): bool
-    {
-        $n = Grounding::normalise(preg_replace('/\b(ltd|limited|plc|llp|the)\b/i', '', $name));
-
-        return mb_strlen($n) >= 3 && str_contains(Grounding::normalise($text), $n);
+        return CalendarMonth::postcode($text);
     }
 }

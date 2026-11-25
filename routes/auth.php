@@ -38,7 +38,7 @@ Route::middleware('guest')->group(function () {
         ->name('two-factor.challenge');
 
     Route::post('two-factor-challenge', [TwoFactorChallengeController::class, 'store'])
-        ->middleware('throttle:10,1');
+        ->middleware('throttle:10,1,two-factor');
 });
 
 Route::middleware('auth')->group(function () {
@@ -46,11 +46,11 @@ Route::middleware('auth')->group(function () {
         ->name('verification.notice');
 
     Route::get('verify-email/{id}/{hash}', VerifyEmailController::class)
-        ->middleware(['signed', 'throttle:6,1'])
+        ->middleware(['signed', 'throttle:6,1,verify-email'])
         ->name('verification.verify');
 
     Route::post('email/verification-notification', [EmailVerificationNotificationController::class, 'store'])
-        ->middleware('throttle:6,1')
+        ->middleware('throttle:6,1,verification-send')
         ->name('verification.send');
 
     Route::get('confirm-password', [ConfirmablePasswordController::class, 'show'])

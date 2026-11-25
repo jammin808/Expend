@@ -1,30 +1,27 @@
+import { DayStrip, revealStrip } from '@/components/calendar-pick/day-strip';
+import { entriesByDate, MonthGrid } from '@/components/calendar-pick/month-grid';
+import { PickBar } from '@/components/calendar-pick/pick-bar';
+import { hasEdits, PickReview, type ReviewDraft } from '@/components/calendar-pick/pick-review';
+import { ResponsiveSheet } from '@/components/calendar-pick/responsive-sheet';
+import { type JobDayMark, type LockedYear, type MonthEntry } from '@/components/calendar-pick/types';
+import { CALENDAR_KEY, useDayPick } from '@/components/calendar-pick/use-day-pick';
+import { useMinWidth } from '@/components/calendar-pick/use-min-width';
+import { useMonths } from '@/components/calendar-pick/use-months';
 import { JobForm } from '@/components/job-form';
 import { JobsTabs } from '@/components/jobs-tabs';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import AppLayout from '@/layouts/app-layout';
+import { entryPicked, fillDates, includedEntries, monthOf, plural, shiftMonth } from '@/lib/day-pick';
 import { datesBetween, londonToday } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { Head, Link, router } from '@inertiajs/react';
-import { Briefcase, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { Briefcase, Check, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-interface Entry {
-    key: string;
-    date: string;
-    last_day: string;
-    summary: string;
-    location: string | null;
-    all_day: boolean;
-    start_time: string | null;
-    end_time: string | null;
-    job: { id: number; title: string } | null;
-    by: string | null;
-    not_job: boolean;
-    looks_like_work: boolean;
-    postcode: string | null;
-    client_id: number | null;
-}
+type Entry = MonthEntry;
+const NO_JOB_DAYS: Record<string, JobDayMark[]> = {};
+const NO_LOCKED_YEARS: LockedYear[] = [];
 interface JobOption {
     id: number;
     title: string;
@@ -85,24 +82,34 @@ export function fitEntry(title: string, location: string | null): { title: strin
 const dayLabel = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 const monthLabel = (m: string) => new Date(m + '-01T12:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 
-/** Your calendar a month at a time. Click any entry to say it's a job, part of one, or not work. */
+/**
+ * Your calendar a month at a time. Tap days on the grid (or an entry's circle, for all its days) to pick them for one
+ * job, across months, and make the job or add them to one. Click any entry to say it's a job, part of one, or not work.
+ */
 export default function JobCalendar({
     month,
     prev,
     next,
+    today: serverToday,
     events,
     jobs,
     clients,
     open: opening = null,
+    job_days: jobDays = NO_JOB_DAYS,
+    locked_years: lockedYears = NO_LOCKED_YEARS,
 }: {
     month: string;
     prev: string;
     next: string;
+    today?: string;
     events: Entry[];
     jobs: JobOption[];
     clients: { id: number; name: string }[];
     /** An entry to open on arrival (from a possible job on the to-do list), and a job it may be part of. */
     open?: { key: string; job_id: number | null } | null;
+    /** Whose days each date of the month is, and the tax years you've locked. */
+    job_days?: Record<string, JobDayMark[]>;
+    locked_years?: LockedYear[];
 }) {
     const [open, setOpen] = useState<Entry | null>(() => (opening ? (events.find((e) => e.key === opening.key) ?? null) : null));
     // Opened once per arrival: the address loses ?entry= and &job= straight away, so an action in the entry that comes
@@ -117,13 +124,45 @@ export default function JobCalendar({
     }, []);
     const [workOnly, setWorkOnly] = useState(false);
     // Worked out on every render, in UK time: the page can stay open past midnight.
-    const today = londonToday();
+    const today = londonToday() || serverToday || '';
     const shown = events.filter((e) => !workOnly || e.job || e.looks_like_work);
+    const first = `${month}-01`;
     const days = useMemo(() => {
+        // An entry that began last month (a festival from 28 Oct) is listed under the 1st.
         const out: Record<string, Entry[]> = {};
-        for (const e of shown) (out[e.date] ??= []).push(e);
-        return Object.entries(out);
-    }, [shown]);
+        for (const e of shown) (out[e.date < first ? first : e.date] ??= []).push(e);
+        return Object.entries(out).sort(([a], [b]) => (a < b ? -1 : 1));
+    }, [shown, first]);
+
+    // Picking days: kept in this browser for a day, across months, until a job is made from them.
+    const pick = useDayPick<ReviewDraft>(CALENDAR_KEY);
+    const wide = useMinWidth(1024);
+    const months = useMemo(() => (wide ? [month, next] : [month]), [wide, month, next]);
+    const seed = useMemo(() => ({ month, events, job_days: jobDays, locked_years: lockedYears }), [month, events, jobDays, lockedYears]);
+    const cache = useMonths(seed);
+    const { ensure } = cache;
+    useEffect(() => {
+        ensure(months);
+    }, [months, ensure]);
+    const known = useMemo(() => {
+        const seen = new Map<string, Entry>();
+        for (const m of Object.values(cache.months)) for (const e of m.events) if (!seen.has(e.key)) seen.set(e.key, e);
+        return [...seen.values()];
+    }, [cache.months]);
+    const allJobDays = useMemo(
+        () => Object.assign({}, ...Object.values(cache.months).map((m) => m.job_days)) as Record<string, JobDayMark[]>,
+        [cache.months],
+    );
+    const byDate = useMemo(() => entriesByDate(known, months), [known, months]);
+    const entriesOn = useCallback((d: string) => byDate[d] ?? [], [byDate]);
+    const included = useMemo(() => includedEntries(known, pick.sel), [known, pick.sel]);
+    const bases = useMemo(() => included.map((e) => e.base ?? '').filter((b) => b.length >= 4), [included]);
+    const [strip, setStrip] = useState<string | null>(null);
+    const [review, setReview] = useState<'create' | 'add' | null>(null);
+    const go = (m: string) => router.get('/jobs/calendar', { m }, { preserveState: true, preserveScroll: true });
+    const before = pick.dates.filter((d) => monthOf(d) < months[0]).length;
+    const after = pick.dates.filter((d) => monthOf(d) > months[months.length - 1]).length;
+    const stripDate = strip && months.includes(monthOf(strip)) ? strip : null;
 
     return (
         <AppLayout
@@ -133,36 +172,78 @@ export default function JobCalendar({
             ]}
         >
             <Head title="Calendar" />
-            <div className="mx-auto w-full max-w-4xl space-y-5 p-4 md:p-6">
+            {/* Sized by the screen, not by its widest row (the tabs scroll), so a phone never scrolls sideways. */}
+            <div className="mx-auto w-full max-w-4xl space-y-5 p-4 [contain:inline-size] md:p-6">
                 <JobsTabs />
                 <div className="flex flex-wrap items-end justify-between gap-3">
                     <div className="max-w-2xl space-y-1">
                         <h1 className="text-2xl font-semibold tracking-tight">Calendar</h1>
+                        {/* Short on a phone, so the grid starts higher up the screen. */}
                         <p className="text-muted-foreground text-sm">
-                            Click any entry to say it’s a job (and add the details), that it’s part of a job you have, or that it isn’t work. Expend
-                            then finds what belongs to the job: its POs and documents, emails, payments on its days, stays and the fee.
+                            Pick a job’s days (a rig, show days, a de-rig) and make them one job, or tap an entry to say it’s a job, part of one, or
+                            not work.
+                            <span className="hidden sm:inline">
+                                {' '}
+                                Expend then finds what belongs to the job: its POs and documents, emails, payments on its days, stays and the fee.
+                            </span>
                         </p>
                     </div>
                     <div className="flex items-center gap-1">
-                        <Button variant="outline" size="icon" asChild aria-label="Previous month">
-                            <Link href={`/jobs/calendar?m=${prev}`} preserveScroll>
-                                <ChevronLeft />
-                            </Link>
-                        </Button>
+                        <MonthButton label="Previous month" badge={before} onClick={() => go(prev)}>
+                            <ChevronLeft />
+                        </MonthButton>
                         <span className="w-36 text-center text-sm font-medium">{monthLabel(month)}</span>
-                        <Button variant="outline" size="icon" asChild aria-label="Next month">
-                            <Link href={`/jobs/calendar?m=${next}`} preserveScroll>
-                                <ChevronRight />
-                            </Link>
-                        </Button>
-                        <Button variant="ghost" size="sm" asChild>
-                            <Link href="/jobs/calendar">Today</Link>
+                        <MonthButton label="Next month" badge={after} onClick={() => go(next)}>
+                            <ChevronRight />
+                        </MonthButton>
+                        <Button variant="ghost" className="h-11" onClick={() => go(today.slice(0, 7))}>
+                            Today
                         </Button>
                     </div>
                 </div>
 
-                <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={workOnly} onChange={(e) => setWorkOnly(e.target.checked)} />
+                <section className="space-y-3" aria-label="Pick days">
+                    <p className="text-muted-foreground text-sm">Tap days to pick them for one job. Tap a picked day to drop it.</p>
+                    <MonthGrid
+                        months={months}
+                        today={today}
+                        sel={pick.sel}
+                        preview={new Set(fillDates(pick.offer))}
+                        entriesOn={entriesOn}
+                        jobDays={allJobDays}
+                        lockedYears={lockedYears}
+                        onTap={(d) => {
+                            pick.tap(d);
+                            revealStrip(); // the day's entries, clear of the bar along the bottom
+                        }}
+                        onRange={pick.range}
+                        onDrag={pick.drag}
+                        onMonth={(delta) => go(shiftMonth(month, delta))}
+                        onFocusDate={setStrip}
+                    />
+                    {cache.failed[months[1] ?? ''] && (
+                        <p className="text-muted-foreground text-sm">
+                            {monthLabel(months[1])} couldn’t be shown: {cache.failed[months[1]]}{' '}
+                            <button type="button" className="min-h-11 underline" onClick={() => cache.retry(months[1])}>
+                                Try again
+                            </button>
+                        </p>
+                    )}
+                    {stripDate && (
+                        <DayStrip
+                            date={stripDate}
+                            sel={pick.sel}
+                            entries={known}
+                            bases={bases}
+                            onTap={pick.tap}
+                            onOverride={pick.setOverride}
+                            onRange={pick.range}
+                        />
+                    )}
+                </section>
+
+                <label className="flex min-h-11 items-center gap-2 text-sm">
+                    <input type="checkbox" className="size-5" checked={workOnly} onChange={(e) => setWorkOnly(e.target.checked)} />
                     Only jobs and entries that look like work
                 </label>
 
@@ -180,27 +261,40 @@ export default function JobCalendar({
                             <h2 className={cn('pt-2 text-sm font-medium', date === today && 'text-sky-700 dark:text-sky-300')}>{dayLabel(date)}</h2>
                             <ul className="space-y-1.5">
                                 {list.map((e) => (
-                                    <li key={e.key + e.date}>
+                                    <li key={e.key + e.date} className="flex items-start gap-2">
+                                        <EntryCircle
+                                            e={e}
+                                            picked={entryPicked(pick.sel, e.key)}
+                                            onPick={() => pick.pickEntry(e)}
+                                            onUnpick={() => pick.unpickEntry(e.key)}
+                                        />
                                         <button
                                             type="button"
                                             onClick={() => setOpen(e)}
                                             className={cn(
-                                                'hover:bg-muted/60 flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3 py-2 text-left text-sm',
+                                                'hover:bg-muted/60 flex min-h-11 w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3 py-2 text-left text-sm',
                                                 e.job && 'border-emerald-300 bg-emerald-50/60 dark:border-emerald-800 dark:bg-emerald-950/30',
                                                 !e.job && e.looks_like_work && 'border-amber-300 dark:border-amber-800',
                                                 e.not_job && 'opacity-60',
                                             )}
                                         >
-                                            <span className="text-muted-foreground w-20 shrink-0 tabular-nums">
-                                                {e.all_day
-                                                    ? e.last_day !== e.date
-                                                        ? `to ${dayLabel(e.last_day)}`
-                                                        : 'All day'
-                                                    : `${e.start_time}${e.end_time ? '–' + e.end_time : ''}`}
+                                            {/* The times on one line; the title always has room (the venue goes under it). */}
+                                            <span className="text-muted-foreground w-24 shrink-0 tabular-nums">
+                                                {e.date < first ? (
+                                                    `from ${dayLabel(e.date)}`
+                                                ) : e.all_day ? (
+                                                    e.last_day !== e.date ? (
+                                                        `to ${dayLabel(e.last_day)}`
+                                                    ) : (
+                                                        'All day'
+                                                    )
+                                                ) : (
+                                                    <span className="whitespace-nowrap">{`${e.start_time}${e.end_time ? '–' + e.end_time : ''}`}</span>
+                                                )}
                                             </span>
-                                            <span className="min-w-0 flex-1 font-medium">{e.summary}</span>
+                                            <span className="min-w-[9rem] flex-1 font-medium break-words">{e.summary}</span>
                                             {e.location && (
-                                                <span className="text-muted-foreground flex min-w-0 items-center gap-1 truncate text-xs">
+                                                <span className="text-muted-foreground flex max-w-full min-w-0 items-center gap-1 truncate text-xs">
                                                     <MapPin className="size-3 shrink-0" />
                                                     {e.location}
                                                 </span>
@@ -213,7 +307,48 @@ export default function JobCalendar({
                         </section>
                     ))}
                 </div>
+
+                <PickBar
+                    pick={pick}
+                    included={included}
+                    entries={known}
+                    jobDays={allJobDays}
+                    lockedYears={lockedYears}
+                    year={Number(today.slice(0, 4))}
+                >
+                    <Button type="button" variant="outline" className="h-11" onClick={() => setReview('add')}>
+                        Add to job
+                    </Button>
+                    <Button type="button" className="h-11" onClick={() => setReview('create')}>
+                        Create job
+                    </Button>
+                </PickBar>
             </div>
+
+            <ResponsiveSheet
+                open={review !== null}
+                onOpenChange={(o) => !o && setReview(null)}
+                title={review === 'add' ? 'Add these days to a job' : 'Make a job from these days'}
+                description={plural(pick.dates.length, 'day')}
+                dirty={hasEdits(pick.draft)}
+                onDiscard={() => pick.setDraft(null)}
+            >
+                {review && (
+                    <PickReview
+                        key={review}
+                        mode={review}
+                        pick={pick}
+                        clients={clients}
+                        today={today}
+                        active={review !== null}
+                        onSwitchToAdd={(jobId) => {
+                            pick.setDraft((d) => ({ ...(d ?? {}), jobId }));
+                            setReview('add');
+                        }}
+                        onSaved={() => setReview(null)}
+                    />
+                )}
+            </ResponsiveSheet>
 
             <Dialog open={!!open} onOpenChange={(o) => !o && setOpen(null)}>
                 <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
@@ -225,12 +360,55 @@ export default function JobCalendar({
                             clients={clients}
                             today={today}
                             partOf={opening?.key === open.key && jobs.some((j) => j.id === opening.job_id) ? opening.job_id : null}
+                            picked={pick.dates.length}
+                            onPickDays={(e, fresh) => {
+                                if (fresh) pick.startWith(e);
+                                else pick.pickEntry(e);
+                                setOpen(null);
+                            }}
                             onDone={() => setOpen(null)}
                         />
                     )}
                 </DialogContent>
             </Dialog>
         </AppLayout>
+    );
+}
+
+/** A month arrow, 44 pixels, with how many picked days are that way. */
+function MonthButton({ label, badge, onClick, children }: { label: string; badge: number; onClick: () => void; children: ReactNode }) {
+    return (
+        <Button
+            variant="outline"
+            className="relative size-11 p-0"
+            aria-label={badge ? `${label} (${plural(badge, 'picked day')} there)` : label}
+            onClick={onClick}
+        >
+            {children}
+            {badge > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 min-w-5 rounded-full bg-sky-600 px-1 text-center text-xs leading-5 font-semibold text-white">
+                    {badge}
+                </span>
+            )}
+        </Button>
+    );
+}
+
+/** The circle on an agenda row: picks every day of the entry with it, or (tapped again) leaves it out. */
+function EntryCircle({ e, picked, onPick, onUnpick }: { e: Entry; picked: boolean; onPick: () => void; onUnpick: () => void }) {
+    return (
+        <button
+            type="button"
+            aria-pressed={picked}
+            aria-label={picked ? `Leave out ${e.summary} and its days` : `Pick ${e.summary} and its days`}
+            onClick={picked ? onUnpick : onPick}
+            className={cn(
+                'flex size-11 shrink-0 items-center justify-center rounded-full border-2',
+                picked ? 'border-sky-600 bg-sky-600 text-white dark:border-sky-400 dark:bg-sky-500' : 'border-neutral-300 dark:border-neutral-600',
+            )}
+        >
+            {picked && <Check className="size-5" />}
+        </button>
     );
 }
 
@@ -258,6 +436,8 @@ function EntryPanel({
     clients,
     today,
     partOf = null,
+    picked = 0,
+    onPickDays,
     onDone,
 }: {
     e: Entry;
@@ -266,8 +446,13 @@ function EntryPanel({
     today: string;
     /** A job it looks part of (same client or place, within a few days): opens on "Part of a job I have" with it chosen. */
     partOf?: number | null;
+    /** How many days are picked on the calendar already. */
+    picked?: number;
+    /** "Pick its other days": the entry's days are picked on the calendar (fresh: instead of what's picked). */
+    onPickDays?: (e: Entry, fresh: boolean) => void;
     onDone: () => void;
 }) {
+    const [asking, setAsking] = useState(false);
     const [mode, setMode] = useState<'new' | 'existing'>(partOf ? 'existing' : 'new');
     const near = [...jobs].sort(
         (a, b) => Math.abs(Date.parse(a.starts_on) - Date.parse(e.date)) - Math.abs(Date.parse(b.starts_on) - Date.parse(e.date)),
@@ -299,6 +484,9 @@ function EntryPanel({
                     <p>
                         Part of <strong>{e.job.title}</strong>
                         {e.by === 'you' ? ' (linked by you)' : e.by ? ` (linked automatically by ${e.by})` : ''}.
+                    </p>
+                    <p className="text-muted-foreground">
+                        Not part of it? Days that came from this entry come off the job; days you picked or set yourself stay.
                     </p>
                     <div className="flex flex-wrap gap-2">
                         <Button asChild>
@@ -354,6 +542,34 @@ function EntryPanel({
 
                     {mode === 'new' ? (
                         <>
+                            {onPickDays && (
+                                <div className="rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm dark:border-sky-800 dark:bg-sky-950">
+                                    {asking ? (
+                                        <div className="space-y-2">
+                                            <p>Add to the {plural(picked, 'day')} you’ve picked, or start again with this entry?</p>
+                                            <div className="flex flex-wrap gap-2">
+                                                <Button className="h-11" onClick={() => onPickDays(e, false)}>
+                                                    Add to the {plural(picked, 'day')}
+                                                </Button>
+                                                <Button className="h-11" variant="outline" onClick={() => onPickDays(e, true)}>
+                                                    Start again with this entry
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <p className="flex flex-wrap items-center gap-x-2">
+                                            <span>More than this entry (a rig, show days, a de-rig)?</span>
+                                            <Button
+                                                variant="outline"
+                                                className="h-11"
+                                                onClick={() => (picked > 0 ? setAsking(true) : onPickDays(e, true))}
+                                            >
+                                                Pick its other days
+                                            </Button>
+                                        </p>
+                                    )}
+                                </div>
+                            )}
                             <p className="text-muted-foreground text-sm">
                                 Check the details and add what you know: client, fee, PO number, the days it really covers. When you save, Expend
                                 looks for its POs and documents (and searches Gmail), payments on its days, stays and journeys, and the fee coming in.

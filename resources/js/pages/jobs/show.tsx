@@ -138,7 +138,12 @@ export default function JobShow({
                             {job.start_time ? ` · from ${job.start_time}` : ''}
                             {job.end_time ? ` to ${job.end_time}` : ''}
                             {job.client ? ` · ${job.client}` : ''}
-                            {job.location ? ` · ${job.location}` : ''} {job.postcode ?? ''}
+                            {job.location ? ` · ${job.location}` : ''}
+                            {/* The postcode once: a venue copied from a calendar entry often has it already. */}
+                            {job.postcode &&
+                            !(job.location ?? '').toUpperCase().replace(/\s+/g, '').includes(job.postcode.toUpperCase().replace(/\s+/g, ''))
+                                ? ` ${job.postcode}`
+                                : ''}
                         </p>
                     </div>
                     <div className="flex gap-2">
@@ -160,7 +165,12 @@ export default function JobShow({
                         <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                             Add PO number, or mark it not needed
                         </Button>
-                        <PoChasePanel jobId={job.id} className="w-full space-y-2 border-t border-amber-200 pt-3 dark:border-amber-900" />
+                        <PoChasePanel
+                            // Asked again when the job's dates change (days added on this page), so its "Starts in …" is right.
+                            key={`${job.id}-${job.starts_on}-${job.ends_on}`}
+                            jobId={job.id}
+                            className="w-full space-y-2 border-t border-amber-200 pt-3 dark:border-amber-900"
+                        />
                     </div>
                 ) : (
                     job.po && (
@@ -178,7 +188,12 @@ export default function JobShow({
                     )
                 )}
 
-                <JobDays jobId={job.id} days={days} kinds={day_kinds} />
+                <JobDays
+                    jobId={job.id}
+                    days={days}
+                    kinds={day_kinds}
+                    job={{ title: job.title, starts_on: job.starts_on, ends_on: job.ends_on, status: job.status }}
+                />
 
                 <JobFinds jobId={job.id} finds={finds} gather={gather} onOpenPayment={(id) => setDrawer({ source: 'bank', id })} />
 

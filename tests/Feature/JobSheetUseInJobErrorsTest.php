@@ -59,6 +59,10 @@ class JobSheetUseInJobErrorsTest extends TestCase
             default => $f['value'],
         };
         $body = ['title' => $props['job']['title'], 'starts_on' => $props['job']['starts_on'], 'ends_on' => $props['job']['ends_on'], $field => $value];
+        // A one-day job given a start date moves to it whole.
+        if ($field === 'starts_on' && $props['job']['starts_on'] === $props['job']['ends_on']) {
+            $body['ends_on'] = $value;
+        }
 
         return $this->json('PATCH', "/jobs/{$job->id}", $body, ['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'Accept' => 'text/html, application/xhtml+xml']);
     }
@@ -71,13 +75,14 @@ class JobSheetUseInJobErrorsTest extends TestCase
 
     public function test_a_start_date_after_the_last_day_says_so_plainly(): void
     {
-        $job = $this->job();
-        $this->fact($job, 'start_date', '11 May 2025', ['on_date' => '2025-05-11']);
+        // A longer job keeps its end date, so a start after it is refused (a one-day job moves instead).
+        $job = $this->job(['ends_on' => '2025-05-11']);
+        $this->fact($job, 'start_date', '12 May 2025', ['on_date' => '2025-05-12']);
 
         $this->useInJob($job)->assertSessionHasErrors('ends_on');
 
         $this->assertSame('The job can’t end before it starts.', $this->firstError());
-        $this->assertSame(['2025-05-10', 'PO-4471'], [$job->fresh()->starts_on->format('Y-m-d'), $job->fresh()->po_number]);
+        $this->assertSame(['2025-05-10', '2025-05-11', 'PO-4471'], [$job->fresh()->starts_on->format('Y-m-d'), $job->fresh()->ends_on->format('Y-m-d'), $job->fresh()->po_number]);
     }
 
     public function test_a_call_time_that_is_not_a_time_says_so_plainly(): void

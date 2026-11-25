@@ -24,11 +24,71 @@ final class JobDays
     /** A timed entry that ends before this time the next morning is one evening's work (a gig to 01:30), not two days. */
     public const OVERNIGHT_UNTIL = '06:00';
 
+    /** The words that say which day of a job an entry is ("Rig", "Show", "De-rig", "Day 2"), for baseTitle() and cleanTitle(). */
+    private const DAY_WORDS = '/\b(de-?rig|rig|load[- ]?(?:in|out)|get[- ]?(?:in|out)|strike|break[- ]?down|pack[- ]?down|build|set[- ]?up|install|prep|show|travel|tech|rehearsals?|day\s*\d*|day)\b/iu';
+
     private static bool $syncing = false;
+
+    /** Set while a job is made with its days listed (withoutRange()): fromRange() leaves the days to the caller. */
+    private static bool $noRange = false;
+
+    /** @var array<string, string> while a job is made from days picked on the calendar: each day's calendar entry, by date */
+    private static array $keys = [];
+
+    /**
+     * Run $work (making a job whose days are listed) without the new job getting every date from its first to last:
+     * the caller adds exactly the days it was given, so none are made only to be deleted again.
+     *
+     * @template T
+     *
+     * @param  callable():T  $work
+     * @return T
+     */
+    public static function withoutRange(callable $work): mixed
+    {
+        $was = self::$noRange;
+        self::$noRange = true;
+        try {
+            return $work();
+        } finally {
+            self::$noRange = $was;
+        }
+    }
+
+    /**
+     * Run $work (making a job from days picked on the calendar) with each new day named after the calendar entry it
+     * came from, as it's made: the job's history then says so from the start. Only DayPick knows these (worked out on
+     * the server from the entries you picked); nothing a caller sends to JobCreator can set them.
+     *
+     * @template T
+     *
+     * @param  array<string, string>  $keys  date => calendar entry key
+     * @param  callable():T  $work
+     * @return T
+     */
+    public static function withCalendarKeys(array $keys, callable $work): mixed
+    {
+        $was = self::$keys;
+        self::$keys = $keys;
+        try {
+            return $work();
+        } finally {
+            self::$keys = $was;
+        }
+    }
+
+    /** The calendar entry a day being made is named after (withCalendarKeys()), if any. */
+    public static function pendingKey(string $date): ?string
+    {
+        return self::$keys[$date] ?? null;
+    }
 
     /** Every date from the job's first to last, for a new job. */
     public static function fromRange(WorkJob $job): void
     {
+        if (self::$noRange) {
+            return;
+        }
         $d = CarbonImmutable::parse($job->starts_on->format('Y-m-d'));
         $end = CarbonImmutable::parse(($job->ends_on ?? $job->starts_on)->format('Y-m-d'));
         for ($i = 0; $d->lte($end) && $i < self::MAX_DAYS; $d = $d->addDay(), $i++) {
@@ -37,10 +97,12 @@ final class JobDays
     }
 
     /**
-     * The first or last date was changed on the job form. A job whose days ran without a break keeps running without
-     * one. A job with separate days (a rig, then a de-rig days later) keeps its days: moving the whole job moves every
-     * day, and a new first or last date moves the first or last day there (with its kind and times), so changing the
-     * last date when the de-rig moves doesn't leave the old de-rig behind. Days outside the new dates go.
+     * The first or last date was changed on the job form. Moving the whole job (its first and last dates by the same
+     * number of days: postponed, or brought forward) moves every day with it, each keeping its kind, times and note,
+     * whether the job is one day, days without a break or separate days. Otherwise a job whose days ran without a
+     * break keeps running without one, and a job with separate days (a rig, then a de-rig days later) keeps its days:
+     * a new first or last date moves the first or last day there (with its kind and times), so changing the last date
+     * when the de-rig moves doesn't leave the old de-rig behind. Days outside the new dates go.
      */
     public static function rangeChanged(WorkJob $job, string $oldStart, string $oldEnd): void
     {
@@ -49,33 +111,75 @@ final class JobDays
         }
         $start = $job->starts_on->format('Y-m-d');
         $end = $job->ends_on->format('Y-m-d');
-        $before = self::snapshot($job);
+        $before = self::rows($job);
         $dates = array_column($before, 'date');
+        $shift = (int) CarbonImmutable::parse($oldStart)->diffInDays(CarbonImmutable::parse($start), false);
+        $moved = $dates && $shift !== 0 && $shift === (int) CarbonImmutable::parse($oldEnd)->diffInDays(CarbonImmutable::parse($end), false);
+        // The same whole number of months or years (a year typed wrong, then put right): across 29 February the first
+        // and last dates move by different numbers of days, but it's still the whole job moving.
+        $months = ! $moved && $dates ? self::monthStep($oldStart, $oldEnd, $start, $end) : null;
 
-        if (! $dates || self::continuous($dates)) {
+        if ($moved || $months !== null) {
+            $to = fn (string $d) => $moved ? CarbonImmutable::parse($d)->addDays($shift)->format('Y-m-d') : CarbonImmutable::parse($d)->addMonthsNoOverflow($months)->format('Y-m-d');
+            // The whole job moved: every day moves with it. The furthest day moves first, so no day lands on one that
+            // hasn't moved yet (a job has one day per date).
+            $days = JobDay::query()->where('work_job_id', $job->id)->orderBy('on_date', ($moved ? $shift : $months) > 0 ? 'desc' : 'asc')->get();
+            // Two days landing on one date (29 February moved to a year without one, beside 28 February): the day whose
+            // own date it is stays, and the other is merged into it.
+            $wins = [];
+            foreach ($days as $day) {
+                $from = $day->on_date->format('Y-m-d');
+                $target = $to($from);
+                $exact = substr($from, 8, 2) === substr($target, 8, 2);
+                if (! isset($wins[$target]) || ($exact && ! $wins[$target][1])) {
+                    $wins[$target] = [$day->id, $exact];
+                }
+            }
+            $keep = array_flip(array_map(fn ($w) => $w[0], $wins));
+            foreach ($days as $day) {
+                if (! isset($keep[$day->id])) {
+                    $day->delete();
+                }
+            }
+            foreach ($days as $day) {
+                if (isset($keep[$day->id])) {
+                    $day->update(['on_date' => $to($day->on_date->format('Y-m-d')), 'source' => $day->source === 'calendar' ? 'you' : $day->source]);
+                }
+            }
+            foreach (array_unique([$start, $end]) as $d) {
+                JobDay::query()->firstOrCreate(['work_job_id' => $job->id, 'on_date' => $d], ['kind' => 'work', 'source' => 'you']);
+            }
+        } elseif (! $dates || self::continuous($dates)) {
             JobDay::query()->where('work_job_id', $job->id)->where(fn ($q) => $q->whereDate('on_date', '<', $start)->orWhereDate('on_date', '>', $end))->delete();
             self::fromRange($job);
         } else {
-            $shift = (int) CarbonImmutable::parse($oldStart)->diffInDays(CarbonImmutable::parse($start), false);
-            if ($shift !== 0 && $shift === (int) CarbonImmutable::parse($oldEnd)->diffInDays(CarbonImmutable::parse($end), false)) {
-                // The whole job moved (postponed, or brought forward): every day moves with it. The furthest day
-                // moves first, so no day lands on one that hasn't moved yet.
-                $days = JobDay::query()->where('work_job_id', $job->id)->orderBy('on_date', $shift > 0 ? 'desc' : 'asc')->get();
-                foreach ($days as $day) {
-                    $day->update(['on_date' => CarbonImmutable::parse($day->on_date->format('Y-m-d'))->addDays($shift)->format('Y-m-d'), 'source' => $day->source === 'calendar' ? 'you' : $day->source]);
-                }
-            } else {
-                self::moveDay($job, $oldEnd, $end);
-                self::moveDay($job, $oldStart, $start);
-                JobDay::query()->where('work_job_id', $job->id)->where(fn ($q) => $q->whereDate('on_date', '<', $start)->orWhereDate('on_date', '>', $end))->delete();
-            }
+            self::moveDay($job, $oldEnd, $end);
+            self::moveDay($job, $oldStart, $start);
+            JobDay::query()->where('work_job_id', $job->id)->where(fn ($q) => $q->whereDate('on_date', '<', $start)->orWhereDate('on_date', '>', $end))->delete();
             foreach (array_unique([$start, $end]) as $d) {
                 JobDay::query()->firstOrCreate(['work_job_id' => $job->id, 'on_date' => $d], ['kind' => 'work', 'source' => 'you']);
             }
         }
         $job->unsetRelation('days');
-        self::recordChange($job, $before, 'The job’s dates were changed');
+        // With each day's times and note, so the history shows they moved with it.
+        self::recordChange($job, $before, 'The job’s dates were changed', null, true);
         self::afterRemoval($job, $before);
+    }
+
+    /**
+     * How many whole months both of a job's dates moved by (12 for a year), when they moved by the same number: the
+     * first from $oldStart to $start and the last from $oldEnd to $end. Null when they didn't.
+     */
+    private static function monthStep(string $oldStart, string $oldEnd, string $start, string $end): ?int
+    {
+        $a = CarbonImmutable::parse($oldStart);
+        $b = CarbonImmutable::parse($start);
+        $n = ($b->year - $a->year) * 12 + ($b->month - $a->month);
+        if ($n === 0) {
+            return null;
+        }
+
+        return $a->addMonthsNoOverflow($n)->format('Y-m-d') === $start && CarbonImmutable::parse($oldEnd)->addMonthsNoOverflow($n)->format('Y-m-d') === $end ? $n : null;
     }
 
     /** Add (or update) a day. */
@@ -184,7 +288,8 @@ final class JobDays
     public static function forgetCalendarKey(WorkJob $job, string $key, string $summary = ''): void
     {
         $before = self::snapshot($job);
-        $days = JobDay::query()->where('work_job_id', $job->id)->where('calendar_key', $key)->where('source', 'calendar')->get();
+        // Oldest first: when every day is this entry's, the one kept (a job keeps one day) is its latest.
+        $days = JobDay::query()->where('work_job_id', $job->id)->where('calendar_key', $key)->where('source', 'calendar')->orderBy('on_date')->get();
         $all = JobDay::query()->where('work_job_id', $job->id)->count();
         $others = $days->isEmpty() ? collect() : CalendarJobLink::query()->where('work_job_id', $job->id)->where('event_key', '!=', $key)->where('linked_by', 'you')->get()
             ->map(fn (CalendarJobLink $l) => JobFinder::event($l->event_key, $l->event_starts_at?->copy()->setTimezone(CalendarEvent::TZ)->format('Y-m-d')))->filter();
@@ -257,9 +362,90 @@ final class JobDays
      */
     public static function baseTitle(?string $title): string
     {
-        $t = preg_replace('/\b(de-?rig|rig|load[- ]?(?:in|out)|get[- ]?(?:in|out)|strike|break[- ]?down|pack[- ]?down|build|set[- ]?up|install|prep|show|travel|tech|rehearsals?|day\s*\d*|day)\b/iu', ' ', (string) $title);
+        $t = preg_replace(self::DAY_WORDS, ' ', (string) $title);
 
         return trim(preg_replace('/\s+/', ' ', preg_replace('/[^\p{L}\p{N}]+/u', ' ', mb_strtolower((string) $t)) ?? '') ?? '');
+    }
+
+    /**
+     * A calendar title as a job's title, with its capitals and punctuation kept: the words that say which day of a job
+     * it is come off only where they stand apart from the name, at the start before a separator ("Rig: Winter Expo",
+     * "Show - Acme Awards", "Rig/Show/De-rig: Spring Trade Show"), in brackets ("Acme Awards (de-rig)") or after a
+     * separator at the end ("Acme Awards – Day 2"). Words that are part of the name stay ("Spring Trade Show", "Frost
+     * Festival build and show"). Empty when nothing else is left ("Rig").
+     */
+    public static function cleanTitle(?string $title): string
+    {
+        $word = '(?:de-?rig|rig|load[- ]?(?:in|out)|get[- ]?(?:in|out)|strike|break[- ]?down|pack[- ]?down|build|set[- ]?up|install|prep|show|travel|tech|rehearsals?|day\s*\d+|day)';
+        $words = $word.'(?:\s*(?:[\/&+,]|and)\s*'.$word.')*';
+        $t = trim((string) preg_replace('/\s+/u', ' ', (string) $title));
+        if (preg_match('/^[\s\-–—:|·\/()\[\]]*'.$words.'[\s\-–—:|·\/()\[\].]*$/iu', $t)) {
+            return ''; // only day words
+        }
+        $t = (string) preg_replace('/\s*[(\[]\s*'.$words.'\s*[)\]]/iu', ' ', $t); // "(rig)", "[Day 2]"
+        $t = (string) preg_replace('/^\s*'.$words.'\s*(?::|\||·|–|—|-(?=\s))\s*/iu', '', $t); // "Rig: ", "Show - ", "De-rig | "
+        $t = (string) preg_replace('/\s*(?::|\||·|–|—|\s-)\s*'.$words.'\s*$/iu', '', $t); // " – Day 2", " - rig"
+        $t = (string) preg_replace('/\s+/u', ' ', $t);
+        $t = (string) preg_replace('/^[\s\-–—:;,|·\/.+&]+|[\s\-–—:;,|·\/+&]+$/u', '', $t);
+
+        return trim($t);
+    }
+
+    /**
+     * Days you picked for a job you have (the calendar's "Add to job", or "Add days" on the job page), with the kind,
+     * times and note you gave each. A new date is added as your day, with the calendar entry it came from. A day the
+     * job has already is written only when what you gave differs (times compared to the minute: MariaDB gives a time
+     * back as "08:00:00"); then it is exactly what you gave, a cleared time cleared, and yours. One you picked as it is
+     * becomes yours too (only its source changes). No day is removed. One history entry for the lot, then the job's
+     * first and last dates follow its days once.
+     *
+     * @param  list<array{date: string, kind?: ?string, start_time?: ?string, end_time?: ?string, note?: ?string, calendar_key?: ?string}>  $rows
+     * @return array{added: list<string>, changed: list<string>, yours: list<string>}
+     */
+    public static function addMany(WorkJob $job, array $rows, string $reason): array
+    {
+        $existing = JobDay::query()->where('work_job_id', $job->id)->get()->keyBy(fn (JobDay $d) => $d->on_date->format('Y-m-d'));
+        $before = self::rows($job);
+        $added = [];
+        $changed = [];
+        $yours = [];
+        foreach ($rows as $row) {
+            $date = CarbonImmutable::parse($row['date'])->format('Y-m-d');
+            $kind = (string) ($row['kind'] ?? 'work');
+            $note = isset($row['note']) && trim((string) $row['note']) !== '' ? trim((string) $row['note']) : null;
+            $values = ['kind' => array_key_exists($kind, JobDay::KINDS) ? $kind : 'work', 'start_time' => self::minute($row['start_time'] ?? null),
+                'end_time' => self::minute($row['end_time'] ?? null), 'note' => $note];
+            $day = $existing[$date] ?? null;
+            if (! $day) {
+                JobDay::query()->create(['work_job_id' => $job->id, 'on_date' => $date, 'source' => 'you', 'calendar_key' => $row['calendar_key'] ?? null] + $values);
+                $added[] = $date;
+
+                continue;
+            }
+            if ($day->kind === $values['kind'] && self::minute($day->start_time) === $values['start_time'] && self::minute($day->end_time) === $values['end_time']
+                && ($day->note === '' ? null : $day->note) === $values['note']) {
+                // As it is, but you picked it: it's yours now (only its source is written), so marking the entry it
+                // came from "not part of this job" later doesn't take it off the job.
+                if ($day->source !== 'you') {
+                    $day->update(['source' => 'you']);
+                    $yours[] = $date;
+                }
+
+                continue;
+            }
+            $day->update($values + ['source' => 'you']); // its calendar entry (calendar_key) is kept
+            $changed[] = $date;
+        }
+        sort($added);
+        sort($changed);
+        sort($yours);
+        if ($added || $changed || $yours) {
+            AuditLog::record('job.days_changed', $job, ['days' => $before], ['days' => self::rows($job), 'added' => $added, 'changed' => $changed] + ($yours ? ['yours' => $yours] : []), $reason);
+        }
+        self::sync($job);
+        $job->unsetRelation('days');
+
+        return ['added' => $added, 'changed' => $changed, 'yours' => $yours];
     }
 
     // ---------------------------------------------------------------- helpers
@@ -304,9 +490,9 @@ final class JobDays
      * One history entry for days added and removed together (a date change, an entry unlinked), recorded as whoever is
      * acting (AuditContext): you on the web or in Telegram, the matcher when a search moved or unlinked the entry.
      */
-    private static function recordChange(WorkJob $job, array $before, string $reason, ?string $actor = null): void
+    private static function recordChange(WorkJob $job, array $before, string $reason, ?string $actor = null, bool $full = false): void
     {
-        $after = self::snapshot($job);
+        $after = $full ? self::rows($job) : self::snapshot($job);
         $was = array_column($before, 'date');
         $now = array_column($after, 'date');
         if ($was === $now && $before === $after) {
@@ -329,13 +515,31 @@ final class JobDays
         }
     }
 
-    private static function earliest(?string $a, ?string $b): ?string
+    /**
+     * @return list<array{date:string, kind:string, start_time:?string, end_time:?string, note:?string, calendar_key?:string}> the job's days with
+     *                                                                                                                         their times and notes, and the calendar entry each is named after (only when it has one)
+     */
+    private static function rows(WorkJob $job): array
+    {
+        return JobDay::query()->where('work_job_id', $job->id)->orderBy('on_date')->get()
+            ->map(fn (JobDay $d) => ['date' => $d->on_date->format('Y-m-d'), 'kind' => $d->kind, 'start_time' => self::minute($d->start_time),
+                'end_time' => self::minute($d->end_time), 'note' => $d->note === '' ? null : $d->note] + ($d->calendar_key ? ['calendar_key' => $d->calendar_key] : []))->all();
+    }
+
+    /** A time to the minute ("08:00:00" from MariaDB is "08:00"); none for an empty one. */
+    private static function minute(?string $time): ?string
+    {
+        return $time === null || trim($time) === '' ? null : substr(trim($time), 0, 5);
+    }
+
+    /** The earlier start. */
+    public static function earliest(?string $a, ?string $b): ?string
     {
         return $a && $b ? min($a, $b) : ($a ?? $b);
     }
 
     /** The later finish; one in the small hours (01:30) is after one the evening before (23:00). */
-    private static function latest(?string $a, ?string $b): ?string
+    public static function latest(?string $a, ?string $b): ?string
     {
         if (! $a || ! $b) {
             return $a ?? $b;
