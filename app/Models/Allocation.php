@@ -31,6 +31,7 @@ class Allocation extends Model
         'voided_at' => 'datetime',
         // Provenance (App\Domain\Intel\Provenance): what proposed the line, on what evidence, against which runner-ups.
         'method_version' => 'integer', 'score' => 'integer', 'evidence' => 'array', 'alternatives' => 'array', 'run_id' => 'integer',
+        'client_id' => 'integer',
     ];
 
     protected static function booted(): void
@@ -62,6 +63,16 @@ class Allocation extends Model
     public function invoice(): BelongsTo
     {
         return $this->belongsTo(Invoice::class);
+    }
+
+    /**
+     * The client the line is for when neither its invoice nor its job names one (client-only income, a refund paid
+     * back to a client, a deduction with no job). The client a line counts for is worked out from its invoice, then
+     * its job, then this (App\Domain\Income\IncomeClient), never read from here alone.
+     */
+    public function client(): BelongsTo
+    {
+        return $this->belongsTo(Client::class);
     }
 
     public function rule(): BelongsTo

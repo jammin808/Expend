@@ -23,6 +23,7 @@ use App\Models\WorkJob;
 use App\Support\UkTaxYear;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
@@ -81,6 +82,18 @@ class ReviewFixesTodoListTest extends TestCase
         $this->assertSame('confirmed', $tx->fresh()->review_status);
     }
 
+    /**
+     * What came in, as these tests pin it: paid, elsewhere and waiting. Income v3 adds keys to each invoice's array
+     * (paid_linked, outstanding, state…); these three stay exactly as they were.
+     *
+     * @param  array<string, int|string>  $received
+     * @return array<string, int|string>
+     */
+    private static function three(array $received): array
+    {
+        return Arr::only($received, ['paid', 'elsewhere', 'waiting']);
+    }
+
     private function item(string $key, ?array $list = null): ?array
     {
         return collect(($list ?? TodoList::build())['items'])->firstWhere('key', $key);
@@ -99,7 +112,7 @@ class ReviewFixesTodoListTest extends TestCase
         $list = TodoList::build();
         $this->assertNull($this->item('invoice_overdue:'.$invoice->id, $list), 'Paid: not "unpaid", no reminder');
         $this->assertNull($this->item('unsent:'.$invoice->id, $list), 'The client paid it, so it isn’t waiting to be sent');
-        $this->assertSame(['paid' => 45000, 'elsewhere' => 0, 'waiting' => 0], TodoList::received([$invoice])[$invoice->id]);
+        $this->assertSame(['paid' => 45000, 'elsewhere' => 0, 'waiting' => 0], self::three(TodoList::received([$invoice])[$invoice->id]));
     }
 
     public function test_a_short_payment_is_part_paid_without_a_no_payment_reminder(): void
@@ -128,7 +141,7 @@ class ReviewFixesTodoListTest extends TestCase
         $this->assertSame([], $item['actions']);
         $this->assertSame('/inbox', $item['href']);
         $this->assertStringContainsString('£450.00 that may be for it is waiting in the Inbox', $item['detail']);
-        $this->assertSame(['paid' => 0, 'elsewhere' => 0, 'waiting' => 45000], TodoList::received([$invoice])[$invoice->id]);
+        $this->assertSame(['paid' => 0, 'elsewhere' => 0, 'waiting' => 45000], self::three(TodoList::received([$invoice])[$invoice->id]));
 
         // Accepted: paid.
         $this->post("/todo/tx_accept/{$tx->id}", ['fp' => Fingerprints::of('tx_accept', (string) $tx->id)])->assertSessionHas('success');
@@ -154,7 +167,7 @@ class ReviewFixesTodoListTest extends TestCase
         $invoice = $this->issuedInvoice($job, '1000.00', 'EUR');
         $this->decideIncome($this->payment(85000, 'Client GmbH', 'EUR', 100000), $job);
         $this->assertNull($this->item('invoice_overdue:'.$invoice->id));
-        $this->assertSame(['paid' => 100000, 'elsewhere' => 0, 'waiting' => 0], TodoList::received([$invoice])[$invoice->id]);
+        $this->assertSame(['paid' => 100000, 'elsewhere' => 0, 'waiting' => 0], self::three(TodoList::received([$invoice])[$invoice->id]));
 
         // Paid in pounds: can't be measured in euros, so it asks you to check rather than chasing the client.
         $other = $this->job('Vienna');
@@ -176,8 +189,8 @@ class ReviewFixesTodoListTest extends TestCase
         $this->decideIncome($this->payment(85000, 'Client GmbH', 'EUR', 100000), $job);
 
         $received = TodoList::received([$pounds, $euros]);
-        $this->assertSame(['paid' => 0, 'elsewhere' => 0, 'waiting' => 0], $received[$pounds->id], 'The pound invoice is still unpaid');
-        $this->assertSame(['paid' => 100000, 'elsewhere' => 0, 'waiting' => 0], $received[$euros->id]);
+        $this->assertSame(['paid' => 0, 'elsewhere' => 0, 'waiting' => 0], self::three($received[$pounds->id]), 'The pound invoice is still unpaid');
+        $this->assertSame(['paid' => 100000, 'elsewhere' => 0, 'waiting' => 0], self::three($received[$euros->id]));
         $list = TodoList::build();
         $this->assertNull($this->item('invoice_overdue:'.$euros->id, $list));
         $this->assertSame("Invoice {$pounds->number} unpaid", $this->item('invoice_overdue:'.$pounds->id, $list)['title']);
@@ -206,7 +219,7 @@ class ReviewFixesTodoListTest extends TestCase
         // A £100.00 deposit decided as income for the job, then the £450.00 invoice issued and never emailed.
         $this->decideIncome($this->payment(10000, 'Client Ltd', on: today()->subDays(10)->format('Y-m-d')), $job);
         $invoice = $this->issuedInvoice($job, issued: today()->subDays(3)->format('Y-m-d'));
-        $this->assertSame(['paid' => 10000, 'elsewhere' => 0, 'waiting' => 0], TodoList::received([$invoice])[$invoice->id]);
+        $this->assertSame(['paid' => 10000, 'elsewhere' => 0, 'waiting' => 0], self::three(TodoList::received([$invoice])[$invoice->id]));
 
         $item = $this->item('unsent:'.$invoice->id);
         $this->assertNotNull($item, 'Only part of it has come in: the client still needs the invoice');

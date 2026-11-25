@@ -56,7 +56,7 @@ final class InvoiceService
                 'notes' => "Payment due within {$terms} days.",
             ]);
             foreach ($po['lines'] as $i => $line) {
-                $invoice->lines()->create([
+                $invoice->allLines()->create([
                     'description' => $line['description'], 'quantity' => $line['quantity'], 'unit_price_minor' => $line['unit_price_minor'],
                     'amount_minor' => $line['amount_minor'], 'source_quote' => $line['quote'], 'sort' => $i,
                 ]);
@@ -77,7 +77,7 @@ final class InvoiceService
                 'notes' => 'Payment due within '.(int) Setting::get('invoice_terms_days').' days.',
             ]);
             if ($job->fee_pence) {
-                $invoice->lines()->create(['description' => $job->title.' ('.$job->starts_on->format('j M Y').')', 'quantity' => 1, 'unit_price_minor' => $job->fee_pence, 'amount_minor' => $job->fee_pence]);
+                $invoice->allLines()->create(['description' => $job->title.' ('.$job->starts_on->format('j M Y').')', 'quantity' => 1, 'unit_price_minor' => $job->fee_pence, 'amount_minor' => $job->fee_pence]);
             }
             $this->recalculate($invoice);
             AuditLog::record('invoice.drafted', $invoice, null, ['from_job' => $job->id]);
@@ -92,15 +92,18 @@ final class InvoiceService
         $this->assertDraft($invoice);
 
         return DB::transaction(function () use ($invoice, $data, $lines) {
+            $this->lockDraft($invoice);
             $invoice->update($data);
-            $invoice->lines()->delete();
+            // Every line, ticked or not: the form's lines replace them all (Invoice::lines() is ticked lines only). Each
+            // is deleted as a model, so its own guard (only a stored draft's lines change) applies too.
+            $invoice->allLines()->get()->each->delete();
             foreach (array_values($lines) as $i => $line) {
                 $unit = Money::parse((string) $line['unit_price']);
                 $qty = self::quantity($line['quantity'] ?? null);
                 if ($unit === null || $qty === null || trim($line['description']) === '') {
                     throw new InvalidArgumentException('Line '.($i + 1).' needs a description, a quantity (up to 2 decimals) and a price.');
                 }
-                $invoice->lines()->create([
+                $invoice->allLines()->create([
                     'description' => $line['description'], 'quantity' => (string) $qty, 'unit_price_minor' => $unit,
                     'amount_minor' => self::lineAmount($qty, $unit), 'source_quote' => $line['source_quote'] ?? null, 'sort' => $i,
                 ]);
@@ -123,6 +126,7 @@ final class InvoiceService
         }
 
         return DB::transaction(function () use ($invoice, $issueDate) {
+            $this->lockDraft($invoice);
             $issued = CarbonImmutable::parse($issueDate ?? 'today');
             $terms = (int) Setting::get('invoice_terms_days') ?: 30;
             if (preg_match('/within (\d+) days/', (string) $invoice->notes, $m)) {
@@ -193,6 +197,7 @@ final class InvoiceService
 
     private function recalculate(Invoice $invoice): void
     {
+        // What it charges: ticked lines only.
         $invoice->forceFill(['total_minor' => (int) $invoice->lines()->sum('amount_minor')])->save();
     }
 
@@ -201,6 +206,17 @@ final class InvoiceService
         if ($invoice->status !== 'draft') {
             throw new InvalidArgumentException('This invoice has been issued and can’t be changed. Void it and issue a new one.');
         }
+    }
+
+    /**
+     * The invoice as stored, locked until the surrounding transaction ends, and still a draft: a draft page loaded
+     * before it was issued elsewhere can't change or issue it again. The audit head is locked first (the lock order
+     * everywhere: the head, then rows), as the audit event written after needs it.
+     */
+    private function lockDraft(Invoice $invoice): void
+    {
+        AuditLog::lockHead();
+        $this->assertDraft(Invoice::query()->lockForUpdate()->findOrFail($invoice->id));
     }
 
     /**

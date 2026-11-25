@@ -6,6 +6,7 @@ use App\Domain\Intel\DetectorLevels;
 use App\Domain\Intel\Detectors\TravelUnclaimed;
 use App\Domain\Jobs\CandidateText;
 use App\Domain\Ledger\RuleLearner;
+use App\Domain\Ledger\SourceState;
 use App\Domain\Matching\TransferPairer;
 use App\Domain\Quick\QuickEntries;
 use App\Models\Allocation;
@@ -197,20 +198,14 @@ final class Fingerprints
         ];
     }
 
-    /** A payment's decision as it stands: what each line is, by whom, and whether it's confirmed. */
+    /**
+     * A payment's decision as it stands: what each line is (with its own client when it has one), by whom, and whether
+     * it's confirmed (SourceState, shared with "Confirm and issue" and "Shared with another job"; a line with no client
+     * of its own keeps the hash it always had).
+     */
     private static function tx(int $id): ?array
     {
-        $tx = BankTransaction::query()->find($id, ['id', 'review_status', 'transfer_pair_id']);
-        if (! $tx) {
-            return null;
-        }
-        $lines = Allocation::query()->where('bank_transaction_id', $id)->get()
-            ->map(fn (Allocation $a) => [$a->kind, $a->category_id === null ? null : (int) $a->category_id, $a->work_job_id === null ? null : (int) $a->work_job_id,
-                $a->invoice_id === null ? null : (int) $a->invoice_id, (int) $a->amount_pence, $a->business_use_pct === null ? null : (int) $a->business_use_pct,
-                $a->decided_by, $a->confirmed_at !== null])
-            ->sortBy(fn ($l) => json_encode($l))->values()->all();
-
-        return ['status' => $tx->review_status, 'pair' => $tx->transfer_pair_id, 'lines' => $lines];
+        return SourceState::ofTransaction($id);
     }
 
     /** What "Always do this" for a payment's merchant would save: the rule there is now, or the one offered. */

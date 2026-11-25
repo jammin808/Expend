@@ -7,13 +7,17 @@ use App\Domain\Intel\AuditContext;
 use App\Domain\Intel\Methods;
 use App\Domain\Intel\Provenance;
 use App\Domain\Intel\Vetoes;
+use App\Domain\Invoices\InvoicePayments;
 use App\Domain\Matching\TransferPairer;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
+use App\Models\Client;
+use App\Models\Invoice;
 use App\Models\ManualExpense;
 use App\Models\TaxYear;
 use App\Models\Veto;
+use App\Models\WorkJob;
 use App\Support\Money;
 use App\Support\UkTaxYear;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -39,7 +43,15 @@ use InvalidArgumentException;
  *  - one order of precedence over open suggestions (outranks()): you > your receipt from the phone > rule > matcher (invoice > HMRC > transfer >
  *    pattern > categoriser, with the assistant's proposal from your own words) > the background AI. An automatic writer
  *    never replaces a suggestion that outranks its own; one that ranks the same or lower is replaced as before. Why a
- *    write was refused is kept for the message ($refused).
+ *    write was refused is kept for the message ($refused);
+ *  - links are kept honest (normaliseLinks()): an invoice only on business income, and only one that can be paid (issued),
+ *    unless a line you made or confirmed already named it; an income line with an invoice and no job takes the invoice's
+ *    job; a client is stored on a line only when neither its invoice nor its own job names one (the client a line counts
+ *    for is worked out: Income\IncomeClient), and automation never sets one on a cost (only on a deduction);
+ *  - automation never confirms an income link: income on money in that names an invoice, a job or a client (or a
+ *    deduction naming a client) is only ever suggested by automation, and only you accept it (decide() and confirm());
+ *  - on money in, a negative line is allowed only as a deduction: a business expense (the fee or commission the payer
+ *    took off) beside income lines that are larger in total.
  *
  * Deciding what a line already says changes nothing and records nothing (a nightly pass that comes to the same
  * suggestion again leaves no trace).
@@ -58,7 +70,9 @@ final class AllocationWriter
         // own waits for you), below your decisions.
         'receipt.quick' => 7,
         'rule.learned' => 6, 'rule.owner' => 6,
-        'suggest.invoice' => 5,
+        // An invoice still to be paid of the payment's amount; two to four of the payer's invoices adding up to it; and
+        // either with a fee or commission taken off (income design v3).
+        'suggest.invoice' => 5, 'suggest.invoice_set' => 5, 'suggest.invoice_net' => 5,
         'suggest.hmrc' => 4,
         'transfer.pair' => 3, 'transfer.one_sided' => 3, 'transfer.partner' => 3, 'revolut.exchange' => 3,
         'suggest.penalty' => 2, 'suggest.car_hire' => 2, 'suggest.travel' => 2, 'travel.match' => 2, 'jobs.gather' => 2,
@@ -74,9 +88,10 @@ final class AllocationWriter
         'yours' => 'you have already decided or confirmed this transaction',
         'vetoed' => 'you said no to that for this transaction before',
         'outranked' => 'a stronger suggestion is waiting for it (a matcher’s or a rule’s), for you to accept or change',
+        'link_closed' => 'the invoice it would be linked to is a draft or void, or the client no longer exists',
     ];
 
-    /** Why the last call to decide() was refused: 'yours', 'vetoed' or 'outranked' (REFUSED_WORDS), or null. */
+    /** Why the last call to decide() was refused: 'yours', 'vetoed', 'outranked' or 'link_closed' (REFUSED_WORDS), or null. */
     public ?string $refused = null;
 
     /** Your own decisions: above every method (your receipt from the phone, receipt.quick, is 7). */
@@ -84,6 +99,9 @@ final class AllocationWriter
 
     /** The rank of a line whose method isn't known, by who made it. */
     private const MAKERS = ['you' => self::OWNER, 'rule' => 6, 'policy' => 2, 'matcher' => 1, 'ai' => 0];
+
+    /** The kinds of line that may carry a client of their own (allocations.client_id). */
+    private const CLIENT_KINDS = ['business_income', 'business_expense'];
 
     /**
      * The precedence of a method (or, when it isn't known, of whoever made the line).
@@ -107,15 +125,15 @@ final class AllocationWriter
     }
 
     /**
-     * @param  list<array{kind:string, category_id?:?int, work_job_id?:?int, amount_pence:int, business_use_pct?:?int, note?:?string}>  $lines
+     * @param  list<array{kind:string, category_id?:?int, work_job_id?:?int, invoice_id?:?int, client_id?:?int, amount_pence:int, business_use_pct?:?int, note?:?string}>  $lines
      * @param  Provenance|null  $provenance  why an automatic writer proposes this (every automatic writer gives one);
      *                                       null for your own decisions
      * @param  bool  $supersede  an automatic writer replacing a suggestion that outranks it on purpose, for a reason of
      *                           its own (TransferPairer: an invoice matched on the amount alone to money the line shows is
      *                           your own). Never over your decisions, anything confirmed, or a veto
      * @return bool true when the line now says this (written now, or it already did); false when skipped because
-     *              automation tried to touch a protected decision, propose what you said no to, or replace a
-     *              suggestion that outranks it
+     *              automation tried to touch a protected decision, propose what you said no to, replace a suggestion
+     *              that outranks it, or link to an invoice that can't be paid or a client that's gone
      */
     public function decide(
         BankTransaction|ManualExpense $source,
@@ -131,8 +149,19 @@ final class AllocationWriter
         $amount = $source->amount_pence;
         $taxYear = $this->taxYearOf($source);
         $this->assertUnlocked($taxYear);
+        $lines = $this->normaliseLinks($source, $lines, $decidedBy === 'you');
+        if ($lines === null) {
+            $this->refused = 'link_closed';
+
+            return false;
+        }
         $this->assertLines($lines, $amount);
         $method = $decidedBy === 'you' ? null : ($provenance?->method ?? Methods::legacy($decidedBy, (string) $reason, null, $ruleId));
+        if ($decidedBy !== 'you' && $confirm && $amount > 0 && self::linksIncome($lines)) {
+            // Automation never confirms an income link (owner answer 3): it's suggested, and you accept it. A plain
+            // turnover line with nothing linked still confirms, as a rule's does.
+            $confirm = false;
+        }
         if ($decidedBy !== 'you') {
             // What you said no to is never proposed again by automation; an 'ask' veto lets it be proposed, never confirmed.
             $vetoed = $this->vetoed($source, $lines, $method, $decidedBy !== 'you' && $confirm);
@@ -181,6 +210,7 @@ final class AllocationWriter
                     'category_id' => in_array($line['kind'], Allocation::NEEDS_CATEGORY, true) ? ($line['category_id'] ?? null) : null,
                     'work_job_id' => $line['work_job_id'] ?? null,
                     'invoice_id' => $line['invoice_id'] ?? null,
+                    'client_id' => $line['client_id'] ?? null,
                     'amount_pence' => $line['amount_pence'],
                     'business_use_pct' => $line['business_use_pct'] ?? null,
                     'decided_by' => $decidedBy,
@@ -212,6 +242,113 @@ final class AllocationWriter
         }
 
         return $done;
+    }
+
+    /**
+     * The lines with their links made consistent, before anything is checked or written (income design v3):
+     *  (a) an invoice stays only on business income lines, and is dropped from any other kind;
+     *  (b) the invoice must be one that can be paid (issued), or one this payment's lines you made or confirmed already
+     *      name, so re-saving a line whose invoice was voided since keeps it (an open suggestion naming it doesn't
+     *      count: accepting it is refused, confirm());
+     *  (c) an income line with an invoice and no job takes the invoice's job (a line on another job than its invoice
+     *      is kept: one invoice for three shows);
+     *  (d) a client stays only on business income and business expense lines whose invoice and own job give no client,
+     *      and the client must exist; it's dropped from every other line;
+     *  (e) automation never sets a client on a cost: on automation's lines a client stays on a business expense only
+     *      when it's a deduction (negative, on money in: the fee the payer took off), and it's dropped from any other.
+     * For you, an invoice that can't be paid or a client that's gone is refused with a message. For automation it's
+     * never thrown (the Suggester and an import carry on): null is returned, and decide() says 'link_closed'.
+     *
+     * @param  list<array<string, mixed>>  $lines
+     * @return list<array<string, mixed>>|null
+     */
+    private function normaliseLinks(BankTransaction|ManualExpense $source, array $lines, bool $you): ?array
+    {
+        $income = fn (array $l) => ($l['kind'] ?? null) === 'business_income';
+        foreach ($lines as $i => $line) {
+            if (! $income($line) && ($line['invoice_id'] ?? null) !== null) {
+                $lines[$i]['invoice_id'] = null; // (a)
+            }
+        }
+
+        $invoiceIds = array_values(array_unique(array_filter(array_map(fn ($l) => isset($l['invoice_id']) ? (int) $l['invoice_id'] : null, $lines))));
+        $invoices = $invoiceIds === [] ? collect() : Invoice::query()->whereKey($invoiceIds)->get(['id', 'number', 'status', 'work_job_id', 'client_id'])->keyBy('id');
+        // Named already by lines you made or confirmed (an open suggestion naming it doesn't count: accepting that is refused).
+        $named = $invoiceIds === [] || ! $source->exists ? [] : $source->allocations()->whereIn('invoice_id', $invoiceIds)
+            ->where(fn ($q) => $q->where('is_manual', true)->orWhereNotNull('confirmed_at'))->pluck('invoice_id')->map(fn ($id) => (int) $id)->all();
+        foreach ($lines as $i => $line) {
+            if (! isset($line['invoice_id'])) {
+                continue;
+            }
+            $invoice = $invoices->get((int) $line['invoice_id']);
+            if (! $invoice || (! in_array($invoice->status, InvoicePayments::PAYABLE, true) && ! in_array($invoice->id, $named, true))) {
+                if (! $you) {
+                    return null; // (b), for automation
+                }
+
+                throw new InvalidArgumentException(self::cantPay($invoice));
+            }
+            if (($line['work_job_id'] ?? null) === null && $invoice->work_job_id !== null) {
+                $lines[$i]['work_job_id'] = (int) $invoice->work_job_id; // (c)
+            }
+        }
+
+        $withClient = array_filter($lines, fn ($l) => ($l['client_id'] ?? null) !== null);
+        if ($withClient === []) {
+            return $lines;
+        }
+        $jobIds = array_values(array_unique(array_filter(array_map(fn ($l) => isset($l['work_job_id']) ? (int) $l['work_job_id'] : null, $withClient))));
+        $jobClients = $jobIds === [] ? collect() : WorkJob::query()->whereKey($jobIds)->pluck('client_id', 'id');
+        $clientIds = array_values(array_unique(array_map(fn ($l) => (int) $l['client_id'], $withClient)));
+        $clients = Client::query()->whereKey($clientIds)->pluck('id')->map(fn ($id) => (int) $id)->all();
+        foreach ($withClient as $i => $line) {
+            $given = (isset($line['invoice_id']) ? $invoices->get((int) $line['invoice_id'])?->client_id : null)
+                ?? (isset($line['work_job_id']) ? $jobClients->get((int) $line['work_job_id']) : null);
+            // (e): automation never sets a client on a cost; only a deduction (a fee taken off money in) carries one.
+            $automaticCost = ! $you && ($line['kind'] ?? null) === 'business_expense' && ! ($source->amount_pence > 0 && (int) ($line['amount_pence'] ?? 0) < 0);
+            if (! in_array($line['kind'] ?? null, self::CLIENT_KINDS, true) || $given !== null || $automaticCost) {
+                $lines[$i]['client_id'] = null; // (d), (e): its invoice or job says who it's for, it's no kind for a client, or automation's cost
+            } elseif (! in_array((int) $line['client_id'], $clients, true)) {
+                if (! $you) {
+                    return null;
+                }
+
+                throw new InvalidArgumentException('That client no longer exists: pick another.');
+            } else {
+                $lines[$i]['client_id'] = (int) $line['client_id'];
+            }
+        }
+
+        return $lines;
+    }
+
+    /** Why income can't be linked to this invoice (null: it no longer exists). */
+    private static function cantPay(?Invoice $invoice): string
+    {
+        $name = $invoice?->number ?: 'That invoice';
+
+        return match ($invoice?->status) {
+            'void' => "{$name} is void: pick the invoice that replaced it.",
+            'draft' => "{$name} is a draft: issue it first.",
+            null => 'That invoice no longer exists: pick another.',
+            default => "{$name} can't be paid: pick another invoice.",
+        };
+    }
+
+    /**
+     * Whether any business income line names an invoice, a job or a client, or any other line names a client (a
+     * deduction with the payer's client): what only you confirm on money in.
+     */
+    private static function linksIncome(array $lines): bool
+    {
+        foreach ($lines as $line) {
+            if (($line['client_id'] ?? null) !== null
+                || (($line['kind'] ?? null) === 'business_income' && (($line['invoice_id'] ?? null) !== null || ($line['work_job_id'] ?? null) !== null))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -262,6 +399,10 @@ final class AllocationWriter
      * tap, 'matcher' when a matcher settles a line for you (the other side of a transfer you decided). The lines it
      * confirms keep who confirmed them (confirmed_by), so a suggestion you accepted is told apart from one confirmed
      * automatically.
+     *
+     * Refused when a line waiting to be accepted names an invoice that can't be paid any more (voided, or a draft), with
+     * decide()'s message; and refused for anyone but you when it's income on money in linked to an invoice, a job or a
+     * client, or a deduction naming a client (automation never confirms an income link).
      */
     public function confirm(BankTransaction|ManualExpense $source, ?string $reason = null): void
     {
@@ -272,6 +413,18 @@ final class AllocationWriter
             $allocations = $this->lockedAllocations($source);
             if ($allocations->isEmpty()) {
                 throw new InvalidArgumentException('There is nothing to confirm yet. Choose what this is first.');
+            }
+            $open = $allocations->whereNull('confirmed_at');
+            $invoiceIds = $open->pluck('invoice_id')->filter()->unique()->values();
+            if ($invoiceIds->isNotEmpty()) {
+                $closed = Invoice::query()->whereKey($invoiceIds)->whereNotIn('status', InvoicePayments::PAYABLE)->orderBy('id')->first(['id', 'number', 'status']);
+                $missing = $closed ? null : $invoiceIds->diff(Invoice::query()->whereKey($invoiceIds)->pluck('id'))->first();
+                if ($closed || $missing) {
+                    throw new InvalidArgumentException(self::cantPay($closed));
+                }
+            }
+            if ($actor !== 'you' && $source->amount_pence > 0 && self::linksIncome($open->map(fn (Allocation $a) => $a->only(['kind', 'invoice_id', 'work_job_id', 'client_id']))->all())) {
+                throw new InvalidArgumentException('Only you can accept an income link.');
             }
             $source->allocations()->whereNull('confirmed_at')->update(['confirmed_at' => now(), 'confirmed_by' => $actor]);
             $source->forceFill(['review_status' => 'confirmed'])->saveQuietly();
@@ -317,8 +470,8 @@ final class AllocationWriter
     }
 
     /**
-     * Whether the line already says exactly this: the same lines, by the same maker, with the same reason and rule,
-     * confirmed or not alike, and the line's status to match. The Categoriser's marker isn't compared: it's set after
+     * Whether the line already says exactly this: the same lines (their own client included), by the same maker, with
+     * the same reason and rule, confirmed or not alike, and the line's status to match. The Categoriser's marker isn't compared: it's set after
      * the write, from the reason.
      *
      * @param  EloquentCollection<int, Allocation>  $existing
@@ -330,19 +483,19 @@ final class AllocationWriter
         }
         $int = fn ($v) => $v === null ? null : (int) $v;
         $key = fn (array $l) => json_encode([
-            $l['kind'], $int($l['category_id']), $int($l['work_job_id']), $int($l['invoice_id']), (int) $l['amount_pence'],
+            $l['kind'], $int($l['category_id']), $int($l['work_job_id']), $int($l['invoice_id']), $int($l['client_id']), (int) $l['amount_pence'],
             $int($l['business_use_pct']), $l['note'], $l['decided_by'], (bool) $l['is_manual'], (bool) $l['confirmed'],
             $int($l['merchant_rule_id']), $l['reason'],
         ]);
         $have = $existing->map(fn (Allocation $a) => $key([
             'kind' => $a->kind, 'category_id' => $a->category_id, 'work_job_id' => $a->work_job_id, 'invoice_id' => $a->invoice_id,
-            'amount_pence' => $a->amount_pence, 'business_use_pct' => $a->business_use_pct, 'note' => $a->note, 'decided_by' => $a->decided_by,
+            'client_id' => $a->client_id, 'amount_pence' => $a->amount_pence, 'business_use_pct' => $a->business_use_pct, 'note' => $a->note, 'decided_by' => $a->decided_by,
             'is_manual' => $a->is_manual, 'confirmed' => $a->confirmed_at !== null, 'merchant_rule_id' => $a->merchant_rule_id, 'reason' => $a->reason,
         ]))->sort()->values()->all();
         $want = collect($lines)->map(fn (array $l) => $key([
             'kind' => $l['kind'],
             'category_id' => in_array($l['kind'], Allocation::NEEDS_CATEGORY, true) ? ($l['category_id'] ?? null) : null,
-            'work_job_id' => $l['work_job_id'] ?? null, 'invoice_id' => $l['invoice_id'] ?? null, 'amount_pence' => $l['amount_pence'],
+            'work_job_id' => $l['work_job_id'] ?? null, 'invoice_id' => $l['invoice_id'] ?? null, 'client_id' => $l['client_id'] ?? null, 'amount_pence' => $l['amount_pence'],
             'business_use_pct' => $l['business_use_pct'] ?? null, 'note' => self::fit($l['note'] ?? null), 'decided_by' => $decidedBy,
             'is_manual' => $decidedBy === 'you', 'confirmed' => $confirm, 'merchant_rule_id' => $ruleId, 'reason' => self::fit($reason),
         ]))->sort()->values()->all();
@@ -397,6 +550,21 @@ final class AllocationWriter
             throw new InvalidArgumentException('A decision needs at least one line.');
         }
 
+        // On money in, a negative line is allowed only as a deduction: a business expense (the fee or commission the
+        // payer took off) beside income lines larger than all the negative lines together, so £970 received can be
+        // £1,000 turnover and a £30 fee. Money out keeps every line negative.
+        $gross = 0;
+        $taken = 0;
+        foreach ($lines as $line) {
+            $pence = $line['amount_pence'] ?? null;
+            if (is_int($pence) && $pence > 0 && ($line['kind'] ?? null) === 'business_income') {
+                $gross += $pence;
+            } elseif (is_int($pence) && $pence < 0) {
+                $taken -= $pence;
+            }
+        }
+        $deductions = $amount > 0 && $gross > $taken;
+
         $sum = 0;
         foreach ($lines as $i => $line) {
             if (! isset(Allocation::KINDS[$line['kind'] ?? ''])) {
@@ -405,7 +573,7 @@ final class AllocationWriter
             if (! is_int($line['amount_pence'] ?? null) || $line['amount_pence'] === 0) {
                 throw new InvalidArgumentException('Line '.($i + 1).' needs a non-zero amount.');
             }
-            if (($line['amount_pence'] < 0) !== ($amount < 0)) {
+            if (($line['amount_pence'] < 0) !== ($amount < 0) && ! ($deductions && $line['kind'] === 'business_expense')) {
                 throw new InvalidArgumentException('Line '.($i + 1).' must be '.($amount < 0 ? 'money out' : 'money in').', like the transaction itself.');
             }
             if (in_array($line['kind'], Allocation::NEEDS_CATEGORY, true)) {
@@ -431,11 +599,13 @@ final class AllocationWriter
 
     /**
      * A line as the history keeps it: enough to rebuild what was decided, by whom and why (its invoice, rule, method and
-     * reason), so outcomes can be worked out from the audit trail alone.
+     * reason), so outcomes can be worked out from the audit trail alone. Its own client only when it has one, so the
+     * history of every line without one keeps exactly the keys it always had.
      */
     private function snapshot(Allocation $a): array
     {
         return $a->only(['kind', 'category_id', 'work_job_id', 'invoice_id', 'amount_pence', 'business_use_pct', 'decided_by', 'is_manual', 'note', 'merchant_rule_id', 'method', 'reason'])
-            + ['confirmed' => $a->confirmed_at !== null];
+            + ['confirmed' => $a->confirmed_at !== null]
+            + ($a->client_id !== null ? ['client_id' => $a->client_id] : []);
     }
 }

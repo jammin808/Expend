@@ -101,7 +101,7 @@ class InvoiceFormRefusalsTest extends TestCase
                 'lines.1.description' => 'Line 2 needs a description.',
                 'lines.1.unit_price' => 'Line 2 needs a price, like 450.00.',
             ]);
-        $this->assertSame(1, $invoice->lines()->count());
+        $this->assertSame(1, $invoice->allLines()->count());
     }
 
     public function test_a_quantity_that_is_missing_not_a_number_or_zero_says_so_plainly(): void
@@ -112,7 +112,7 @@ class InvoiceFormRefusalsTest extends TestCase
         $this->save($invoice, $this->form([], $line('')))->assertSessionHasErrors(['lines.1.quantity' => 'Line 2 needs a quantity, like 1 or 0.5.']);
         $this->save($invoice, $this->form([], $line('one')))->assertSessionHasErrors(['lines.1.quantity' => 'The quantity on line 2 must be a number, like 1 or 0.5.']);
         $this->save($invoice, $this->form([], $line('0')))->assertSessionHasErrors(['lines.1.quantity' => 'The quantity on line 2 must be 0.01 or more.']);
-        $this->assertSame(1, $invoice->lines()->count());
+        $this->assertSame(1, $invoice->allLines()->count());
     }
 
     public function test_text_that_is_too_long_says_which_box_and_the_limit(): void

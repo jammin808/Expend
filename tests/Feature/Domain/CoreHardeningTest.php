@@ -150,7 +150,7 @@ class CoreHardeningTest extends TestCase
             ['description' => 'Show day', 'quantity' => '2.55', 'unit_price' => '3.33'],
             ['description' => 'Prep', 'quantity' => '0.1', 'unit_price' => '0.07'],
         ]);
-        $this->assertSame([849, 1], $invoice->fresh()->lines()->orderBy('sort')->pluck('amount_minor')->all());
+        $this->assertSame([849, 1], $invoice->fresh()->allLines()->pluck('amount_minor')->all());
         $this->assertSame(850, $invoice->fresh()->total_minor);
     }
 

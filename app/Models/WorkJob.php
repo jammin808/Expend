@@ -9,18 +9,39 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-/** A piece of work (a "job" in the UI). Named WorkJob to avoid Laravel's queue jobs table. */
+/**
+ * A piece of work (a "job" in the UI). Named WorkJob to avoid Laravel's queue jobs table.
+ *
+ * client_id is the paying client (who you invoice and who pays); end_client_id is who the work was for when that's
+ * someone else, stored as null when it's the same client. A day or hour rate is rate_pence with rate_unit; a rate for
+ * the whole job stays fee_pence.
+ */
 class WorkJob extends Model
 {
+    public const RATE_UNITS = ['day', 'hour'];
+
+    /** What a cancelled job is charged: nothing, a cancellation fee, or its costs. */
+    public const CANCEL_CHARGES = ['none', 'fee', 'costs'];
+
     protected $fillable = [
         'client_id', 'title', 'starts_on', 'ends_on', 'start_time', 'end_time', 'location', 'postcode',
         'fee_pence', 'po_number', 'po_not_required', 'status', 'notes', 'gathered_at', 'gather_state',
+        'end_client_id', 'rate_pence', 'rate_unit', 'days_agreed', 'done_at', 'cancel_charge', 'cancel_fee_pence',
     ];
 
-    protected $casts = ['starts_on' => 'date', 'ends_on' => 'date', 'fee_pence' => 'integer', 'po_not_required' => 'boolean', 'gathered_at' => 'datetime', 'gather_state' => 'array'];
+    protected $casts = [
+        'starts_on' => 'date', 'ends_on' => 'date', 'fee_pence' => 'integer', 'po_not_required' => 'boolean', 'gathered_at' => 'datetime', 'gather_state' => 'array',
+        'end_client_id' => 'integer', 'rate_pence' => 'integer', 'days_agreed' => 'integer', 'done_at' => 'datetime', 'cancel_fee_pence' => 'integer',
+    ];
 
     protected static function booted(): void
     {
+        // The end client is only someone other than the paying client.
+        static::saving(function (WorkJob $job) {
+            if ($job->end_client_id !== null && $job->client_id !== null && (int) $job->end_client_id === (int) $job->client_id) {
+                $job->end_client_id = null;
+            }
+        });
         static::created(fn (WorkJob $job) => JobDays::fromRange($job));
         static::updated(function (WorkJob $job) {
             if ($job->wasChanged(['starts_on', 'ends_on'])) {
@@ -139,9 +160,22 @@ class WorkJob extends Model
         return ($this->relationLoaded('days') ? $this->days : $this->days()->get())->first(fn (JobDay $d) => $d->on_date->format('Y-m-d') === $date);
     }
 
+    /** The paying client: who you invoice and who pays. */
     public function client(): BelongsTo
     {
         return $this->belongsTo(Client::class);
+    }
+
+    /** Who the work was for, when that isn't the paying client (a production company or venue). */
+    public function endClient(): BelongsTo
+    {
+        return $this->belongsTo(Client::class, 'end_client_id');
+    }
+
+    /** How this job charges each kind of cost, where it differs from the client's usual. */
+    public function chargeTerms(): HasMany
+    {
+        return $this->hasMany(ChargeTerm::class);
     }
 
     public function allocations(): HasMany

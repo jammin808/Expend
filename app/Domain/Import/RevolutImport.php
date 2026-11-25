@@ -767,6 +767,25 @@ final class RevolutImport
             : Money::formatMinor(abs($tx->original_amount_minor), $currency, false);
     }
 
+    /**
+     * The bank's own fee on a line into a pound account, in pence (abs(fee_minor), as the statement gave it), or null
+     * when there is none or the account isn't in pounds. Only Revolut statements give a fee; the line is only read. Used
+     * for "the bank's £0.50 fee was taken off" on a client's payment (Income\InvoiceMatcher), never converted.
+     */
+    public static function poundFee(BankTransaction $tx): ?int
+    {
+        if (! $tx->fee_minor) {
+            return null;
+        }
+        $account = $tx->relationLoaded('account') ? $tx->account : Account::query()->find($tx->account_id);
+        if (self::currencyOf($account) !== 'GBP') {
+            return null;
+        }
+        $currency = strtoupper((string) $tx->original_currency);
+
+        return $currency === '' || $currency === 'GBP' ? abs((int) $tx->fee_minor) : null;
+    }
+
     /** The fee on a line imported before, in pounds. */
     private static function feeOf(BankTransaction $tx): int
     {

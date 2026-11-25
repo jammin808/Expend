@@ -34,7 +34,11 @@ final class Methods
         'transfer.one_sided' => ['matcher', 'heuristic', 'transfer.one_sided', 1, 'a line that shows on its own that it’s your money moving (your name, a pot, a top-up of yours)', null],
         'transfer.partner' => ['matcher', 'exact', 'transfer.partner', 1, 'the other side of a transfer you decided', null],
         'revolut.exchange' => ['matcher', 'exact', 'transfer.exchange', 1, 'the two sides of one currency exchange in a Revolut statement', null],
-        'suggest.invoice' => ['matcher', 'heuristic', 'income.invoice', 1, 'an issued invoice of the same amount with nothing paid yet', 'how many unpaid invoices were for that amount'],
+        // Income design v3 (Income\InvoiceMatcher): what's still to come on an invoice, not its total; two to four of
+        // the payer's client's invoices adding up to the payment; and either with a fee or commission taken off.
+        'suggest.invoice' => ['matcher', 'heuristic', 'income.invoice', 2, 'the only open invoice whose amount still to come is the payment’s', 'how many open invoices had that amount still to come'],
+        'suggest.invoice_set' => ['matcher', 'heuristic', 'income.invoice', 1, '2 to 4 of the payer’s client’s open invoices that add up to the payment', 'how many of the client’s open invoices were searched'],
+        'suggest.invoice_net' => ['matcher', 'heuristic', 'income.invoice', 1, 'one invoice, or 2 to 4, with a fee or commission taken off: the bank’s, or the payer’s usual', 'how many open invoices were tried'],
         'suggest.hmrc' => ['matcher', 'rule', 'tax.hmrc_payment', 1, 'a payment to HMRC, by its words', null],
         'suggest.penalty' => ['matcher', 'rule', 'category.pattern', 1, 'a fine or penalty charge, by its words', null],
         'suggest.car_hire' => ['matcher', 'rule', 'category.pattern', 1, 'a car hire company’s name', null],

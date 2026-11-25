@@ -227,7 +227,7 @@ class HonestActorsTest extends TestCase
         $email->update(['kind' => 'po', 'work_job_id' => $job->id, 'extraction' => ['po' => ['po_number' => 'PO-7781']]]);
         GmailMessage::query()->create(['message_id' => 'gm1', 'search' => 'job_documents', 'document_id' => $email->id]);
         $invoice = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'total_minor' => 50000, 'bill_to_name' => 'Acme Events']);
-        $invoice->lines()->create(['description' => 'Show day', 'quantity' => 1, 'unit_price_minor' => 50000, 'amount_minor' => 50000]);
+        $invoice->allLines()->create(['description' => 'Show day', 'quantity' => 1, 'unit_price_minor' => 50000, 'amount_minor' => 50000]);
 
         $invoice = app(InvoiceService::class)->issue($invoice->fresh()); // labels the PO email (the queue runs at once in tests)
         app(InvoiceService::class)->void($invoice->fresh(), 'Wrong amount'); // and takes the label off again

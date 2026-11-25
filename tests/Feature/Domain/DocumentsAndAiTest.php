@@ -127,7 +127,7 @@ class DocumentsAndAiTest extends TestCase
         $this->assertSame(120000, $invoice->total_minor);
         $this->assertSame(120000, $invoice->po_total_minor);
         $this->assertSame('PO-4512', $invoice->po_number);
-        $this->assertCount(2, $invoice->lines);
+        $this->assertCount(2, $invoice->allLines);
 
         $issued = $service->issue($invoice, '2025-05-20');
         $this->assertSame('INV-0001', $issued->number);

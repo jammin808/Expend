@@ -5,6 +5,7 @@ namespace App\Domain\Ledger;
 use App\Domain\Audit\AuditLog;
 use App\Domain\Fx\ExchangeRates;
 use App\Domain\Fx\RateUnavailable;
+use App\Domain\Income\Lines;
 use App\Domain\Matching\MerchantKey;
 use App\Models\Allocation;
 use App\Models\ManualExpense;
@@ -126,8 +127,8 @@ final class ManualExpenses
      * Correct what was added: its amount (in its own currency), currency, sterling figure, date or description. The
      * year it's in and the year it would move to must both be open, checked before anything is written. A change of
      * amount, currency or date works the sterling out again (convert(), before the transaction), and writes its one line
-     * again as your decision with the same category, job and business share. One split into several lines of its own
-     * is changed in the app instead.
+     * (or its business and personal parts) again as your decision, each keeping what it said: its category, job,
+     * business share, client, invoice and note. One split into several lines of its own is changed in the app instead.
      *
      * @param  array{amount_minor?:int, currency?:string, sterling_pence?:?int, spent_on?:string, description?:string}  $changes
      * @param  string  $actor  'you' for your answer; 'system' when only the description is filled in from the photo's read
@@ -168,7 +169,7 @@ final class ManualExpenses
             throw new InvalidArgumentException('It’s split into parts of your own: change it in the app.');
         }
 
-        return DB::transaction(function () use ($expense, $changes, $converted, $to, $shape, $actor, $reason, $rewrite, $yearMoves) {
+        return DB::transaction(function () use ($expense, $changes, $converted, $to, $shape, $allocations, $actor, $reason, $rewrite, $yearMoves) {
             $locked = ManualExpense::query()->whereKey($expense->id)->lockForUpdate()->firstOrFail();
             $before = $locked->only(['spent_on', 'tax_year', 'description', 'merchant_key', 'amount_pence', 'original_amount_minor', 'original_currency', 'fx_units_per_gbp', 'fx_rate_date', 'fx_source']);
             $before['spent_on'] = $locked->spent_on?->format('Y-m-d');
@@ -195,8 +196,7 @@ final class ManualExpenses
                     // The same lines in another year: cleared first, so they're written again in the year it moved to.
                     $this->writer->clear($locked, $reason, $actor);
                 }
-                $this->writer->decide($locked, AllocationWriter::lines((int) $locked->amount_pence, $shape['kind'], $shape['category_id'], $shape['work_job_id'],
-                    $shape['business_pct'], $shape['note']), 'you', true, $reason);
+                $this->writer->decide($locked, self::rescaled($allocations, $shape, (int) $locked->amount_pence), 'you', true, $reason);
             }
             $after = $locked->only(array_keys($before));
             $after['spent_on'] = $locked->spent_on?->format('Y-m-d');
@@ -239,6 +239,26 @@ final class ManualExpenses
     public static function locked(string $label): bool
     {
         return TaxYear::query()->where('label', $label)->whereNotNull('locked_at')->exists();
+    }
+
+    /**
+     * Its lines again for a new amount, split as AllocationWriter::lines() splits it (one line, or the business and
+     * personal parts), each part keeping everything else its line said: its job, its client (the cost you said was for
+     * Acme), its invoice and its note. A part that wasn't there before (the personal part of a larger amount) is new.
+     *
+     * @param  Collection<int, Allocation>  $allocations
+     * @param  array{kind:string, category_id:?int, work_job_id:?int, business_pct:int, note:?string}  $shape  singleShape()'s
+     * @return list<array<string, mixed>>
+     */
+    private static function rescaled($allocations, array $shape, int $amount): array
+    {
+        $had = collect(Lines::from($allocations));
+
+        return array_map(function (array $part) use ($had) {
+            $was = $had->first(fn (array $l) => ($l['kind'] === 'personal') === ($part['kind'] === 'personal'));
+
+            return $was === null ? $part : ['amount_pence' => $part['amount_pence'], 'business_use_pct' => $part['business_use_pct']] + $was;
+        }, AllocationWriter::lines($amount, $shape['kind'], $shape['category_id'], $shape['work_job_id'], $shape['business_pct'], $shape['note']));
     }
 
     /**

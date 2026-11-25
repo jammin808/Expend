@@ -89,7 +89,7 @@ class GmailLabelTest extends TestCase
     private function issue(WorkJob $job): Invoice
     {
         $invoice = Invoice::query()->create(['work_job_id' => $job->id, 'status' => 'draft', 'total_minor' => 50000, 'bill_to_name' => 'Client']);
-        $invoice->lines()->create(['description' => 'Show day', 'quantity' => 1, 'unit_price_minor' => 50000, 'amount_minor' => 50000]);
+        $invoice->allLines()->create(['description' => 'Show day', 'quantity' => 1, 'unit_price_minor' => 50000, 'amount_minor' => 50000]);
 
         return app(InvoiceService::class)->issue($invoice->fresh());
     }
