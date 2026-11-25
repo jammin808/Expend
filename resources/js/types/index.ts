@@ -90,6 +90,8 @@ export interface Item {
     events?: CalendarEntry[];
     jobs_near?: JobRef[];
     fx?: { units_per_gbp: string | null; rate_date: string | null; source: string | null } | null;
+    /** Your receipt photo from the phone on it (Present::receipt), where the page loads it: the Inbox does. */
+    receipt?: { quick_id: number; document_id: number; href: string; file: string; what: string | null } | null;
 }
 
 export interface CalendarEntry {

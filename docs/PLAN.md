@@ -31,6 +31,13 @@ connection asks for `gmail.modify`, so it can read and add Expend's own labels; 
 job (its first and last dates by the same number of days, or a year typed wrong and put right) now moves every day with
 its kind, times and note, so "Use in job" on a job sheet can move a one-day job to the start date it found.
 
+**Update (25 Nov 2026, later):** quick add on the phone is built (§6.12): an **Add expense** screen on the home screen of
+the iPhone and the Android phone, camera first, that keeps what you save on the phone with no signal and sends it by
+itself later; Android's share sheet; and costs texted to the Telegram bot. Cash and personal-card costs are added at
+once with their photo; a business-card receipt waits for its bank line and is offered on it for one tap, so nothing is
+counted twice. The screens, the server and the checks are built and tested; trying it on the real phones is still to
+do (§6.12, "Still to check on the phones").
+
 ---
 
 ## 0. What changed from v1
@@ -91,6 +98,7 @@ Checked read-only against the Hostinger account on 22 Nov 2026.
 | Business shared hosting plan, active | SSH, Git, cron and Node.js websites are available on this tier |
 | PHP 8.3 currently selected; 8.2–8.5 available | Current Laravel runs. Use 8.4 for this app and pin the same version in CI |
 | `memory_limit` up to 2048M; `max_execution_time` max 360 s | Jobs must be chunked to finish well under 300 s |
+| `upload_max_filesize` and `post_max_size`: not yet checked | Quick add takes photos and PDFs up to the smaller of the two, less 64 KB (`QuickWorker::maxUploadBytes`), and the phone says that limit when it refuses a file. PDF receipts run to about 12 MB, and the document and statement uploads take up to 30 MB and 20 MB. Check both with `php -i` on the site and raise them in hPanel if lower (for example 16M and 20M) |
 | Enabled: bcmath, gmp, intl, mbstring, imap, gd, imagick, zip, fileinfo, pdo_mysql, opcache | Money maths, IMAP polling, image handling and XLSX are all available |
 | `sodium` disabled | Enable it (used for sealed-box backup encryption) |
 | Disabled functions include `exec`, `shell_exec`, `system`, `passthru`, `popen`, `symlink` | PHP cannot shell out: no wkhtmltopdf/Chromium PDFs, no `pdftotext`, no `mysqldump` from PHP, no `artisan storage:link`. Use pure-PHP libraries and run shell tasks from cron/SSH directly |
@@ -160,8 +168,10 @@ stable choice on shared hosting.
 ### 3.3 Background work without daemons
 
 - One cron entry runs every minute: `php artisan schedule:run`.
-- The scheduler runs `queue:work --stop-when-empty --max-time=240`, so queued jobs (imports, IMAP polls,
-  ICS sync, PDF generation) run without a long-lived worker.
+- The scheduler runs `queue:work --queue=default,reads --stop-when-empty --max-time=240 --tries=1`, so queued jobs
+  (imports, IMAP polls, ICS sync, PDF generation, Telegram) run without a long-lived worker. Receipt photos from the
+  phone are read with AI on their own `reads` queue, after everything on `default`, so a Telegram button never waits
+  behind a stack of receipts (§6.12).
 - Every job is **idempotent** (safe to run twice) and chunked to finish in under 240 s. Long work resumes
   from a stored cursor.
 - Each scheduler run pings a heartbeat URL. If the pings stop you get an alert, because cron that dies
@@ -452,8 +462,9 @@ the columns once, check a preview, save the profile.
 
 ### 6.2 Email (Gmail) and receipts
 
-- **Phone camera capture (PWA):** a "+" button opens the camera. The photo is compressed, uploaded and
-  linked to a transaction straight away, or matched later by date and amount.
+- **Phone camera capture (PWA):** built as quick add (§6.12). The "+" button opens Add expense, camera first;
+  the photo is made smaller on the phone, kept there until it's sent, and either added with its expense (cash or a
+  personal card) or matched to its bank line by amount and date (the business card).
 - **Gmail API (recommended).** Hotel-stay checks (§6.5) need to search Gmail on demand around
   job dates, which justifies a direct connection. The same connection also finds receipts and invoices from
   known senders.
@@ -881,6 +892,141 @@ Grounding rules, enforced in code, not just in the prompt:
 5.2 is available for the hardest documents at about twice the price, and needs 30-day data retention on
 the API account).
 
+### 6.12 Quick add on the phone (built 25 Nov 2026)
+
+The owner asked for "a quick way to add expenses on my phone" (25 Nov 2026), on both an iPhone and an Android phone,
+often at a venue with poor signal. **Add expense** (`/quick`) is one screen that opens from the home-screen icon named
+Expend: take the photo, tap the amount on the keypad, tap what it was (six chips from what you use most, or More…) and
+Save. It picks today's job from your job days (until 06:00 the job of the night before still counts), remembers how you
+paid last time, and suggests a category from the words and the amount (`Categoriser::preview`, which only reads).
+Saving with the suggested category counts as your decision.
+
+**What is written, by how you paid** (the owner's answer):
+
+| Paid with | What Expend records | Why |
+|---|---|---|
+| Cash | The expense at once (`manual_expenses`, through `ManualExpenses::create` and `DecisionService`, decided by you), with the photo as its receipt | Nothing else will ever show this payment |
+| Personal card | The same as cash | The personal card's statement isn't imported as business |
+| Business card or account | Only the photo and what you typed, waiting (`quick_entries.status = waiting`) | The bank line brings the payment. When it comes in, the receipt goes on that line (`ReceiptAttacher`), and your category, job and share are offered on the line as a suggestion (method `receipt.quick`) for one tap. It's never confirmed by itself, and it never replaces a decision of yours |
+
+**Never counted twice.**
+
+- A receipt goes on a line by itself only when exactly one line fits (the same amount; the same currency, or the sterling
+  you typed from a foreign receipt; within 4 days) and no other waiting receipt fits that line. Lines that are money
+  moved between your own accounts, lines in a locked year, lines with another receipt and lines you've said no to are
+  never used. Otherwise To do asks which one (`receipt.which`); a foreign receipt whose only near line is in pounds is
+  offered when it's within 3% of HMRC's conversion, never attached by itself.
+- A cash or personal-card cost with a card payment of the same amount within two days is asked about
+  (`quick.maybe_card`: "It was the business card" removes the expense and keeps the receipt for the line). The same
+  amount twice within a day, from the phone, Telegram or a hand-added expense, is asked about too (`quick.maybe_same`),
+  unless two merchant names read from the photos differ. "Same receipt" removes the one that would count twice (the
+  cash or personal-card one when the other is the card's receipt). Answers are remembered.
+- The same photo sent twice is added once. The same photo with a different amount or payment method is held and asked
+  about, never called "already added".
+- A receipt with no bank line is asked about 7 days after a statement covers its day, or after 21 days
+  (`receipt.waiting`), with the nearest payments first, then "None of these", "Paid by personal card", "Paid in cash"
+  and "Not a business cost".
+- Fuel paid in cash or by personal card from the phone is checked against simplified mileage like any other fuel
+  (`travel.double_claim`).
+
+**Offline and sending.** Everything you save is kept in the phone's own storage (IndexedDB, `public/quick-store.js`),
+marked "Waiting to send", and sent by itself: when the screen opens, when signal comes back, every 30 seconds while
+something waits, and on Android in the background (Background Sync). On an iPhone it goes the next time Expend is open.
+Each entry carries a key made once at Save (`client_key`, unique in `quick_entries`), so sending it again after a lost
+reply never adds it twice. The fields go first, then the photo; the phone drops the photo only when the server's
+sha256 matches its own. Undo always reaches Expend: an entry that was never sent is deleted on the phone; anything
+else is withdrawn on the server (`POST /quick/entries/{key}/withdraw`), even if the withdraw arrives before the entry.
+
+**Signed out.** Tick **Remember me** when you sign in on the phone (inside the iPhone home-screen app). If the phone
+is signed out anyway, entries still save on the phone and the screen says **Sign in to send**; signing in sends them at
+once. Logging out asks whether to send, delete or keep anything still waiting, then clears the phone's copy of the
+screen and its lists of jobs and accounts.
+
+**Locked and filed years.** The phone refuses a date in a locked year and warns for a filed one. On the server a cash or
+personal-card entry in a locked year is kept, not added ("Kept, not added: 2025-26 is locked"), with its photo; that
+year's figures don't change. **Add it now** works once you unlock the year with a reason. A card receipt is never put
+on, or suggested on, a line in a locked year.
+
+**Android share sheet and iPhone through Telegram.** On Android, Expend is in the share sheet for photos, PDFs and text
+(a bank notification such as "You spent £7.20 at Pret" is read into the form). On an iPhone, share photos and PDFs to
+your Telegram bot, or text it "£12.50 parking Leeds": the bot answers with how you paid as buttons ([Cash] [Personal
+card] [Business card], or [Add it]; [Change…], [Not an expense], [Open in Expend]). The same text rules run on the
+phone and on the server (`QuickText::parse` and `parseText`, both checked against `tests/fixtures/quick-text.json`). A
+question ("how much can I claim for parking") goes to the assistant, not into a draft.
+
+**Reading the photo.** With AI reading on, the photo is read on the `reads` queue within the spending cap; a photo
+refused at the cap is read again the next night (`ledger:receipts`). If the read differs from what you typed, To do asks
+which is right (`quick.photo_differs`: use the photo's figure, or keep yours). "What was it?" is filled from the photo
+only when you left it empty or tapped a chip.
+
+**Where it shows in the app.** A round **+** at the bottom right of every page on a phone, and **Add expense** first in
+the menu (both plain links, so they open from the phone's cache with no signal); **Add expense** on the Overview and
+**Quick add** on Transactions; **Add expense for this job** on a job page (`/quick?job=ID`), which also lists that job's
+card receipts still waiting for their bank line. A pill "2 waiting · 1 needs you" shows on any page while the phone has
+something unsent. The Inbox card links "Your receipt photo" on a line suggested from a receipt; the item drawer shows
+the photo with **Not this payment's receipt** on a bank line, and **Remove this expense** and **It was the business
+card** on an expense added from the phone. To do has a group **From your phone** for the nine checks
+(`QuickEntryChecks`: `receipt.waiting`, `receipt.which`, `receipt.second_copy`, `quick.photo_differs`,
+`quick.line_differs`, `quick.held`, `quick.maybe_card`, `quick.maybe_same`, `quick.photo_waiting`), at normal level, so
+they are also in the weekly Telegram list.
+
+**How it's built.**
+
+- Table `quick_entries` (migration `2026_12_20_000001_create_quick_entries`, additive): one row per entry, with its
+  `client_key`, status (`receiving`, `draft`, `added`, `waiting`, `attached`, `held`, `duplicate`, `set_aside`,
+  `withdrawn`, `dismissed`), what you typed, the photo's document and sha256, the expense it became or the line it went
+  on, and your answers to the checks. Written only through `App\Domain\Quick\QuickEntries` and `ReceiptAttacher`, and
+  every change is audited (`quick_entry.*`, `manual_expense.*`). The line a receipt is on is its native link
+  (`quick_entries.bank_transaction_id`).
+- Hand-added expenses now go through `App\Domain\Ledger\ManualExpenses` (create, correct, withdraw), which the
+  Transactions form and quick add share; a locked year is refused before anything is written.
+- Method `receipt.quick` (matcher, heuristic) ranks 7 in `AllocationWriter::PRECEDENCE`, above rules and below you
+  (8). Saying a receipt isn't a line's records a `receipt_payment` veto, so it never goes on that line again.
+- The nightly cycle step `relate.receipts` (after `relate.transfers`) and the command `ledger:receipts` (04:09 London,
+  skipped when the cycle does the night's work) put waiting receipts on lines that came in by any path, take back
+  suggestions whose receipt has moved, and re-read photos refused at the AI cap. Every import also runs
+  `ReceiptAttacher::forLines` for its new lines (uploads, Starling and Revolut).
+- Endpoints, all signed in and JSON with `Accept: application/json` (a signed-out call gets 401 "Sign in to send"):
+  `GET /quick/token`, `GET /quick/pocket` (what the screen needs offline, with an ETag), `GET /quick/suggest`,
+  `POST /quick/entries` (60 a minute), `POST|PUT /quick/entries/{key}/photo` (30 a minute),
+  `POST /quick/entries/{key}/withdraw`, and the entry page `GET|PATCH /quick/entries/{id}` with `attach`, `detach`
+  and `read`. Every other button posts `/todo/qx/{entry:verb}` with its fingerprint. Public, with no session, cookies
+  or CSRF: `GET /sw.js` (the service worker), `POST /quick/share` (Android's fallback; it stores nothing) and `GET /go`.
+- The service worker is served by Laravel from `resources/sw/sw.js` (`QuickWorker`), with its version taken from the
+  build, `public/quick-store.js` and the template, so every deploy updates it. There is no `public/sw.js`: a static file
+  there would be served instead and never update. The setting `quick_sw_off` serves `resources/sw/off.js` instead,
+  which removes the worker and its caches (the kill switch). The manifest (`public/manifest.webmanifest`) is named
+  Expend and keeps `id: /inbox`, so the Android install already on the phone stays the same app.
+- Code: `app/Domain/Quick/`, `app/Domain/Ledger/ManualExpenses.php`, `app/Domain/Intel/Detectors/QuickEntryChecks.php`,
+  `app/Http/Controllers/QuickController.php`, `public/quick-store.js`, `resources/sw/`, `resources/js/pages/quick/`,
+  `resources/js/lib/quick.ts`. Tests: `tests/Feature/Quick/` and `tests/Feature/QuickPhone*Test.php` (the phone's
+  queue runs in node 22).
+
+**Setting up the phones.**
+
+- **iPhone:** open Expend in Safari, then Share › Add to Home Screen. Open the new **Expend** icon once with signal and
+  sign in there with **Remember me** ticked (the home-screen app has its own sign-in, storage and worker, separate from
+  Safari). The icon opens Add expense; the header has To do and Inbox. Remove the old **Ledger** icon once nothing waits
+  in it (it says "Send 2 waiting first" while something does). Saving in a plain Safari tab with no signal warns that
+  the entry is kept in that tab only.
+- **Android:** Chrome offers to install it, or the screen shows **Add to home screen**. Long-press the icon for Add
+  expense or To do. An Android install that's already there keeps its identity and picks up the new name, shortcuts and
+  share target at Chrome's next manifest check, which needs signal and can take a day. If Expend still isn't in the
+  share sheet after a day, send everything waiting before reinstalling.
+- **Upload limits:** see §2 (`upload_max_filesize` and `post_max_size`).
+
+**Hook for clients and invoices.** Recharges aren't built here. A cash or personal-card entry's allocation carries its
+job (`work_job_id`, decided by you); a card entry's job reaches its bank line's allocation when you accept the
+suggestion; `QuickEntry::scopeWaitingOnJob($jobId)` lists receipts whose bank line hasn't come in, so an invoice draft
+can say "1 receipt is still waiting for its bank line". "Recharge to the client" goes in the quick screen's More sheet
+(marked in `resources/js/pages/quick/index.tsx`), as a new field in `EntryFields` (`resources/js/lib/quick.ts`) and in
+`QuickController::wellFormed`, written with the same decision.
+
+**Still to check on the phones.** Tested in headless Chrome at phone size only. On the real iPhone and Android phone:
+the home-screen install and Remember me inside the iPhone app; flight mode, then signal back (the waiting entries go
+by themselves); Background Sync with the app closed (Android); the real share sheet; HEIC photos from the iPhone camera;
+Android Back with a sheet open; and the iPhone SE's small screen.
+
 ## 7. Security
 
 ### 7.1 Threat model
@@ -1043,8 +1189,8 @@ the API account).
 5. **Tax:** quarters, tax-year summary, estimate and set-aside, exports.
 
 **Settings** holds connections (bank profiles, receipts mailbox, calendar feed), categories, rules,
-security and backups. A floating **+ Capture** button offers: snap receipt, add mileage, add cash expense,
-new invoice.
+security and backups. On a phone a floating **+** button opens **Add expense** (§6.12): photo, amount, what it was,
+how you paid.
 
 ### 9.2 Key flows
 
@@ -1074,8 +1220,8 @@ new invoice.
   ("Add expenses to this job"). The job page lists unallocated items around the job's dates first, then
   lets you search everything. You can split one transaction across several jobs, or between a job and
   personal, with live totals that must balance before you can save.
-- **Capture.** Two taps from the home screen to the camera. The photo is saved on the device first and
-  uploaded in the background. If offline, the upload is retried the next time the app opens.
+- **Capture.** Built as quick add (§6.12): the home-screen icon opens Add expense, camera first. What you save is kept
+  on the phone first and sent in the background; with no signal it waits and goes by itself once you're back online.
 - **Confirm a hotel stay.** The card shows a timeline: job days as bars, and hotel nights as blocks
   labelled business, personal or review. It also shows the distance to the venue and to home, and an icon
   for each source (email, calendar, bank). Tap "Accept split", or tap a night to change it.
@@ -1196,6 +1342,24 @@ all can be changed later in Settings.
 - Unticking an entry Expend ticked: remembered as "not part of this job", so automation never links it there. The row
   says so before saving, and linking it yourself lifts it.
 
+**Recorded decisions (25 Nov 2026): quick add on the phone** (§6.12)
+
+- The request: "Expend needs a quick way to add expenses on my phone."
+- Phones: both an iPhone and an Android phone. Android gets the share sheet; the iPhone shares through Telegram.
+- How you paid: all three. Business card or account: keep the receipt and match it to the bank line when it comes in,
+  never a second expense. Personal card and cash: record the expense itself, with the photo.
+- No signal: entries wait on the phone with their photo, marked "Waiting to send", and send by themselves once back
+  online.
+- Signing in on the phone: tick Remember me (inside the iPhone home-screen app). If signed out, entries still save and
+  the screen says "Sign in to send".
+- Defaults taken as recommended (the owner can change them): a business-card receipt that matches one bank line is
+  offered for one tap, never confirmed by itself; the home-screen icon opens Add expense; To do asks about a receipt
+  with no bank line 7 days after a statement covers that day, or after 21 days; saving with the suggested category
+  counts as your decision.
+- One rule changed in testing, to confirm: two merchant names typed or texted that differ (NCP and Q-Park) no longer set
+  two records of the same amount apart, so they're asked about as possible duplicates. Only names read from the photos,
+  or a hand-added expense's merchant, can set a pair apart.
+
 ---
 
 ## 12. Pre-go-live checklist
@@ -1208,4 +1372,6 @@ all can be changed later in Settings.
 - [ ] Golden-file tests exist for every bank profile in use
 - [ ] A full sample tax year reconciles to hand-checked figures
 - [ ] `expose_php` off; `sodium` enabled; PHP version pinned
+- [ ] `upload_max_filesize` and `post_max_size` checked with `php -i` and recorded in §2
+- [ ] Quick add tried on the real iPhone and Android phone (§6.12, "Still to check on the phones")
 - [ ] No real financial data is loaded until every item above passes

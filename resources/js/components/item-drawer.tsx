@@ -18,9 +18,35 @@ interface Detail {
     history: { at: string; actor: string; action: string; label?: string; reason: string | null }[];
     events: CalendarEntry[];
     jobs_near: JobRef[];
-    links?: { type: string; label: string; detail: string | null; href: string | null }[];
+    links?: DrawerLink[];
     /** What the why-panels explain: the decision, and calendar entries that day that are on a job */
     why?: { decision: string; calendar: { ref: string; summary: string | null; job: string | null; linked_by: string | null }[] };
+}
+
+/** A to-do button offered on a link (TodoList::action plus its fingerprint), posted to /todo/{code}/{id}. */
+interface LinkAction {
+    code: string;
+    id: string;
+    label: string;
+    style?: string;
+    fp?: string | null;
+}
+
+/**
+ * Something the item is connected to (TransactionController::links). A receipt photo from the phone also carries its
+ * file, its entry, "Not this payment's receipt" (detach_href) on a bank line, and on an expense added from the phone
+ * "Remove this expense" and "It was the business card".
+ */
+interface DrawerLink {
+    type: string;
+    label: string;
+    detail: string | null;
+    href: string | null;
+    document_id?: number | null;
+    file?: string | null;
+    quick_id?: number | null;
+    detach_href?: string | null;
+    actions?: LinkAction[];
 }
 
 const linkTypes: Record<string, string> = {
@@ -69,6 +95,20 @@ export function ItemDrawer({
                 // Refused (it changed since it was shown, say): the message is shown, and the drawer stays open.
                 if ((page.props as unknown as SharedData).flash?.error) return;
                 toast(done);
+                onClose();
+            },
+            onFinish: () => setBusy(false),
+        });
+    };
+
+    // A receipt photo's buttons: the server says what happened (its flash), and the drawer closes unless it was refused.
+    const act = (url: string, data: Record<string, unknown>) => {
+        setBusy(true);
+        router.post(url, data as never, {
+            preserveScroll: true,
+            preserveState: true,
+            onSuccess: (page) => {
+                if ((page.props as unknown as SharedData).flash?.error) return;
                 onClose();
             },
             onFinish: () => setBusy(false),
@@ -151,6 +191,41 @@ export function ItemDrawer({
                                                 <span className="font-medium">{l.label}</span>
                                             )}
                                             {l.detail && <span className="text-muted-foreground text-xs">{l.detail}</span>}
+                                            {(l.file || l.detach_href || (l.actions && l.actions.length > 0)) && (
+                                                <span className="flex w-full flex-wrap items-center gap-2 pt-1 sm:pl-30">
+                                                    {l.file && (
+                                                        <a
+                                                            href={l.file}
+                                                            target="_blank"
+                                                            rel="noopener"
+                                                            className="text-xs underline underline-offset-2"
+                                                        >
+                                                            Open the photo
+                                                        </a>
+                                                    )}
+                                                    {l.detach_href && (
+                                                        <Button size="sm" variant="outline" disabled={busy} onClick={() => act(l.detach_href!, {})}>
+                                                            Not this payment’s receipt
+                                                        </Button>
+                                                    )}
+                                                    {l.actions?.map((a) => (
+                                                        <Button
+                                                            key={a.code + a.id}
+                                                            size="sm"
+                                                            variant="outline"
+                                                            disabled={busy}
+                                                            onClick={() => {
+                                                                // Removing an expense added from the phone takes it out of Expend: asked first.
+                                                                if (a.id.endsWith(':cancel') && !window.confirm('Remove this expense from Expend?'))
+                                                                    return;
+                                                                act(`/todo/${a.code}/${encodeURIComponent(a.id)}`, a.fp ? { fp: a.fp } : {});
+                                                            }}
+                                                        >
+                                                            {a.label}
+                                                        </Button>
+                                                    ))}
+                                                </span>
+                                            )}
                                         </li>
                                     ))}
                                 </ul>

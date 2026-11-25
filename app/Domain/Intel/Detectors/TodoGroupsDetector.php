@@ -40,6 +40,9 @@ final class TodoGroupsDetector implements CoversCodes, Detector
         ['closeout:', 'job.closeout'], ['double:', 'travel.double_claim'], ['unlinked:', 'income.unlinked'], ['receipt:', 'receipt.unmatched'],
         ['noreceipt:', 'cost.no_receipt'], ['xdupe:', 'dupe.cross_source'], ['rule_drift:', 'rule.drift'], ['saving:', 'tax.saving'],
         ['unchecked:', 'acct.unchecked'], ['unverifiable:', 'check.unverifiable'], ['locked_drift:', 'year.locked_drift'],
+        // Expenses from your phone (QuickEntryChecks), a detector of its own.
+        ['quick_waiting:', 'receipt.waiting'], ['quick_which:', 'receipt.which'], ['quick_copy:', 'receipt.second_copy'], ['quick_photo_waiting:', 'quick.photo_waiting'],
+        ['quick_photo:', 'quick.photo_differs'], ['quick_line:', 'quick.line_differs'], ['quick_held:', 'quick.held'], ['quick_card:', 'quick.maybe_card'], ['quick_same:', 'quick.maybe_same'],
         ['import:', 'import.held'], ['invoice_overdue:', 'invoice.overdue'], ['underbilled:', 'invoice.underbilled'], ['recharge:', 'travel.recharge'],
         ['check:', 'check.failed'], ['deadline:', 'tax.deadline'], ['penalty:', 'tax.penalty'], ['submission:', 'tax.submission'],
         ['hmrc:', 'tax.hmrc_unallocated'], ['drift:', 'year.filed_drift'], ['opp_reply:', 'job.offer_reply'], ['opp_job:', 'job.booking'],
@@ -58,7 +61,7 @@ final class TodoGroupsDetector implements CoversCodes, Detector
      * classify() still reads their keys (for the backfill, and for a finding kept without its code).
      */
     public const ELSEWHERE = [...Health::CODES, 'job.closeout', 'travel.double_claim', 'income.unlinked', 'receipt.unmatched', 'cost.no_receipt', 'dupe.cross_source',
-        'rule.drift', 'tax.saving', 'acct.unchecked', 'check.unverifiable', 'year.locked_drift'];
+        'rule.drift', 'tax.saving', 'acct.unchecked', 'check.unverifiable', 'year.locked_drift', ...QuickEntryChecks::CODES];
 
     /** What a failed check's subject type is cited as. */
     private const CHECK_SUBJECTS = ['document' => 'doc', 'travel_item' => 'travel', 'transaction' => 'tx', 'job_candidate' => 'cand'];

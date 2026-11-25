@@ -74,6 +74,7 @@ pin     = 8 hex characters: a prefix of the content hash the claim relied on
 | `gmail` | `gmail_messages.message_id` | none | |
 | `cal` | `calendar_events.event_key` | `calendar_event_versions.content_sha1` (M8) | `event_key` survives the hourly reload; row ids don't |
 | `travel`, `job`, `jday`, `cand`, `jfind`, `trip`, `rule` | the row id | none | |
+| `quick` | `quick_entries.id` | none | an expense or receipt from your phone (PLAN.md §6.12): "Your receipt from your phone · £12.50 parking · 25 Nov 2026", opening `/quick/entries/{id}` |
 | `inv` | `invoices.id` | `pdf_sha256` once issued | |
 | `check` | `verifications.subject_type:subject_id` | none | |
 | `audit` | `audit_events.id` | `audit_events.hash` | self-verifying; **the way to cite a decision** |
@@ -188,6 +189,8 @@ prefix) for rows written before the method column existed.
 | `doc.read`, `travel.read` | `DocumentReader`, `TravelReader` | grounded or not | `documents.extraction_model` |
 | `ai.advisor`, `ai.assistant` | `TransactionAdvisor`, `AssistantTools` `propose_decision` | n/a | ai + reason |
 | `receipt.match` **(new, M4)** | extracted from `TransactionController` (lines 133-145) | amount, days apart | n/a |
+| `receipt.quick` **(quick add)** | `ReceiptAttacher::attach`: your business-card receipt from the phone on its bank line, offered with your category, job and share (`AllocationWriter::PRECEDENCE` 7, above rules, below you at 8) | days between the receipt and the payment | matcher + "From your receipt photo" |
+| `quick.maybe_card` **(quick add)** | a veto method only: "two payments" answered on a cash or personal-card cost against a card line | n/a | n/a |
 | `detector.<code>` | section 4.4 | n/a | n/a |
 
 ---
@@ -558,7 +561,7 @@ Code that changes:
 |---|---|
 | Input | `$changed`, waiting lines, vetoes, the autonomy levels |
 | Output | Proposals written through the existing writers, each carrying a `Provenance`; added to `$proposed` |
-| Steps | `relate.transfers`; `relate.route` (M8); `relate.categorise`; `relate.jobs`; `relate.sweep` (M7) |
+| Steps | `relate.transfers`; `relate.receipts` (quick add); `relate.route` (M8); `relate.categorise`; `relate.jobs`; `relate.sweep` (M7) |
 | Rules every writer obeys | 1. AllocationWriter's guard: owner-made or confirmed lines and locked years are untouchable. 2. `Vetoes::allows()`. 3. No laundering (section 2.3). 4. One precedence order, `Methods::outranks`: you > rule > matcher (invoice > HMRC > transfer > pattern > categoriser) > ai. **As built (M7):** the order is kept with the writer that enforces it, `AllocationWriter::PRECEDENCE` (`rank()`, `outranks()`); `Methods::outranks` delegates to it. The assistant's `ai.assistant` (your own words in the chat) ranks with the categoriser, and the background `ai.advisor` below it. An automatic writer never replaces an open suggestion that outranks its own; one of the same rank or lower is replaced as before. |
 | Hand-off | `$proposed` goes to verify; owner decisions go back through preserve |
 
@@ -566,6 +569,13 @@ The steps:
 
 - **`relate.transfers`** runs `TransferPairer::pairAll` and `suggestOneSided`. From M2 it audits the pair link and
   refuses ties: today `$candidates->first()` silently picks one of two equal candidates.
+- **`relate.receipts`** (quick add, PLAN.md §6.12; `Cycle\Steps\RelateReceipts`, it writes) runs
+  `ReceiptAttacher::sweep` in chunks with a cursor, open years only: a business-card receipt from the phone still
+  waiting goes on its bank line when exactly one line fits and no other waiting receipt fits that line (never a line
+  that is your own money moving, in a locked year, taken by another receipt or one you said no to), and a `receipt.quick`
+  suggestion whose receipt is no longer on its line is taken back (`receipt_gone`). The command `ledger:receipts`
+  (04:09 London, skipped when the cycle does the night's work) does the same and re-reads photos refused at the AI cap.
+  `Importer::afterImport` also runs `ReceiptAttacher::forLines` for each import's new lines, after `pairAll`.
 - **`relate.route`** (M8) runs `Suggester::suggestFor` over waiting lines nightly, so a rule made today, an invoice
   issued after its payment arrived, and the HMRC, penalty, car-hire and travel patterns reach lines that are already
   waiting. Today `ledger:categorise` runs only `Categoriser`. The invoice branch also changes:
@@ -673,7 +683,7 @@ same finding instead of a new finding.
 | `travel.double_claim` | M4 | Mileage from home on a morning after a hotel night near the venue; mileage plus a confirmed train for the same job day; confirmed fuel while every vehicle uses simplified mileage | at_risk | certain |
 | `income.unlinked` | M4 | Confirmed `business_income` with no invoice and no job | none | certain |
 | `receipt.unmatched`, `cost.no_receipt` | M4 | `receipt.match`: receipts with no payment (often a card that isn't imported); confirmed business costs over `intel_receipt_threshold_pence` with no document | unrecorded, none | likely |
-| `dupe.cross_source` | M4 | A cash `manual_expenses` row and a card line with the same amount, a similar merchant, within a day | at_risk | likely |
+| `dupe.cross_source` | M4 | A cash `manual_expenses` row and a card line with the same amount, a similar merchant, within a day. An expense added from the phone is left to `quick.maybe_card` | at_risk | likely |
 | `rule.drift` | M4 | Rules the owner overrode at least twice in 90 days (from honest audit events since M2) | none | certain |
 | `tax.saving` | M4 | `TaxSavings::review` items with status action or check and a `saving_pence` | claimable | as reported |
 | `acct.unchecked`, `check.unverifiable` | M4 | Reconciler method `none`; verification `unverifiable` on money | none | n/a (info) |
@@ -681,6 +691,7 @@ same finding instead of a new finding.
 | `year.locked_drift` | M4 | The lock snapshot's figures against `ReturnSummary::for` now | none | certain |
 | `calendar.job_changed` | M8 | A calendar version moved or set `STATUS:CANCELLED` while the job still has a booked stay, costs or no cancellation invoice | owed_to_you or at_risk | strong |
 | `decision.evidence_changed` | M8 | An owner decision whose cited evidence pin changed (a booking amended after a stay was decided; a document re-read) | none | strong |
+| `receipt.waiting`, `receipt.which`, `receipt.second_copy`, `quick.photo_differs`, `quick.line_differs`, `quick.held`, `quick.maybe_card`, `quick.maybe_same`, `quick.photo_waiting` | quick add | `QuickEntryChecks` (one detector, group "From your phone", normal level): a business-card receipt with no bank line 7 days after a statement covers its day or after 21 days, with near misses (±15%, ±7 days) first; a receipt that fits more than one line, or a line that already has one; the photo's read against what you typed; a receipt whose figures changed after it went on a line you decided; an entry kept, not added (locked year, no rate, details missing, the same photo); a cash or personal-card cost against a card payment of the same amount within two days; the same amount twice within a day (skipped when two merchant names read from the photos differ); a photo still on the phone after 24 hours. It only reads, and `forEntry()` gives the phone's reply its warnings | unrecorded or at_risk (none for a photo still on the phone) | certain for your own entries' states; likely for `receipt.which` and `receipt.second_copy`; possible for `quick.photo_differs`, `quick.maybe_card` and `quick.maybe_same` |
 
 ### 4.5 Recommend actions
 
@@ -847,6 +858,7 @@ nothing the owner sees except that it becomes visible and reversible.
 | `link.calendar_job`, `link.document_job`, `link.travel_job` | jobs.* | 3 | **3** | JobFinder links with `linked_by` rules or ai |
 | `link.invoice_job` | jobs.invoice_po | 3 | **3** | "Same PO number as the job" |
 | `link.receipt_payment` | receipt.match | 3 | 2 | Shown live on the transaction page |
+| `category.receipt` | receipt.quick | 2 | 2 | Your receipt's category, job and share offered on its line for one tap; never confirmed by itself (the owner's answer, 25 Nov 2026) |
 | `external.gmail_label` | GmailLabeller | 3 | **3** | Hourly `SyncGmailLabels` |
 | `evidence.retry`, `evidence.balance_snapshot` | acquire steps | 4 | 4 | n/a |
 | `suggestion.withdraw` | relate.sweep | 4 | 3 | n/a |
@@ -958,7 +970,8 @@ full.
 ### 6.1 Schedule
 
 Only the existing cron (`schedule:run` every minute) and the existing every-minute
-`queue:work --stop-when-empty --max-time=240 --tries=1` run. No daemon is added, and no long process runs in the
+`queue:work --queue=default,reads --stop-when-empty --max-time=240 --tries=1` run (the `reads` queue, read after
+`default`, holds the AI reads of receipt photos from the phone). No daemon is added, and no long process runs in the
 foreground of `schedule:run`: Laravel runs due events in sequence, and nothing in `routes/console.php` uses
 `runInBackground()`, so a long foreground tick would delay `fetch-email`, `queue:work` and the heartbeat.
 
@@ -974,7 +987,7 @@ foreground of `schedule:run`: Laravel runs due events in sequence, and nothing i
 
 | Run | Due | Steps |
 |---|---|---|
-| nightly | from 03:05 London; hard deadline 06:30 | verify.audit_chain, acquire.health, acquire.retry_reads, relate.transfers, relate.route (M8), relate.categorise, relate.jobs, relate.sweep (M7), verify.new (M8), verify.backlog, verify.reconcile, decide.policy (M9), detect.todo, detect.*, detect.sync, learn.outcomes (M10), preserve.seal |
+| nightly | from 03:05 London; hard deadline 06:30 | verify.audit_chain, acquire.health, acquire.retry_reads, relate.transfers, relate.receipts, relate.route (M8), relate.categorise, relate.jobs, relate.sweep (M7), verify.new (M8), verify.backlog, verify.reconcile, decide.policy (M9), detect.todo, detect.*, detect.sync, learn.outcomes (M10), preserve.seal |
 | morning | from 07:05, after Starling's 06:41 import | acquire.health, detect.*, detect.sync, recommend.report (at `intel_report_time`), recommend.alerts, preserve.seal |
 | import | queued after an owner upload or a Starling import | detect.todo, detect.sync, preserve.seal. **As built (M5)** this is not yet limited to the account: the batch and account refs are kept as the steps' scope, and detect.sync runs with complete coverage, so nothing is resolved wrongly. Scoping needs `FindingsRegistry` support |
 | manual | "Check now" on `/intel` (`POST /intel/check`, at most 6 a minute) | detect.*, detect.sync, preserve.seal |
@@ -1108,7 +1121,9 @@ Within each priority, items are ranked by the Ranker. New groups:
 - `health` (priority 1);
 - `tax` (HMRC payments, filed drift);
 - `claims` (unclaimed mileage, savings);
-- `closeout`.
+- `closeout`;
+- `phone`, "From your phone" (quick add's nine checks; their buttons are the `qx` action, `<entry>:<verb>[:arg]`, bound
+  to what was shown by its fingerprint like every other to-do button).
 
 Snooze and Not relevant take a reason, kept in `todo_dismissals.note` and `findings.note`. Undoing a dismissal is
 audited (today `TodoController::dismiss` audits a dismissal but not its undo, and never writes the note).

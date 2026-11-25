@@ -150,6 +150,7 @@ class FingerprintTest extends TestCase
             'inv_chase' => $big, 'inv_send' => $big, 'transfers_ok' => $big, 'opp_add' => $big, 'opp_decline' => $big, 'opp_dismiss' => $big,
             'fnd_snooze' => $big.':waiting', 'fnd_dismiss' => $big.':not_problem', 'trips_add' => '2025:0123456789:'.$big.':abcdef01',
             'det_raise' => 'receipt:unmatched', 'det_lower' => 'receipt:unmatched', 'veto_lift' => $big,
+            'qx' => '9999999:not_card:99999999,99999999,99999999',
         ];
         $this->assertSame([], array_values(array_diff(TodoActions::CODES, array_keys($ids))), 'Every action is tried');
         foreach ($ids as $code => $id) {

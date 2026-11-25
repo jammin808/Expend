@@ -23,7 +23,7 @@ final class Registry
     {
         $this->detectors = $detectors ?? [new TodoGroupsDetector, new HmrcUnallocated, new TravelUnclaimed, new YearFiledDrift, new Health,
             new JobCloseout, new TravelDoubleClaim, new IncomeUnlinked, new ReceiptUnmatched, new CostNoReceipt, new DupeCrossSource, new RuleDrift, new TaxSaving,
-            new AcctUnchecked, new CheckUnverifiable, new YearLockedDrift, new CycleStepFailing];
+            new AcctUnchecked, new CheckUnverifiable, new YearLockedDrift, new CycleStepFailing, new QuickEntryChecks];
     }
 
     /** @return list<Detector> */

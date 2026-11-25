@@ -409,6 +409,45 @@ final class Categoriser
         return $p;
     }
 
+    /**
+     * What the categoriser would suggest for a cost you're about to add on the phone ("NCP Leeds", £12.50 today), from
+     * the same chain as a bank line's: your own decisions for that merchant first, similar merchants, common merchants.
+     * Only reads: the line it judges is never saved, nothing is proposed or remembered, and any error means no
+     * suggestion. A business cost comes back with its category (and job, on a job's day, for a job's own costs); one
+     * you usually decide as personal comes back as a note instead, with no category.
+     *
+     * @return array{category_id:?int, kind:string, job_id:?int, business_pct:int, reason:string, source:string, personal:bool}|null
+     */
+    public function preview(string $what, int $amountPence, CarbonImmutable $date): ?array
+    {
+        $what = trim($what);
+        if ($what === '' || $amountPence === 0) {
+            return null;
+        }
+        try {
+            $tx = new BankTransaction;
+            $tx->forceFill(['description' => mb_substr($what, 0, 255), 'counterparty' => mb_substr($what, 0, 255), 'merchant_key' => MerchantKey::from($what),
+                'amount_pence' => -abs($amountPence), 'posted_on' => $date->format('Y-m-d'), 'transaction_on' => $date->format('Y-m-d'), 'state' => 'active']);
+            $p = $this->make($tx);
+            if ($p === null || ($p['lines'] ?? []) === []) {
+                return null;
+            }
+            $business = collect($p['lines'])->first(fn (array $l) => in_array($l['kind'], Allocation::NEEDS_CATEGORY, true));
+            if (! $business) {
+                return ['category_id' => null, 'kind' => (string) $p['lines'][0]['kind'], 'job_id' => null, 'business_pct' => 0, 'reason' => (string) $p['reason'],
+                    'source' => (string) $p['source'], 'personal' => $p['lines'][0]['kind'] === 'personal'];
+            }
+
+            return ['category_id' => $business['category_id'] === null ? null : (int) $business['category_id'], 'kind' => (string) $business['kind'],
+                'job_id' => isset($business['work_job_id']) ? (int) $business['work_job_id'] : null, 'business_pct' => (int) ($business['business_use_pct'] ?? 100),
+                'reason' => (string) $p['reason'], 'source' => (string) $p['source'], 'personal' => false];
+        } catch (\Throwable $e) {
+            report($e);
+
+            return null;
+        }
+    }
+
     private function make(BankTransaction $tx): ?array
     {
         $this->learned ??= $this->learn();

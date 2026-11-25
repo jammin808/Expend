@@ -4,6 +4,7 @@ namespace App\Domain\Mileage;
 
 use App\Domain\Intel\Vetoes;
 use App\Domain\Travel\Places;
+use App\Models\Allocation;
 use App\Models\MileageTrip;
 use App\Models\Setting;
 use App\Models\TaxYear;
@@ -32,6 +33,9 @@ final class JobTrips
      */
     public const JOURNEYS = ['rail', 'flight', 'coach', 'car_hire'];
 
+    /** A confirmed cost of these categories on a job is a journey of this kind (journeys()). */
+    public const FARES = ['travel_rail' => 'rail', 'travel_flights' => 'flight', 'travel_car_hire' => 'car_hire'];
+
     /**
      * How you reached these jobs other than in your own vehicle (JOURNEYS: train, plane, coach or hire car), by the
      * rule proposals() leaves a job out by: a journey linked to the job, or not linked to any job and within a day of
@@ -53,10 +57,16 @@ final class JobTrips
                 ->whereDate('starts_on', '>=', CarbonImmutable::parse($all->first())->subDay()->format('Y-m-d'))
                 ->whereDate('starts_on', '<=', CarbonImmutable::parse($all->last())->addDay()->format('Y-m-d'))))
             ->get(['kind', 'work_job_id', 'starts_on']);
+        // Fares you confirmed on the job (a bank line, a cash expense or a receipt from your phone): a train, a flight
+        // or a hire car is a journey too.
+        $fares = Allocation::query()->whereIn('allocations.work_job_id', $jobs->keys()->all())->whereNotNull('allocations.confirmed_at')->where('allocations.kind', 'business_expense')
+            ->join('categories', 'categories.id', '=', 'allocations.category_id')->whereIn('categories.code', array_keys(self::FARES))
+            ->get(['allocations.work_job_id', 'categories.code']);
         $out = [];
         foreach ($jobs as $id => $j) {
             $near = self::near($dates[$id]);
-            $kinds = $journeys->filter(fn (TravelItem $i) => self::reached($i, (int) $id, $near))->pluck('kind')->unique()->values()->all();
+            $kinds = $journeys->filter(fn (TravelItem $i) => self::reached($i, (int) $id, $near))->pluck('kind')
+                ->concat($fares->where('work_job_id', (int) $id)->map(fn ($f) => self::FARES[$f->code]))->unique()->values()->all();
             if ($kinds !== []) {
                 $out[$id] = $kinds;
             }

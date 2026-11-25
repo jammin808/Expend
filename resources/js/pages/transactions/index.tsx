@@ -14,7 +14,7 @@ import AppLayout from '@/layouts/app-layout';
 import { day, decidedByLabels, kindLabels, londonToday, money, moneyMinor, movedBetweenAccounts, paidIn, paidWith, rateText } from '@/lib/format';
 import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { Plus } from 'lucide-react';
+import { Camera, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface Props {
@@ -226,9 +226,17 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                             )}
                         </p>
                     </div>
-                    <Button variant="outline" onClick={() => setAdding(true)}>
-                        <Plus /> Cash or foreign item
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                        {/* A plain link, not an Inertia visit: the Add expense screen opens from the phone's cache with no signal. */}
+                        <Button variant="outline" asChild>
+                            <a href="/quick">
+                                <Camera /> Quick add
+                            </a>
+                        </Button>
+                        <Button variant="outline" onClick={() => setAdding(true)}>
+                            <Plus /> Cash or foreign item
+                        </Button>
+                    </div>
                 </div>
 
                 <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-7">

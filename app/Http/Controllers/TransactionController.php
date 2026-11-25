@@ -5,11 +5,14 @@ namespace App\Http\Controllers;
 use App\Domain\Calendar\CalendarSync;
 use App\Domain\Intel\ReceiptMatch;
 use App\Domain\Matching\OwnAccounts;
+use App\Domain\Todo\Fingerprints;
+use App\Domain\Todo\TodoList;
 use App\Http\Presenters\Present;
 use App\Models\AuditEvent;
 use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
 use App\Models\CalendarJobLink;
+use App\Models\Document;
 use App\Models\JobFind;
 use App\Models\ManualExpense;
 use App\Models\TravelItem;
@@ -153,6 +156,11 @@ class TransactionController extends Controller
             $out[] = ['type' => 'rule', 'label' => 'Your rule for '.$rule->merchant_key, 'detail' => $rule->auto_confirm ? 'Confirms on its own' : 'Suggests', 'href' => '/settings/rules'];
         }
         if (! $item instanceof BankTransaction) {
+            // A cost added on the phone: its photo is its receipt.
+            foreach (ReceiptMatch::ownedBy($item) as $d) {
+                $out[] = self::phoneReceipt($d);
+            }
+
             return $out;
         }
         foreach (TravelItem::query()->where('bank_transaction_id', $item->id)->get() as $t) {
@@ -166,6 +174,11 @@ class TransactionController extends Controller
         // Receipts read from email or uploads for this amount, dated within a few days of it (Intel\ReceiptMatch: the
         // same rule the receipt detectors use, so the page and the to-do list always agree).
         foreach (ReceiptMatch::forPayment($item) as $d) {
+            if (ReceiptMatch::owner($d) !== null) {
+                $out[] = self::phoneReceipt($d);
+
+                continue;
+            }
             $out[] = ['type' => 'receipt', 'label' => 'Receipt: '.($d->extraction['receipt']['merchant'] ?? $d->email_subject ?? $d->original_name), 'detail' => 'Same amount'.(($d->extraction['receipt']['date'] ?? null) ? ', '.CarbonImmutable::parse($d->extraction['receipt']['date'])->format('j M Y') : ''),
                 'href' => ReceiptMatch::href($d)];
         }
@@ -181,5 +194,26 @@ class TransactionController extends Controller
         }
 
         return $out;
+    }
+
+    /**
+     * Your receipt photo from the phone, as a link on the item it belongs to: on a bank line, with "Not this payment's
+     * receipt" (detach_href); on an expense you added, with its entry page.
+     *
+     * @return array<string, mixed>
+     */
+    private static function phoneReceipt(Document $d): array
+    {
+        $entry = ReceiptMatch::owner($d);
+
+        // What the drawer offers on it: an expense added from the phone can go, or have been the business card.
+        $actions = $entry && $entry->status === 'added' ? Fingerprints::attach([
+            TodoList::action('qx', $entry->id.':cancel', 'Remove this expense'), TodoList::action('qx', $entry->id.':to_card', 'It was the business card'),
+        ]) : [];
+
+        return ['type' => 'receipt', 'label' => 'Your receipt photo'.($entry?->what ? ': '.$entry->what : ''), 'actions' => $actions,
+            'detail' => trim(($entry?->spent_on?->format('j M Y') ?? '').($entry?->attached_by === 'matcher' ? ' · matched by amount and date' : ($entry?->attached_by === 'you' ? ' · you chose this payment' : '')), ' ·'),
+            'href' => $entry ? '/quick/entries/'.$entry->id : ReceiptMatch::href($d), 'document_id' => $d->id, 'file' => '/documents/'.$d->id.'/file', 'quick_id' => $entry?->id,
+            'detach_href' => $entry && $entry->status === 'attached' ? '/quick/entries/'.$entry->id.'/detach' : null];
     }
 }

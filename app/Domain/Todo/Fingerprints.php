@@ -7,6 +7,7 @@ use App\Domain\Intel\Detectors\TravelUnclaimed;
 use App\Domain\Jobs\CandidateText;
 use App\Domain\Ledger\RuleLearner;
 use App\Domain\Matching\TransferPairer;
+use App\Domain\Quick\QuickEntries;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Document;
@@ -15,6 +16,7 @@ use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\MerchantRule;
 use App\Models\Opportunity;
+use App\Models\QuickEntry;
 use App\Models\Setting;
 use App\Models\TravelItem;
 use App\Models\Veto;
@@ -109,6 +111,8 @@ final class Fingerprints
             'fnd_snooze', 'fnd_dismiss' => preg_match('/^(\d+):/', $id, $m) && ($f = Finding::query()->find((int) $m[1])) !== null
                 && in_array(Dismissals::hiddenNow($f->key), $code === 'fnd_snooze' ? ['dismissed', 'snoozed'] : ['dismissed'], true),
             'veto_lift' => Veto::query()->whereKey($int)->whereNotNull('lifted_at')->exists(),
+            'qx' => ($p = QuickEntries::parseAction($id)) !== null && ($e = QuickEntry::query()->find($p[0])) !== null
+                && ! in_array($e->status, QuickEntries::VERBS[$p[1]], true) && ! ($p[1] === 'attach' && $e->isWaiting()),
             default => false,
         };
     }
@@ -147,8 +151,29 @@ final class Fingerprints
             'trips_add' => TravelUnclaimed::keyFor($id), // the id itself binds the jobs, the vehicle and the miles (TodoActions::tripsAdd)
             'det_raise', 'det_lower' => DetectorLevels::levelOf(str_replace(':', '.', $id)),
             'veto_lift' => ($v = Veto::query()->find($int)) ? ['key' => $v->veto_key, 'lifted' => $v->lifted_at !== null] : null,
+            'qx' => self::quick($id),
             default => null,
         };
+    }
+
+    /**
+     * An entry from your phone as a button acts on it: its amount, currency, words, date, job, category, how it was paid,
+     * its state, its line and the photo's check; for attaching it to a line or "It was the card", that line's decision too.
+     */
+    private static function quick(string $id): ?array
+    {
+        $p = QuickEntries::parseAction($id);
+        $e = $p ? QuickEntry::query()->find($p[0]) : null;
+        if (! $e) {
+            return null;
+        }
+        $state = $e->only(['amount_minor', 'currency', 'what', 'work_job_id', 'category_id', 'paid_with', 'status', 'bank_transaction_id', 'business_pct', 'document_id'])
+            + ['on' => $e->spent_on?->format('Y-m-d'), 'read' => ($e->read_check['differs'] ?? []) ?: null]; // a read that agrees changes nothing shown
+        if (in_array($p[1], ['attach', 'to_card'], true) && ctype_digit((string) $p[2])) {
+            $state['line'] = self::tx((int) $p[2]);
+        }
+
+        return $state;
     }
 
     /** What a possible job shows, and what adding it as a job would make it from. */

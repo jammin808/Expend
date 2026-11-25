@@ -18,6 +18,7 @@ use App\Models\JobDay;
 use App\Models\ManualExpense;
 use App\Models\MerchantRule;
 use App\Models\MileageTrip;
+use App\Models\QuickEntry;
 use App\Models\Setting;
 use App\Models\StatementBalance;
 use App\Models\TaxYear;
@@ -112,6 +113,8 @@ final class RefResolver
             'tx' => $by(BankTransaction::query()->with('account:id,name')->whereIn('id', $ints)->get(), fn (BankTransaction $t) => [
                 'label' => trim(($t->counterparty ?: $t->description).' · '.$t->posted_on->format('j M Y').' · '.Money::format($t->amount_pence).($t->account ? ' · '.$t->account->name : '')),
                 'href' => '/transactions?year='.$t->tax_year.'&q='.urlencode($t->counterparty ?: $t->description), 'pin' => null]),
+            'quick' => $by(QuickEntry::query()->whereIn('id', $ints)->get(), fn (QuickEntry $e) => [
+                'label' => trim('Your receipt from your phone · '.$e->words().' · '.$date($e->spent_on)), 'href' => '/quick/entries/'.$e->id, 'pin' => null]),
             'exp' => $by(ManualExpense::query()->whereIn('id', $ints)->get(), fn (ManualExpense $e) => [
                 'label' => trim($e->description.' · '.$date($e->spent_on).' · '.Money::format(-abs((int) $e->amount_pence))), 'href' => '/transactions?year='.$e->tax_year,
                 'pin' => sha1($e->spent_on?->format('Y-m-d').'|'.$e->amount_pence.'|'.$e->description)]),
@@ -252,7 +255,7 @@ final class RefResolver
         'doc' => 'A document', 'gmail' => 'An email', 'cal' => 'A calendar entry', 'travel' => 'A booking', 'job' => 'A job', 'jday' => 'A day of a job', 'cand' => 'A possible job',
         'jfind' => 'A link the job finder made', 'trip' => 'A mileage trip', 'rule' => 'A rule', 'inv' => 'An invoice', 'check' => 'A double-check', 'audit' => 'A change in the history',
         'fx' => 'An exchange rate', 'law' => 'A tax rule', 'taxp' => 'A tax figure', 'year' => 'A tax year', 'run' => 'A nightly check', 'fnd' => 'A finding', 'ask' => 'A question you asked',
-        'set' => 'A setting'];
+        'set' => 'A setting', 'quick' => 'An expense from your phone'];
 
     private static function missingLabel(string $kind, string $id): string
     {

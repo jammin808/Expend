@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /** Spending or income that never went through an imported account: cash, a foreign receipt, and similar. */
 class ManualExpense extends Model
@@ -17,5 +18,11 @@ class ManualExpense extends Model
     public function allocations(): HasMany
     {
         return $this->hasMany(Allocation::class);
+    }
+
+    /** The phone entry it was added from, if it was. */
+    public function quickEntry(): HasOne
+    {
+        return $this->hasOne(QuickEntry::class);
     }
 }

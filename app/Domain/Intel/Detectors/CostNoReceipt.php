@@ -97,7 +97,8 @@ final class CostNoReceipt implements Detector
         // A stay or journey matched to the payment: its booking email is the evidence.
         $booked = TravelItem::query()->whereIn('bank_transaction_id', $payments->filter(fn ($p) => $p instanceof BankTransaction)->pluck('id')->all() ?: [0])
             ->pluck('bank_transaction_id')->flip();
-        $receipts = ReceiptMatch::byAmount(ReceiptMatch::receipts());
+        // Your receipt photos from the phone count for the line they're attached to or the expense they were added as.
+        $receipts = ReceiptMatch::byAmount(ReceiptMatch::receipts('receipt', true));
         // A supplier's invoice read like a receipt (its amount and date) is as good as one.
         $invoices = ReceiptMatch::byAmount(ReceiptMatch::receipts('invoice'));
         $drafts = [];

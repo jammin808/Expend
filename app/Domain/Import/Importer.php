@@ -3,10 +3,12 @@
 namespace App\Domain\Import;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Intel\AuditContext;
 use App\Domain\Ledger\AllocationWriter;
 use App\Domain\Matching\MerchantKey;
 use App\Domain\Matching\Suggester;
 use App\Domain\Matching\TransferPairer;
+use App\Domain\Quick\ReceiptAttacher;
 use App\Models\Account;
 use App\Models\Allocation;
 use App\Models\BankTransaction;
@@ -166,6 +168,9 @@ final class Importer
         $rows = fn () => BankTransaction::query()->whereIn('import_batch_id', $ids ?: [0])->orderBy('id')->get();
         $this->suggester->suggestFor($rows(), guess: false);
         $this->pairer->pairAll($ids);
+        // Business-card receipts from your phone waiting for these lines (a transfer is never one): before the guesses,
+        // so your receipt's choices are what the line offers.
+        AuditContext::with('matcher', fn () => app(ReceiptAttacher::class)->forLines($rows()));
         $this->suggester->suggestFor($rows(), match: false);
         $this->pairer->suggestOneSided(batchIds: $ids);
     }

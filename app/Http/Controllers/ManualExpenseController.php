@@ -2,24 +2,16 @@
 
 namespace App\Http\Controllers;
 
-use App\Domain\Audit\AuditLog;
 use App\Domain\Fx\ExchangeRates;
 use App\Domain\Fx\RateUnavailable;
-use App\Domain\Ledger\DecisionService;
-use App\Domain\Matching\MerchantKey;
+use App\Domain\Ledger\ManualExpenses;
 use App\Models\Allocation;
-use App\Models\ManualExpense;
-use App\Models\TaxYear;
 use App\Support\Money;
 use App\Support\UkTaxYear;
-use Brick\Math\BigDecimal;
-use Brick\Math\RoundingMode;
-use Brick\Money\Currency;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -28,7 +20,7 @@ use Illuminate\Validation\Rule;
  */
 class ManualExpenseController extends Controller
 {
-    public function __construct(private ExchangeRates $fx, private DecisionService $decisions) {}
+    public function __construct(private ExchangeRates $fx, private ManualExpenses $expenses) {}
 
     public function rate(Request $request): JsonResponse
     {
@@ -73,7 +65,7 @@ class ManualExpenseController extends Controller
         $currency = strtoupper($data['currency']);
         $date = CarbonImmutable::parse($data['spent_on']);
         $label = UkTaxYear::fromDate($date)->label();
-        if (TaxYear::query()->where('label', $label)->whereNotNull('locked_at')->exists()) {
+        if (ManualExpenses::locked($label)) {
             return back()->with('error', "Tax year {$label} is locked. Unlock it before adding to it.");
         }
         if (in_array($data['kind'], Allocation::NEEDS_CATEGORY, true) && empty($data['category_id'])) {
@@ -83,67 +75,31 @@ class ManualExpenseController extends Controller
 
         try {
             $minor = abs($this->minor($data['amount'], $currency)) * $sign;
-            $fx = ['original_amount_minor' => null, 'original_currency' => null, 'fx_units_per_gbp' => null, 'fx_rate_date' => null, 'fx_source' => null];
-
-            if ($currency === 'GBP') {
-                $pence = $minor;
-            } elseif (! empty($data['sterling_from_document'])) {
-                $pence = abs(Money::parse($data['sterling_from_document'])) * $sign;
-                $original = \Brick\Money\Money::ofMinor(abs($minor), Currency::of($currency))->getAmount();
-                $rate = $original->dividedBy(BigDecimal::ofUnscaledValue(max(1, abs($pence)), 2), 6, RoundingMode::HALF_UP);
-                $fx = ['original_amount_minor' => $minor, 'original_currency' => $currency, 'fx_units_per_gbp' => (string) $rate, 'fx_rate_date' => $date->format('Y-m-d'), 'fx_source' => 'document'];
-            } else {
-                if (! empty($data['manual_rate'])) {
-                    $this->fx->setManual($currency, $date, (string) $data['manual_rate']);
-                }
-                $converted = $this->fx->toPence($minor, $currency, $date);
-                $pence = $converted['pence'];
-                $fx = ['original_amount_minor' => $minor, 'original_currency' => $currency, 'fx_units_per_gbp' => $converted['units_per_gbp'], 'fx_rate_date' => $converted['rate_date'], 'fx_source' => $converted['source']];
-            }
+            $sterling = ! empty($data['sterling_from_document']) && $currency !== 'GBP' ? Money::parse($data['sterling_from_document']) : null;
+            // Converted before anything is written (it may ask HMRC for the month's rate).
+            $converted = $this->expenses->convert($minor, $currency, $date, $sterling, ! empty($data['manual_rate']) ? (string) $data['manual_rate'] : null);
         } catch (RateUnavailable|\InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
 
         try {
-            $expense = DB::transaction(function () use ($data, $date, $label, $pence, $fx) {
-                $expense = ManualExpense::query()->create([
-                    'spent_on' => $date->format('Y-m-d'),
-                    'tax_year' => $label,
-                    'description' => $data['description'],
-                    'merchant_key' => MerchantKey::from($data['description']),
-                    'paid_with' => $data['paid_with'],
-                    'amount_pence' => $pence,
-                    ...$fx,
-                ]);
-                AuditLog::record('manual_expense.created', $expense, null, $expense->toArray());
-
-                $result = $this->decisions->apply($data, collect([$expense]));
-                if ($result['errors']) {
-                    throw new \InvalidArgumentException(implode(' ', $result['errors']));
-                }
-
-                return $expense;
-            });
+            $this->expenses->create($data, $converted);
         } catch (\InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
+        $pence = $converted['pence'];
 
         return back()->with('success', 'Added '.Money::format(abs($pence)).($currency !== 'GBP' ? " ({$currency} converted)" : '').'.');
     }
 
+    /** An amount as typed, in the currency's own minor units (Money::parseIn: none for yen, three places for dinars). */
     private function minor(string $amount, string $currency): int
     {
-        $parsed = Money::parse($amount);
-        if ($parsed === null) {
+        $minor = Money::parseIn($amount, strtoupper($currency));
+        if ($minor === null || $minor === 0) {
             throw new \InvalidArgumentException('Enter an amount.');
         }
-        $digits = Currency::of(strtoupper($currency))->getDefaultFractionDigits();
 
-        // Money::parse gives hundredths; adjust for currencies with other minor units (for example JPY has none).
-        return match ($digits) {
-            2 => $parsed,
-            0 => intdiv($parsed, 100),
-            default => $parsed * (10 ** ($digits - 2)),
-        };
+        return $minor;
     }
 }

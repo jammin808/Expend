@@ -78,6 +78,16 @@ final class Grades
         'rule.drift' => [self::CERTAIN, 'Your own changes to what the rule decided'],
         'tax.saving' => [self::LIKELY, 'An estimate from the tax savings review of your records'],
         'year.locked_drift' => [self::CERTAIN, 'The figures when you locked the year against your records now'],
+        // Expenses from your phone (QuickEntryChecks): your own entries' states, and pairs matched by amount and date.
+        'receipt.waiting' => [self::CERTAIN, 'Your receipt from the phone and your imported statements'],
+        'receipt.which' => [self::LIKELY, 'Card payments of the receipt’s amount near its date'],
+        'receipt.second_copy' => [self::LIKELY, 'The only card payment that fits already has a receipt'],
+        'quick.photo_differs' => [self::POSSIBLE, 'Read from your photo with AI, not checked against what you typed'],
+        'quick.line_differs' => [self::CERTAIN, 'Your receipt and your decision on its bank line'],
+        'quick.held' => [self::CERTAIN, 'Your entry, kept and not added'],
+        'quick.maybe_card' => [self::POSSIBLE, 'A cash or personal-card cost and a card payment of the same amount within two days'],
+        'quick.maybe_same' => [self::POSSIBLE, 'Two records of the same amount within a day'],
+        'quick.photo_waiting' => [self::CERTAIN, 'Your entry, sent without its photo'],
     ];
 
     public static function valid(?string $grade): bool

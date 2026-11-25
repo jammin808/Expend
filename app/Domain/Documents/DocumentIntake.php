@@ -26,6 +26,13 @@ final class DocumentIntake
     /** Sources that bring documents in without you handing each one over: a Gmail search, the mailbox. */
     private const ARRIVES_BY_ITSELF = ['gmail', 'email'];
 
+    /**
+     * Keep a document. Besides who it's from and when, $meta may say what kind it is when you said so ('kind': a
+     * receipt from the phone, rather than 'unknown' until it's read), and 'read' => false when the caller queues the
+     * AI read itself.
+     *
+     * @throws \RuntimeException when the file couldn't be written (nothing is kept then)
+     */
     public function store(string $contents, string $name, ?string $mime, string $source, array $meta = [], ?int $parentId = null): Document
     {
         if (strlen($contents) > self::MAX_BYTES) {
@@ -40,7 +47,10 @@ final class DocumentIntake
         $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION)) ?: 'bin';
         $mime = $mime ?: self::guessMime($ext);
         $path = "documents/{$sha}.".preg_replace('/[^a-z0-9]/', '', $ext);
-        Storage::disk('local')->put($path, $contents);
+        // The local disk doesn't throw when a write fails: a document is never kept pointing at a file that isn't there.
+        if (! Storage::disk('local')->put($path, $contents) || ! Storage::disk('local')->exists($path)) {
+            throw new \RuntimeException('The file couldn’t be saved just now. Try again.');
+        }
 
         $isEmail = $ext === 'eml' || $mime === 'message/rfc822';
         $document = Document::query()->create([
@@ -54,7 +64,7 @@ final class DocumentIntake
             'email_from' => isset($meta['from']) ? mb_substr($meta['from'], 0, 250) : null,
             'email_subject' => isset($meta['subject']) ? mb_substr($meta['subject'], 0, 500) : null,
             'received_at' => $meta['received_at'] ?? now(),
-            'kind' => $isEmail ? 'email' : 'unknown',
+            'kind' => $isEmail ? 'email' : (isset($meta['kind'], Document::KINDS[$meta['kind']]) ? $meta['kind'] : 'unknown'),
             'status' => ($meta['held'] ?? false) ? 'held' : 'new',
             'error' => $meta['held_reason'] ?? null,
             'work_job_id' => $meta['work_job_id'] ?? null,
@@ -73,7 +83,8 @@ final class DocumentIntake
         AuditLog::record('document.received', $document, null, ['name' => $name, 'source' => $source, 'size' => strlen($contents)], null,
             in_array($source, self::ARRIVES_BY_ITSELF, true) ? 'system' : null);
 
-        if (($meta['held'] ?? false) === false && ! self::readByCaller($source, $parentId)) {
+        // 'read' => false: the caller reads it itself (the phone's receipts are read on their own queue: Quick\QuickEntries).
+        if (($meta['held'] ?? false) === false && ($meta['read'] ?? true) !== false && ! self::readByCaller($source, $parentId)) {
             if ($isEmail) {
                 $this->readOrSpot($document->fresh());
             } elseif (Setting::get('ai_extraction') === 'on' && AiConfig::ready()) {

@@ -12,6 +12,7 @@ use App\Domain\Verification\Verifier;
 use App\Models\Document;
 use App\Models\DocumentFact;
 use App\Models\Opportunity;
+use App\Models\QuickEntry;
 use App\Models\WorkJob;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -71,6 +72,10 @@ final class DocumentReader
         $status = $document->text_status;
 
         $kind = array_key_exists($data['kind'] ?? '', Document::KINDS) ? $data['kind'] : 'other';
+        // Your receipt photo from the phone stays a receipt, whatever the read says (its check says when it can't see one).
+        if ($document->kind === 'receipt' && QuickEntry::query()->where('document_id', $document->id)->exists()) {
+            $kind = 'receipt';
+        }
         $jobIds = array_column($jobs, 'id');
         $jobId = in_array($data['job_link']['job_id'] ?? null, $jobIds, true) ? $data['job_link']['job_id'] : null;
 

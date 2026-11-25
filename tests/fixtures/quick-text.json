@@ -1,0 +1,482 @@
+{
+    "about": "Costs in a few words, read by fixed rules: App\\Domain\\Quick\\QuickText::parse (PHP) and ExpendQuick.parseText (public/quick-store.js) must agree on every case. today is the London date the text is read on; accounts are the active non-cash accounts by name. expect is null when the text isn't a cost (it goes to the assistant), otherwise the fields both parsers return.",
+    "cases": [
+        {
+            "text": "£12.50 parking",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "12.50 parking",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£12.50 parking Leeds",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "parking Leeds",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "€15 taxi Berlin",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1500,
+                "currency": "EUR",
+                "amount": "15.00",
+                "what": "taxi Berlin",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "15 EUR taxi",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1500,
+                "currency": "EUR",
+                "amount": "15.00",
+                "what": "taxi",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£1,250.00 laptop",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 125000,
+                "currency": "GBP",
+                "amount": "1250.00",
+                "what": "laptop",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "12,50 parking",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "parking £5",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 500,
+                "currency": "GBP",
+                "amount": "5.00",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "parking 5",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 500,
+                "currency": "GBP",
+                "amount": "5.00",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "parking 5.00",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 500,
+                "currency": "GBP",
+                "amount": "5.00",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£5 cash parking yesterday",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 500,
+                "currency": "GBP",
+                "amount": "5.00",
+                "what": "parking",
+                "paid_with": "cash",
+                "account_id": null,
+                "date": "2026-11-24",
+                "date_word": "yesterday"
+            }
+        },
+        {
+            "text": "spent £12 on parking",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1200,
+                "currency": "GBP",
+                "amount": "12.00",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£8.40 lunch personal card monday",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 840,
+                "currency": "GBP",
+                "amount": "8.40",
+                "what": "lunch",
+                "paid_with": "personal_card",
+                "account_id": null,
+                "date": "2026-11-23",
+                "date_word": "monday"
+            }
+        },
+        {
+            "text": "£20 fuel card",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 2000,
+                "currency": "GBP",
+                "amount": "20.00",
+                "what": "fuel",
+                "paid_with": "business",
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£12.50 car park",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "car park",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£30 hotel 23 Nov",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 3000,
+                "currency": "GBP",
+                "amount": "30.00",
+                "what": "hotel",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-23",
+                "date_word": "23 Nov"
+            }
+        },
+        {
+            "text": "£4.20 coffee 28 Dec",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 420,
+                "currency": "GBP",
+                "amount": "4.20",
+                "what": "coffee",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2025-12-28",
+                "date_word": "28 Dec"
+            }
+        },
+        {
+            "text": "1500 JPY taxi",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1500,
+                "currency": "JPY",
+                "amount": "1500",
+                "what": "taxi",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£12.505 parking",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "£12.50 parking Starling",
+            "today": "2026-11-25",
+            "accounts": [
+                {
+                    "id": 3,
+                    "name": "Starling"
+                }
+            ],
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "parking",
+                "paid_with": "business",
+                "account_id": 3,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "How much did I spend on parking?",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "/todo",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "Which invoices are overdue",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "can I claim parking £12.50",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "why was I charged £12.50",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "tax on £1,200",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "15 euros taxi",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1500,
+                "currency": "EUR",
+                "amount": "15.00",
+                "what": "taxi",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "20 dollars uber",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 2000,
+                "currency": "USD",
+                "amount": "20.00",
+                "what": "uber",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "5 quid coffee",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 500,
+                "currency": "GBP",
+                "amount": "5.00",
+                "what": "coffee",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "15 francs taxi",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "£15 euros taxi",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "You spent £12.50 at NCP",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "NCP",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "I paid £12.50 for parking",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "parking 8",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 800,
+                "currency": "GBP",
+                "amount": "8.00",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "meet at 8",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "bus at 8",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "lunch for £8",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 800,
+                "currency": "GBP",
+                "amount": "8.00",
+                "what": "lunch",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£12.50 parking 29 Feb",
+            "today": "2027-03-10",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2024-02-29",
+                "date_word": "29 Feb"
+            }
+        },
+        {
+            "text": "£12.50 parking 29 Feb 2027",
+            "today": "2027-03-10",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "parking 29 Feb 2027",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2027-03-10",
+                "date_word": null
+            }
+        },
+        {
+            "text": "£12.50 parking 29 Feb",
+            "today": "2028-03-01",
+            "expect": {
+                "minor": 1250,
+                "currency": "GBP",
+                "amount": "12.50",
+                "what": "parking",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2028-02-29",
+                "date_word": "29 Feb"
+            }
+        },
+        {
+            "text": "£10,000,000 hire",
+            "today": "2026-11-25",
+            "expect": null
+        },
+        {
+            "text": "£9,999,999 hire",
+            "today": "2026-11-25",
+            "expect": {
+                "minor": 999999900,
+                "currency": "GBP",
+                "amount": "9999999.00",
+                "what": "hire",
+                "paid_with": null,
+                "account_id": null,
+                "date": "2026-11-25",
+                "date_word": null
+            }
+        }
+    ]
+}

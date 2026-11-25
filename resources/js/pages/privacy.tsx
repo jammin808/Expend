@@ -113,6 +113,12 @@ export default function Privacy({ business, email, updated }: Props) {
                         access tokens and other keys are stored encrypted. Every change to the records is written to an audit trail. Backups are
                         encrypted.
                     </p>
+                    <p>
+                        Expenses added on the owner&rsquo;s phone with no signal, and their receipt photos, wait in that phone&rsquo;s browser storage
+                        for Expend alone until they are sent. A photo is removed from the phone once Expend has stored it, and a sent entry&rsquo;s
+                        details after 14 days. Signing out on the phone asks whether to send, delete or keep anything still waiting, and clears the
+                        copy of the Add expense screen and its lists of jobs and accounts.
+                    </p>
                 </Section>
 
                 <Section title="Keeping and deleting">

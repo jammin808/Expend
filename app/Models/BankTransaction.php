@@ -6,6 +6,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use LogicException;
 
 /**
@@ -71,6 +72,12 @@ class BankTransaction extends Model
     public function transferPair(): BelongsTo
     {
         return $this->belongsTo(BankTransaction::class, 'transfer_pair_id');
+    }
+
+    /** Your receipt photo from the phone that is on this line (a business-card QuickEntry attached to it), if any. */
+    public function quickReceipt(): HasOne
+    {
+        return $this->hasOne(QuickEntry::class)->where('status', 'attached')->whereNotNull('document_id')->orderBy('id');
     }
 
     /** The date that decides the tax year: the card transaction date where known, otherwise the posting date. */

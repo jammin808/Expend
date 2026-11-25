@@ -36,7 +36,7 @@ use InvalidArgumentException;
  *  - automation never proposes what you said no to (Intel\Vetoes): a suggestion of the shape you cleared or changed
  *    (its kind, category, business share and job), or an invoice you said a payment isn't for, is refused for the
  *    method the veto names (or every automatic method). An 'ask' veto lets it be proposed, never confirmed on its own;
- *  - one order of precedence over open suggestions (outranks()): you > rule > matcher (invoice > HMRC > transfer >
+ *  - one order of precedence over open suggestions (outranks()): you > your receipt from the phone > rule > matcher (invoice > HMRC > transfer >
  *    pattern > categoriser, with the assistant's proposal from your own words) > the background AI. An automatic writer
  *    never replaces a suggestion that outranks its own; one that ranks the same or lower is replaced as before. Why a
  *    write was refused is kept for the message ($refused).
@@ -53,6 +53,10 @@ final class AllocationWriter
      * payment, a job's costs), then the categoriser's guesses. A method not listed ranks as its maker does (MAKERS).
      */
     public const PRECEDENCE = [
+        // Your own receipt photo from the phone, on the bank line it was matched to: your choices (category, job,
+        // share), offered for one tap. Above a rule (it replaces a rule's open suggestion; a rule that would confirm on its
+        // own waits for you), below your decisions.
+        'receipt.quick' => 7,
         'rule.learned' => 6, 'rule.owner' => 6,
         'suggest.invoice' => 5,
         'suggest.hmrc' => 4,
@@ -75,8 +79,8 @@ final class AllocationWriter
     /** Why the last call to decide() was refused: 'yours', 'vetoed' or 'outranked' (REFUSED_WORDS), or null. */
     public ?string $refused = null;
 
-    /** Your own decisions: above every method. */
-    public const OWNER = 7;
+    /** Your own decisions: above every method (your receipt from the phone, receipt.quick, is 7). */
+    public const OWNER = 8;
 
     /** The rank of a line whose method isn't known, by who made it. */
     private const MAKERS = ['you' => self::OWNER, 'rule' => 6, 'policy' => 2, 'matcher' => 1, 'ai' => 0];

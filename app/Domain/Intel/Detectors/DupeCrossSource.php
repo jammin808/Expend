@@ -11,6 +11,7 @@ use App\Domain\Intel\Ref;
 use App\Domain\Matching\MerchantKey;
 use App\Models\BankTransaction;
 use App\Models\ManualExpense;
+use App\Models\QuickEntry;
 use App\Support\Money;
 use Carbon\CarbonImmutable;
 
@@ -69,7 +70,9 @@ final class DupeCrossSource implements Detector
     {
         $this->coverage = Coverage::Failed;
         $this->checked = null;
+        // An expense added on the phone is quick.maybe_card's (QuickEntryChecks), which needs no merchant words: one pair, one finding.
         $expenses = ManualExpense::query()->where('amount_pence', '<', 0)->whereHas('allocations', fn ($q) => $q->where('kind', 'business_expense'))
+            ->whereNotIn('id', QuickEntry::query()->whereNotNull('manual_expense_id')->select('manual_expense_id'))
             ->orderBy('spent_on')->orderBy('id')->get(['id', 'spent_on', 'tax_year', 'description', 'merchant_key', 'paid_with', 'amount_pence']);
         $drafts = [];
         if ($expenses->isNotEmpty()) {

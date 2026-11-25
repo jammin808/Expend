@@ -19,6 +19,7 @@ use App\Http\Controllers\ManualExpenseController;
 use App\Http\Controllers\MileageController;
 use App\Http\Controllers\OpportunityController;
 use App\Http\Controllers\PlanningController;
+use App\Http\Controllers\QuickController;
 use App\Http\Controllers\RuleLearningController;
 use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SetupController;
@@ -51,7 +52,30 @@ Route::get('settings/gmail/callback', [IntegrationSettingsController::class, 'gm
         HandleInertiaRequests::class,
     ])->name('gmail.callback');
 
+// Adding expenses on the phone: the token, the day's data and the suggestion answer JSON, with a 401 (never a redirect
+// to the sign-in page) when you're signed out, so the phone keeps what it has and says "Sign in to send". A remember-me
+// cookie signs you back in here.
+Route::get('quick/token', [QuickController::class, 'token'])->middleware('throttle:60,1,quick-token')->name('quick.token');
+Route::get('quick/pocket', [QuickController::class, 'pocket'])->middleware('throttle:60,1,quick-pocket')->name('quick.pocket');
+Route::get('quick/suggest', [QuickController::class, 'suggest'])->middleware('throttle:120,1,quick-suggest')->name('quick.suggest');
+
 Route::middleware(['auth'])->group(function () {
+    // The quick add screen, its copy for the service worker, and what the phone sends: an entry's fields, then its
+    // photo (multipart field "photo", POST with _method=PUT or a PUT), and Undo by the entry's key. Each limit has its
+    // own count (the third part).
+    Route::get('quick', [QuickController::class, 'show'])->name('quick');
+    Route::get('quick/shell', [QuickController::class, 'shell'])->name('quick.shell');
+    Route::post('quick/entries', [QuickController::class, 'store'])->middleware('throttle:60,1,quick-entries')->name('quick.entries.store');
+    Route::match(['put', 'post'], 'quick/entries/{key}/photo', [QuickController::class, 'photo'])->where('key', '[A-Za-z0-9\-]{8,80}')
+        ->middleware('throttle:30,1,quick-photos')->name('quick.entries.photo');
+    Route::post('quick/entries/{key}/withdraw', [QuickController::class, 'withdraw'])->where('key', '[A-Za-z0-9\-]{8,80}')
+        ->middleware('throttle:60,1,quick-withdraw')->name('quick.entries.withdraw');
+    Route::get('quick/entries/{entry}', [QuickController::class, 'entry'])->whereNumber('entry')->name('quick.entries.show');
+    Route::patch('quick/entries/{entry}', [QuickController::class, 'update'])->whereNumber('entry')->name('quick.entries.update');
+    Route::post('quick/entries/{entry}/attach', [QuickController::class, 'attach'])->whereNumber('entry')->name('quick.entries.attach');
+    Route::post('quick/entries/{entry}/detach', [QuickController::class, 'detach'])->whereNumber('entry')->name('quick.entries.detach');
+    Route::post('quick/entries/{entry}/read', [QuickController::class, 'readAgain'])->whereNumber('entry')->middleware('throttle:10,1,quick-read')->name('quick.entries.read');
+
     Route::get('travel', [TravelController::class, 'index'])->name('travel');
     Route::post('travel/scan', [TravelController::class, 'scan'])->name('travel.scan');
     Route::post('travel/check', [TravelController::class, 'check'])->name('travel.check');
@@ -147,7 +171,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('rules/learn/decline', [RuleLearningController::class, 'decline'])->name('rules.decline');
     Route::post('rules/{rule}/undo', [RuleLearningController::class, 'undo'])->name('rules.undo');
     Route::post('todo/dismiss', [TodoController::class, 'dismiss'])->name('todo.dismiss');
-    Route::post('todo/{code}/{id}', [TodoController::class, 'act'])->where('id', '[A-Za-z0-9_:]+')->name('todo.act');
+    Route::post('todo/{code}/{id}', [TodoController::class, 'act'])->where('id', '[A-Za-z0-9_:,]+')->name('todo.act');
     Route::post('checks/{type}/{id}', [VerificationController::class, 'store'])->whereNumber('id')->name('checks.store');
     // Work you might get, from your emails and documents: nothing here replies to anyone.
     Route::get('opportunities', [OpportunityController::class, 'index'])->name('opportunities.index');

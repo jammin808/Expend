@@ -1,12 +1,16 @@
 <?php
 
+use App\Domain\Quick\QuickWorker;
+use App\Http\Controllers\QuickController;
 use App\Http\Middleware\AuditChannel;
 use App\Http\Middleware\HandleInertiaRequests;
 use App\Http\Middleware\SecurityHeaders;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Exceptions\PostTooLargeException;
 use Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets;
+use Illuminate\Http\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -26,5 +30,14 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
-        //
+        // A photo over PHP's post_max_size from the phone: the phone's own words and error code, as for any upload
+        // over the limit (QuickController::photo).
+        $exceptions->render(function (PostTooLargeException $e, Request $request) {
+            if (! $request->is('quick/*')) {
+                return null;
+            }
+
+            return response()->json(['error' => 'too_big', 'message' => 'Too big to send from your phone (over '
+                .QuickController::megabytes(QuickWorker::maxUploadBytes()).'). Upload it from a computer.'], 413);
+        });
     })->create();

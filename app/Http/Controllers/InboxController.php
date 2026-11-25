@@ -25,7 +25,7 @@ class InboxController extends Controller
         $year = $request->string('year')->toString() ?: null;
         $status = $request->string('status')->toString() ?: null;
 
-        $query = BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job'])
+        $query = BankTransaction::query()->with(['account', 'allocations.category', 'allocations.job', 'quickReceipt'])
             ->whereIn('review_status', $status ? [$status] : ['unreviewed', 'suggested'])
             ->when($year, fn ($q) => $q->where('tax_year', $year))
             ->orderBy('tax_year')->orderBy('posted_on')->orderBy('id');

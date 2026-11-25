@@ -10,7 +10,7 @@ import { day, decidedByLabels, kindLabels, paidIn, paidWith } from '@/lib/format
 import { cn } from '@/lib/utils';
 import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, Link, router, usePage } from '@inertiajs/react';
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Keyboard, PartyPopper, Sparkles, X } from 'lucide-react';
+import { CalendarDays, Camera, Check, ChevronLeft, ChevronRight, Keyboard, PartyPopper, Sparkles, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /** An Inbox item, with what its suggestion rests on and what you've said no to for it. */
@@ -356,6 +356,15 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                     {(item.merchant_count ?? 1) > 1 && (
                                         <span>
                                             {item.merchant_count} undecided from {item.merchant_key}
+                                        </span>
+                                    )}
+                                    {item.receipt && (
+                                        // The receipt you kept on your phone for this payment (paid by the business card).
+                                        <span className="flex items-center gap-1">
+                                            <Camera className="size-3.5" />
+                                            <Link href={item.receipt.href} className="underline underline-offset-2">
+                                                Your receipt photo{item.receipt.what ? `: ${item.receipt.what}` : ''}
+                                            </Link>
                                         </span>
                                     )}
                                 </div>

@@ -21,6 +21,7 @@ use App\Models\CalendarJobLink;
 use App\Models\Document;
 use App\Models\GmailMessage;
 use App\Models\JobCandidate;
+use App\Models\QuickEntry;
 use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Models\WorkJob;
@@ -566,7 +567,8 @@ final class Verifier
         };
 
         foreach ($due('document', Document::query()->where('status', 'extracted'))->take($per) as $doc) {
-            $second = $secondReads > 0 && $doc->text_status !== 'extracted';
+            // A photo from the phone is checked against what you typed (QuickReadCheck): never a second read.
+            $second = $secondReads > 0 && $doc->text_status !== 'extracted' && ! QuickEntry::query()->where('document_id', $doc->id)->exists();
             $secondReads -= $second ? 1 : 0;
             $run(fn () => $this->document($doc, $second));
         }

@@ -20,6 +20,7 @@ use App\Models\DocumentFact;
 use App\Models\Invoice;
 use App\Models\JobCandidate;
 use App\Models\JobDay;
+use App\Models\QuickEntry;
 use App\Models\TravelItem;
 use App\Models\Verification;
 use App\Models\WorkJob;
@@ -119,6 +120,11 @@ class JobController extends Controller
             'mileage' => $mileage,
             'totals' => ['income_pence' => $income, 'costs_pence' => $spent, 'mileage_pence' => $mileagePence, 'profit_pence' => $income - $spent - $mileagePence],
             'near' => $near->map(fn ($tx) => Present::tx($tx))->values(),
+            // Business-card receipts from your phone for this job whose bank line hasn't come in yet ("Add expense for
+            // this job" is /quick?job=ID).
+            'quick_waiting' => QuickEntry::query()->waitingOnJob($job->id)->with('category')->orderBy('spent_on')->get()
+                ->map(fn (QuickEntry $e) => ['id' => $e->id, 'words' => $e->words(), 'spent_on' => $e->spent_on?->format('Y-m-d'), 'amount_minor' => $e->amount_minor,
+                    'currency' => $e->currency, 'document_id' => $e->document_id, 'href' => '/quick/entries/'.$e->id])->values(),
             'facts' => DocumentFact::query()->with('document')->where('work_job_id', $job->id)->orderByDesc('id')->get()
                 ->map(fn ($f) => $f->only(['id', 'field', 'label', 'value', 'at_time', 'quote', 'verified', 'verification_note', 'document_id']) + [
                     'on_date' => $f->on_date?->format('Y-m-d'), 'document' => $f->document?->original_name, 'received' => $f->document?->received_at?->format('Y-m-d'),

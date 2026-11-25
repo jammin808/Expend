@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /** Anything you send the app: an email, a PO, a production pack, a receipt photo. */
 class Document extends Model
@@ -45,6 +46,12 @@ class Document extends Model
     public function facts(): HasMany
     {
         return $this->hasMany(DocumentFact::class);
+    }
+
+    /** The phone entry this photo belongs to (any state), if it came from the phone. */
+    public function quickEntry(): HasOne
+    {
+        return $this->hasOne(QuickEntry::class);
     }
 
     public function isPdf(): bool

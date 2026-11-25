@@ -7,6 +7,7 @@ use App\Models\Allocation;
 use App\Models\BankTransaction;
 use App\Models\Category;
 use App\Models\ManualExpense;
+use App\Models\QuickEntry;
 use App\Models\WorkJob;
 use App\Support\Money;
 
@@ -49,7 +50,7 @@ final class Present
             'review_status' => $tx->review_status,
             'transfer_pair_id' => $tx->transfer_pair_id,
             'allocations' => $tx->relationLoaded('allocations') ? $tx->allocations->map(fn (Allocation $a) => self::allocation($a))->values()->all() : [],
-        ];
+        ] + ($tx->relationLoaded('quickReceipt') ? ['receipt' => self::receipt($tx->quickReceipt)] : []);
     }
 
     public static function manual(ManualExpense $e): array
@@ -68,7 +69,19 @@ final class Present
             'fx' => $e->original_currency ? ['units_per_gbp' => Money::rate($e->fx_units_per_gbp), 'rate_date' => $e->fx_rate_date?->format('Y-m-d'), 'source' => $e->fx_source] : null,
             'review_status' => $e->review_status,
             'allocations' => $e->relationLoaded('allocations') ? $e->allocations->map(fn (Allocation $a) => self::allocation($a))->values()->all() : [],
-        ];
+        ] + ($e->relationLoaded('quickEntry') ? ['receipt' => self::receipt($e->quickEntry?->status === 'added' ? $e->quickEntry : null)] : []);
+    }
+
+    /**
+     * Your receipt photo from the phone on a line or an expense (load quickReceipt, or quickEntry, with the page's
+     * items to have it): its entry page and its file. Null for none.
+     *
+     * @return array{quick_id:int, document_id:int, href:string, file:string, what:?string}|null
+     */
+    public static function receipt(?QuickEntry $entry): ?array
+    {
+        return $entry && $entry->document_id ? ['quick_id' => $entry->id, 'document_id' => (int) $entry->document_id, 'href' => '/quick/entries/'.$entry->id,
+            'file' => '/documents/'.$entry->document_id.'/file', 'what' => $entry->what] : null;
     }
 
     public static function allocation(Allocation $a): array

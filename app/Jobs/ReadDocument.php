@@ -5,9 +5,11 @@ namespace App\Jobs;
 use App\Domain\Ai\AiUsage;
 use App\Domain\Ai\DocumentReader;
 use App\Domain\Jobs\Opportunities;
+use App\Domain\Quick\QuickReadCheck;
 use App\Domain\Telegram\Telegram;
 use App\Domain\Verification\Verifier;
 use App\Models\Document;
+use App\Models\QuickEntry;
 use App\Models\Setting;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -46,10 +48,19 @@ class ReadDocument implements ShouldQueue
             try {
                 $document->update(['status' => 'queued']);
                 $document = $reader->read($document);
+                // A photo from the phone is checked against what you typed (QuickReadCheck), not read a second time.
+                $quick = QuickEntry::query()->where('document_id', $document->id)->exists();
                 try {
-                    $verifier->document($document, $document->text_status !== 'extracted' && Setting::get('ai_extraction') === 'on');
+                    $verifier->document($document, ! $quick && $document->text_status !== 'extracted' && Setting::get('ai_extraction') === 'on');
                 } catch (Throwable $e) {
                     report($e);
+                }
+                if ($quick) {
+                    try {
+                        app(QuickReadCheck::class)->afterRead($document);
+                    } catch (Throwable $e) {
+                        report($e);
+                    }
                 }
                 // Work it may offer (an availability check, a hold, an offer): proposed, never made a job by itself.
                 try {
@@ -66,7 +77,8 @@ class ReadDocument implements ShouldQueue
         });
 
         if ($this->telegramChatId) {
-            Telegram::reply($this->telegramChatId, Telegram::documentSummary($document->fresh(['facts', 'job'])));
+            // The summary, and for a receipt the offer to add it (Telegram::readReply).
+            Telegram::readReply($document->fresh(['facts', 'job']), $this->telegramChatId);
         }
     }
 }

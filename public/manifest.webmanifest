@@ -1,12 +1,41 @@
 {
-  "name": "Expense Ledger",
-  "short_name": "Ledger",
-  "start_url": "/inbox",
+  "id": "/inbox",
+  "name": "Expend",
+  "short_name": "Expend",
+  "description": "Your books as a sole trader: add expenses on your phone, with or without signal.",
+  "start_url": "/quick?source=home",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
-  ]
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Add expense",
+      "short_name": "Add expense",
+      "url": "/quick?source=shortcut",
+      "icons": [{ "src": "/shortcut-add-96.png", "sizes": "96x96", "type": "image/png" }]
+    },
+    {
+      "name": "To do",
+      "short_name": "To do",
+      "url": "/todo",
+      "icons": [{ "src": "/shortcut-todo-96.png", "sizes": "96x96", "type": "image/png" }]
+    }
+  ],
+  "share_target": {
+    "action": "/quick/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [{ "name": "files", "accept": ["image/*", "application/pdf", ".pdf"] }]
+    }
+  }
 }

@@ -38,6 +38,9 @@ class SecurityHeaders
                 "img-src 'self' data: blob:",
                 "font-src 'self' data:",
                 "connect-src 'self'",
+                // The phone's service worker and its manifest (allowed already by script-src and default-src; said plainly).
+                "worker-src 'self'",
+                "manifest-src 'self'",
                 "frame-ancestors 'none'",
                 "form-action 'self'",
                 "base-uri 'self'",

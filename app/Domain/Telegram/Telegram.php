@@ -7,6 +7,9 @@ use App\Domain\Documents\AiConfig;
 use App\Domain\Documents\DocumentIntake;
 use App\Domain\Intel\AuditContext;
 use App\Domain\Jobs\OpportunityRules;
+use App\Domain\Quick\QuickEntries;
+use App\Domain\Quick\QuickTelegram;
+use App\Domain\Quick\QuickText;
 use App\Domain\Todo\ChangedSince;
 use App\Domain\Todo\Dismissals;
 use App\Domain\Todo\FindingsRegistry;
@@ -93,6 +96,35 @@ final class Telegram
     }
 
     /**
+     * Send a message with several rows of buttons (each row as sendWithButtons() takes one: [label, code, id], or
+     * ['url' => …, 'text' => …] for a link to this site), and return its message_id, or null when Telegram didn't take it.
+     *
+     * @param  list<list<array>>  $rows
+     */
+    public static function sendWithButtonsId(string|int $chatId, string $text, array $rows): ?int
+    {
+        $keyboard = self::keyboard($rows);
+        if ($keyboard) {
+            self::allowButtons();
+        }
+        $sent = self::api('sendMessage', ['chat_id' => $chatId, 'text' => mb_substr($text, 0, 3900), 'disable_web_page_preview' => true]
+            + ($keyboard ? ['reply_markup' => ['inline_keyboard' => $keyboard]] : []));
+
+        return ($sent['ok'] ?? false) && is_numeric($sent['result']['message_id'] ?? null) ? (int) $sent['result']['message_id'] : null;
+    }
+
+    /**
+     * Rows of buttons as Telegram takes them (an inline keyboard), each button bound to what it acts on now.
+     *
+     * @param  list<list<array>>  $rows
+     * @return list<list<array<string, string>>>
+     */
+    public static function keyboard(array $rows): array
+    {
+        return array_values(array_filter(array_map(fn (array $row) => self::buttons($row), $rows)));
+    }
+
+    /**
      * A message from the nightly cycle to your paired chat: the morning report, or an alert (with a finding's buttons
      * when given, as sendWithButtons() takes them). Nothing is sent when Telegram isn't paired.
      *
@@ -121,6 +153,14 @@ final class Telegram
     {
         $row = [];
         foreach ($buttons as $b) {
+            if (isset($b['url'])) {
+                // A link (Open in Expend): only to this site.
+                if (is_string($b['url']) && str_starts_with($b['url'], url('/'))) {
+                    $row[] = ['text' => (string) ($b['text'] ?? 'Open in Expend'), 'url' => $b['url']];
+                }
+
+                continue;
+            }
             $data = self::callbackData($b[1], (string) $b[2]);
             if ($data === null) {
                 report(new \LengthException("A Telegram button for {$b[1]} doesn’t fit in ".self::CALLBACK_BYTES.' bytes, so it was left out.'));
@@ -282,6 +322,12 @@ final class Telegram
 
             return;
         }
+        // Expenses from your phone and texted here: their buttons redraw the message themselves (Change…, None of these).
+        if ($code === 'qx') {
+            app(QuickTelegram::class)->press($query, $id, $fp);
+
+            return;
+        }
         // Presses wait for the queue (up to a minute), so a second tap on the same button is likely: do it once.
         // The actions themselves also check the item still needs doing, for old buttons on other messages.
         $press = 'telegram_press:'.$chatId.':'.($query['message']['message_id'] ?? 0).':'.$query['data'];
@@ -351,6 +397,7 @@ final class Telegram
             if ($code && preg_match('/^\/start\s+(\S+)/', $text, $m) && hash_equals($code, strtoupper($m[1])) && ($message['chat']['type'] ?? '') === 'private') {
                 Setting::put('telegram_chat_id', $chatId);
                 Setting::put('telegram_pairing_code', null);
+                self::rememberUsername();
                 self::reply($chatId, 'Paired. Send me POs, job invites, production packs, receipts or photos, or ask me anything about your jobs and money.');
             }
 
@@ -370,13 +417,22 @@ final class Telegram
                     return;
                 }
                 $contents = Http::timeout(60)->get('https://api.telegram.org/file/bot'.self::token().'/'.$path)->body();
+                // A caption that reads as a cost ("£12.50 parking"): a draft holding the photo, with its buttons.
+                if ($text !== '' && QuickText::parse($text, now('Europe/London')->startOfDay()->toImmutable(), QuickText::accountNames()) !== null) {
+                    $document = $intake->store($contents, $file['name'] ?? basename($path), $file['mime'] ?? null, 'telegram', ['subject' => $text, 'kind' => 'receipt', 'read' => false]);
+                    if (app(QuickTelegram::class)->fromCaption($message, $document, $text)) {
+                        QuickEntries::queueRead($document);
+                    }
+
+                    return; // a draft made now, or made already when this update first came
+                }
                 $document = $intake->store($contents, $file['name'] ?? basename($path), $file['mime'] ?? null, 'telegram', ['subject' => $text ?: null]);
 
                 if (Setting::get('ai_extraction') !== 'off' && AiConfig::ready()) {
                     self::reply($chatId, "Got {$document->original_name}. Reading it now…");
                     ReadDocument::dispatch($document->id, $chatId);
                 } else {
-                    self::reply($chatId, "Saved {$document->original_name}. Reading documents with AI is switched off, so open it in the app to add details.");
+                    self::reply($chatId, 'Saved. If it’s a receipt, send the amount and what it was, for example £12.50 parking.');
                 }
 
                 return;
@@ -394,8 +450,12 @@ final class Telegram
                 return;
             }
             if ($text === '' || $text === '/start' || $text === '/help') {
-                self::reply($chatId, 'Send a file or photo to add it, send /todo for what needs you (with buttons), or ask a question, for example: “What time is my call on Saturday?”, “Which invoices are overdue?”, “Where am I staying for the Leeds job?”');
+                self::reply($chatId, 'Send a file or photo to add it, text a cost to add it (for example “£12.50 parking Leeds”), send /todo for what needs you (with buttons), or ask a question, for example: “What time is my call on Saturday?”, “Which invoices are overdue?”, “Where am I staying for the Leeds job?”');
 
+                return;
+            }
+            // A cost ("£12.50 parking Leeds", or a reply to one of its messages): a draft with buttons, never the assistant.
+            if (app(QuickTelegram::class)->fromText($message, $text)) {
                 return;
             }
 
@@ -470,6 +530,42 @@ final class Telegram
         }
 
         return $out;
+    }
+
+    /**
+     * What the bot says once it has read a document you sent: its summary, then, for a receipt with an amount read
+     * from it, the offer to add it ("Add it as an expense? (read from the photo: check the amount)"), or first the
+     * question whether it's a receipt you added already. ReadDocument calls this in place of reply(documentSummary()).
+     */
+    public static function readReply(Document $document, string $chatId): void
+    {
+        self::reply($chatId, self::documentSummary($document));
+        if ($document->status === 'failed' || $document->status === ReadDocument::WAITING) {
+            return;
+        }
+        try {
+            app(QuickTelegram::class)->offerRead($document, $chatId);
+        } catch (Throwable $e) {
+            report($e);
+        }
+    }
+
+    /** The bot's @username, kept for the phone's note on iPhone ("share it to @…"): from getMe, once. */
+    public static function rememberUsername(): ?string
+    {
+        try {
+            $me = self::api('getMe');
+            $name = is_string($me['result']['username'] ?? null) ? $me['result']['username'] : null;
+            if ($name !== null) {
+                Setting::put('telegram_bot_username', $name);
+            }
+
+            return $name;
+        } catch (Throwable $e) {
+            report($e);
+
+            return null;
+        }
     }
 
     public static function documentSummary(Document $document): string

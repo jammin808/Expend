@@ -20,6 +20,8 @@ use App\Domain\Jobs\Opportunities;
 use App\Domain\Mail\MailboxFetcher;
 use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\TransferPairer;
+use App\Domain\Quick\QuickEntries;
+use App\Domain\Quick\ReceiptAttacher;
 use App\Domain\Telegram\Telegram;
 use App\Domain\Todo\Dismissals;
 use App\Domain\Todo\FindingsRegistry;
@@ -247,6 +249,27 @@ Artisan::command('ledger:transfers', function (TransferPairer $pairer) {
         .($ambiguous ? " {$ambiguous} ".($ambiguous === 1 ? 'line' : 'lines').' left for you: which partner is right isn’t clear.' : ''));
 })->purpose('Find money moving between your own accounts, so it is never counted as spending or income');
 
+Artisan::command('ledger:receipts', function (ReceiptAttacher $attacher) {
+    // The same work as the nightly cycle's relate.receipts: business-card receipts from your phone still waiting go on
+    // their bank lines (a statement imported by an old path, a line imported again), suggestions from receipts no
+    // longer on their line are taken back; and photos whose read was refused at the AI spending cap are read again,
+    // once a night.
+    $attached = 0;
+    $after = 0;
+    $taken = 0;
+    while (true) {
+        $r = AuditContext::with('matcher', fn () => $attacher->sweep($after), 'schedule');
+        $attached += $r['attached'];
+        $taken += $r['taken_back'];
+        if ($r['last_id'] === null) {
+            break;
+        }
+        $after = $r['last_id'];
+    }
+    $again = QuickEntries::retryCappedReads();
+    $this->info("Matched {$attached} receipts from your phone to their bank lines; took back {$taken} suggestions from receipts no longer on their line; {$again} photos to read again.");
+})->purpose('Match business-card receipts from your phone to their bank lines, and read again photos refused at the AI cap');
+
 // The nightly cycle (docs/intelligence-cycle.md section 6): tick is scheduled every minute; run and status are for you
 // on the server. While intel_cycle is off, tick does nothing.
 Artisan::command('ledger:cycle {action : tick, run, status, or mode to switch it} {value? : run: nightly, morning or manual (nightly when not given); mode: off, shadow or on} {--force : run: start a new run even if this one ran today}', function (CycleRunner $runner) {
@@ -372,6 +395,7 @@ Schedule::command('ledger:invoice-nudges')->weekdays()->at('09:13')->timezone('E
 Schedule::command('ledger:job-finished')->dailyAt('08:37')->timezone('Europe/London')->withoutOverlapping();
 // The job finder and the double-check of AI findings, every night; scans get a few second reads a night.
 Schedule::command('ledger:transfers')->dailyAt('04:07')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
+Schedule::command('ledger:receipts')->dailyAt('04:09')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
 Schedule::command('ledger:categorise')->dailyAt('04:12')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
 Schedule::command('ledger:find-jobs')->dailyAt('04:17')->timezone('Europe/London')->withoutOverlapping()->skip($cycleOn);
 Schedule::command('ledger:opportunities')->dailyAt('04:27')->timezone('Europe/London')->withoutOverlapping();
@@ -406,8 +430,10 @@ Schedule::command('queue:prune-failed --hours=2160')->weeklyOn(0, '05:43')->time
 // The cycle's tick, before the worker: it starts a run when one is due and queues its next step for the worker below.
 // It returns in under a second and never runs a step itself. Nothing while intel_cycle is off.
 Schedule::command('ledger:cycle tick')->everyMinute()->skip(fn () => CycleRunner::mode() === 'off');
-// Shared hosting has no long-running worker: process queued work (document reading, Telegram) every minute.
-Schedule::command('queue:work --stop-when-empty --max-time=240 --tries=1')->everyMinute()->withoutOverlapping();
+// Shared hosting has no long-running worker: process queued work (Telegram, imports, document reading) every minute.
+// Photos from the phone are read on their own queue ('reads'), after everything on 'default', so a button pressed in
+// Telegram never waits behind a stack of receipts.
+Schedule::command('queue:work --queue=default,reads --stop-when-empty --max-time=240 --tries=1')->everyMinute()->withoutOverlapping();
 
 // Dead-man's switch: if these pings stop, the monitoring service alerts you that cron has died.
 Schedule::call(function () {

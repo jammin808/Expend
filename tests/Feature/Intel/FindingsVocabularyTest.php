@@ -113,7 +113,7 @@ class FindingsVocabularyTest extends TestCase
         $registry = app(Registry::class);
         $this->assertSame(['todo', 'tax.hmrc_unallocated', 'travel.unclaimed', 'year.filed_drift', 'health', 'job.closeout', 'travel.double_claim', 'income.unlinked',
             'receipt.unmatched', 'cost.no_receipt', 'dupe.cross_source', 'rule.drift', 'tax.saving', 'acct.unchecked', 'check.unverifiable', 'year.locked_drift',
-            'health.cycle_step'],
+            'health.cycle_step', 'quick.checks'],
             array_map(fn ($d) => $d->code(), $registry->all()));
         $this->assertInstanceOf(CycleStepFailing::class, $registry->forCode('health.cycle_step'), 'M5’s, registered by the integrator (contract 3)');
         $this->assertInstanceOf(TodoGroupsDetector::class, $registry->forCode('acct.gap'));

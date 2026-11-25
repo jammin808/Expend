@@ -16,7 +16,7 @@ import { day, kindLabels, money, paidIn, paidWith, rateText } from '@/lib/format
 import { type InvoiceRow } from '@/pages/invoices/index';
 import { type Item, type Lookups } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
-import { FileWarning } from 'lucide-react';
+import { Camera, FileWarning } from 'lucide-react';
 import { useState } from 'react';
 
 interface Props {
@@ -90,6 +90,16 @@ interface Props {
     gather: GatherState;
     days: JobDayRow[];
     day_kinds: Record<string, string>;
+    /** Business-card receipts from your phone for this job whose bank line hasn't come in yet; words is "£12.50 parking". */
+    quick_waiting?: {
+        id: number;
+        words: string;
+        spent_on: string | null;
+        amount_minor: number | null;
+        currency: string;
+        document_id: number | null;
+        href: string;
+    }[];
 }
 
 const byLabel = (by: string | null) => (by === 'you' ? 'linked by you' : by === 'ai' ? 'linked by AI (checked)' : by ? 'linked automatically' : '');
@@ -112,6 +122,7 @@ export default function JobShow({
     gather,
     days,
     day_kinds,
+    quick_waiting = [],
 }: Props) {
     const link = (data: Record<string, string | number>) => router.post(`/jobs/${job.id}/links`, data, { preserveScroll: true });
     const [editing, setEditing] = useState(false);
@@ -146,7 +157,13 @@ export default function JobShow({
                                 : ''}
                         </p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
+                        {/* A plain link: the Add expense screen opens from the phone's cache, with this job picked. */}
+                        <Button variant="outline" asChild>
+                            <a href={`/quick?job=${job.id}`}>
+                                <Camera /> Add expense for this job
+                            </a>
+                        </Button>
                         <Button variant="ghost" asChild>
                             <Link href={`/connections?job=${job.id}`}>Connections</Link>
                         </Button>
@@ -425,6 +442,29 @@ export default function JobShow({
                     </ul>
                 </section>
 
+                {quick_waiting.length > 0 && (
+                    <section className="space-y-2">
+                        <h2 className="font-semibold">Receipts waiting for their bank line</h2>
+                        <p className="text-muted-foreground text-sm">
+                            Paid by the business card and kept from your phone. Each goes on its payment when the bank line comes in, so it isn’t
+                            counted until then.
+                        </p>
+                        <ul className="divide-y rounded-xl border text-sm">
+                            {quick_waiting.map((q) => (
+                                <li key={q.id}>
+                                    <Link href={q.href} className="hover:bg-muted/40 flex min-h-12 items-center justify-between gap-3 p-3">
+                                        <span className="min-w-0">
+                                            <span className="block truncate">{q.words}</span>
+                                            {q.spent_on && <span className="text-muted-foreground text-xs">{day(q.spent_on)}</span>}
+                                        </span>
+                                        <span className="text-muted-foreground shrink-0 text-xs">Waiting</span>
+                                    </Link>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
+
                 {near.length > 0 && (
                     <section className="space-y-2">
                         <h2 className="font-semibold">Undecided around these dates</h2>
@@ -467,7 +507,7 @@ export default function JobShow({
                 lookups={lookups}
                 onClose={() => {
                     setDrawer(null);
-                    router.reload({ only: ['lines', 'near', 'totals', 'mileage', 'finds'] });
+                    router.reload({ only: ['lines', 'near', 'totals', 'mileage', 'finds', 'quick_waiting'] });
                 }}
             />
         </AppLayout>

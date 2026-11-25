@@ -56,6 +56,8 @@ final class Methods
         'doc.read' => ['ai', 'ai_grounded', 'evidence.read', 1, 'a document read with AI, each detail checked against its text', null],
         'travel.read' => ['ai', 'ai_grounded', 'evidence.read', 1, 'a booking email read with AI, each detail checked against its text', null],
         'ai.advisor' => ['ai', 'ai_ungrounded', 'category.ai', 1, 'the AI’s suggestion for waiting payments', null],
+        'receipt.quick' => ['matcher', 'heuristic', 'category.receipt', 1, 'your receipt from your phone, matched by amount and date', 'days between the receipt and the payment'],
+        'quick.maybe_card' => ['checker', 'heuristic', 'finding.close', 1, 'a cash or personal-card cost from your phone against a card payment of the same amount', null],
         'ai.assistant' => ['ai', 'ai_ungrounded', 'category.ai', 1, 'the assistant, when you asked it', null],
     ];
 

@@ -56,7 +56,7 @@ final class Vetoes
     public const ADAPTED = ['calendar_job', 'document_job'];
 
     /** What a ref's kind is in the audit log, so a veto shows in the history of what it's about. */
-    private const SUBJECT_TYPES = ['tx' => 'BankTransaction', 'exp' => 'ManualExpense', 'travel' => 'TravelItem', 'inv' => 'Invoice', 'job' => 'WorkJob', 'doc' => 'Document'];
+    private const SUBJECT_TYPES = ['tx' => 'BankTransaction', 'exp' => 'ManualExpense', 'travel' => 'TravelItem', 'inv' => 'Invoice', 'job' => 'WorkJob', 'doc' => 'Document', 'quick' => 'QuickEntry'];
 
     /**
      * A decision's shape: a short hash of what each line is (its kind, category, business share and job), whatever the
@@ -451,7 +451,9 @@ final class Vetoes
             'travel_payment' => 'Not the payment for this stay or journey: '.($object ?? 'that payment'),
             'invoice_job' => 'Not on '.($object ?? 'that job'),
             'mileage_day' => 'No mileage: you didn’t drive'.($object !== null ? ' that day' : ''),
-            'receipt_payment' => 'Not the receipt for '.($object ?? 'that payment'),
+            'receipt_payment' => str_starts_with($v->subject_ref, 'quick:')
+                ? ($v->method === 'quick.maybe_card' ? 'A different payment from '.($object ?? 'that card payment').': you said there were two' : 'Your receipt from the phone isn’t for '.($object ?? 'that payment'))
+                : 'Not the receipt for '.($object ?? 'that payment'),
             default => 'Not this',
         };
     }

@@ -24,7 +24,7 @@ final class Ref
     public const LIST_MAX = 20;
 
     public const KINDS = ['tx', 'exp', 'batch', 'acct', 'sbal', 'doc', 'gmail', 'cal', 'travel', 'job', 'jday', 'cand', 'jfind', 'trip', 'rule', 'inv', 'check', 'audit',
-        'fx', 'law', 'taxp', 'year', 'run', 'fnd', 'ask', 'set'];
+        'fx', 'law', 'taxp', 'year', 'run', 'fnd', 'ask', 'set', 'quick'];
 
     private const PATTERN = '/^([a-z]+):([^#@\s]+)(?:#([^@\s]+))?(?:@([0-9a-f]{8}))?$/';
 

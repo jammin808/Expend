@@ -11,7 +11,8 @@ declare global {
     const route: typeof routeFn;
 }
 
-const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
+// Fixed: VITE_APP_NAME is baked in when the assets are built, on whichever computer builds them.
+const appName = 'Expend';
 
 createInertiaApp({
     title: (title) => `${title} - ${appName}`,

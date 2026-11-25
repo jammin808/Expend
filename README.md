@@ -123,6 +123,17 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   that you untick is remembered as not part of that job, so it's never linked there automatically. Days in a locked year
   are added and flagged, and that year's figures don't change. A double tap or a retry on a poor signal saves once.
   Moving a whole job to new dates moves every day with its kind, times and note.
+- **Add expense on your phone** (the **Expend** icon on the home screen, the round **+** on any page, or `/quick`):
+  take the photo, tap the amount and what it was, and save; today's job is picked from your job days. Cash and
+  personal-card costs are added at once with their photo. For the business card only the receipt is kept: when the
+  bank line comes in, the receipt goes on it and your category and job are offered for one tap, so nothing is counted
+  twice. With no signal, entries wait on the phone ("Waiting to send") and go by themselves when you're back online;
+  sending twice never adds twice, and Undo always reaches Expend. If the phone is signed out, entries still save and the
+  screen says "Sign in to send" (tick Remember me when you sign in on the phone). On Android, share photos, PDFs and
+  bank notifications to Expend; on an iPhone, share them to your Telegram bot, or text it "£12.50 parking Leeds" and tap
+  how you paid. To do asks, under "From your phone", about a receipt with no bank line (7 days after a statement covers
+  its day, or after 21 days), a cash cost that looks like a card payment, the same receipt twice, and a photo that says
+  something different from what you typed. Setup for both phones is in `docs/PLAN.md` §6.12.
 - **Connections** map: jobs in the middle of a timeline, joined to calendar entries, documents and POs, stays,
   costs, income, invoices and mileage. Solid links are yours, dashed are automatic, dotted are possible (a cost on a
   job's day: is it that job's?). "Needs attention" flags jobs with no PO, calendar entries that look like jobs but
@@ -213,7 +224,9 @@ One-time setup:
 
 1. **Create the site.** In hPanel add `expenses.rohleder.tech` as its own website (not a folder of the
    Node.js site on `rohleder.tech`). Create a MySQL database and user for it.
-2. **PHP.** Choose PHP 8.4 for the site. Turn on the `sodium` extension and turn off `expose_php`.
+2. **PHP.** Choose PHP 8.4 for the site. Turn on the `sodium` extension and turn off `expose_php`. Check
+   `upload_max_filesize` and `post_max_size` with `php -i` and raise them if low (for example 16M and 20M): the phone
+   sends receipt photos and PDFs up to the smaller of the two.
 3. **SSH.** Enable SSH in hPanel and add your public key.
 4. **Settings file.** On the server, create `~/domains/expenses.rohleder.tech/app/shared/.env` from
    `.env.example` with:
@@ -328,6 +341,7 @@ runs `backup.sh` and this check end to end on MariaDB (`DB_CONNECTION=mysql php 
 | Gmail: searches, read log, ✓ Invoiced label | `app/Domain/Gmail/` |
 | PO and invoiced status | `app/Domain/Jobs/PoStatus.php` |
 | Stays and journeys: reading, night-by-night rules, payment matching | `app/Domain/Travel/` |
+| Add expense on the phone: entries, receipt matching, Telegram, the service worker | `app/Domain/Quick/`, `app/Http/Controllers/QuickController.php`, `public/quick-store.js`, `resources/sw/`, `resources/js/pages/quick/` |
 | Health check (Claude, Telegram, Gmail, queue, errors) | `php artisan ledger:check` |
 | Screens | `resources/js/pages/` |
 

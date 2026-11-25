@@ -21,6 +21,7 @@ use App\Domain\Matching\Categoriser;
 use App\Domain\Matching\Suggester;
 use App\Domain\Matching\TransferPairer;
 use App\Domain\Mileage\JobTrips;
+use App\Domain\Quick\QuickEntries;
 use App\Domain\Travel\TravelMatcher;
 use App\Domain\Verification\Verifier;
 use App\Jobs\ReadDocument;
@@ -60,7 +61,7 @@ use InvalidArgumentException;
 final class TodoActions
 {
     public const CODES = ['rule_make', 'rule_no', 'tx_accept', 'tx_personal', 'tx_tax', 'cand_add', 'cand_merge', 'cand_dismiss', 'job_invoice', 'job_no_po', 'stay_accept', 'stay_personal', 'doc_approve', 'recheck', 'inv_chase', 'inv_send', 'transfers_ok',
-        'opp_add', 'opp_decline', 'opp_dismiss', 'fnd_snooze', 'fnd_dismiss', 'trips_add', 'det_raise', 'det_lower', 'veto_lift'];
+        'opp_add', 'opp_decline', 'opp_dismiss', 'fnd_snooze', 'fnd_dismiss', 'trips_add', 'det_raise', 'det_lower', 'veto_lift', 'qx'];
 
     /** How long "Snooze a week" snoozes for. */
     public const SNOOZE_DAYS = 7;
@@ -108,6 +109,8 @@ final class TodoActions
             'det_raise' => DetectorLevels::raise(self::detectorCode($id)),
             'det_lower' => DetectorLevels::lower(self::detectorCode($id)),
             'veto_lift' => $this->vetoLift((int) $id),
+            // Expenses from your phone: "<entry>:<verb>[:<argument>]" (Quick\QuickEntries::act()).
+            'qx' => app(QuickEntries::class)->act($id),
             default => throw new InvalidArgumentException('Unknown action.'),
         };
     }

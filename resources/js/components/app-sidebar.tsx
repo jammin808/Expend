@@ -24,6 +24,7 @@ import {
     ListTodo,
     Moon,
     Network,
+    Plus,
     ReceiptText,
     Scale,
     Settings,
@@ -36,7 +37,9 @@ export function AppSidebar() {
     const url = usePage().url;
 
     // A short menu: Enquiries & offers, Documents and Stays & travel live under Jobs, Import under Accounts.
+    // Add expense is a plain link (reload), so it opens from the phone's cache with no signal.
     const main = [
+        { title: 'Add expense', url: '/quick', icon: Plus, also: [] as string[], reload: true },
         { title: 'Overview', url: '/dashboard', icon: LayoutGrid, also: [] as string[] },
         { title: 'To do', url: '/todo', icon: ListTodo, badge: nav?.todo, also: [] },
         { title: 'Overnight', url: '/intel', icon: Moon, also: [] },
@@ -65,10 +68,17 @@ export function AppSidebar() {
                 {items.map((item) => (
                     <SidebarMenuItem key={item.title}>
                         <SidebarMenuButton asChild isActive={isActive(item)} tooltip={item.title}>
-                            <Link href={item.url} prefetch>
-                                <item.icon />
-                                <span>{item.title}</span>
-                            </Link>
+                            {'reload' in item && item.reload ? (
+                                <a href={item.url}>
+                                    <item.icon />
+                                    <span>{item.title}</span>
+                                </a>
+                            ) : (
+                                <Link href={item.url} prefetch>
+                                    <item.icon />
+                                    <span>{item.title}</span>
+                                </Link>
+                            )}
                         </SidebarMenuButton>
                         {'badge' in item && item.badge ? <SidebarMenuBadge>{item.badge > 999 ? '999+' : item.badge}</SidebarMenuBadge> : null}
                     </SidebarMenuItem>

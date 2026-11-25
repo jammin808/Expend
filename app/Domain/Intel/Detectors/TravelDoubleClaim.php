@@ -192,8 +192,11 @@ final class TravelDoubleClaim implements Detector
         if (! $fuel) {
             return [];
         }
-        $lines = Allocation::query()->where('kind', 'business_expense')->where('category_id', $fuel)->whereNotNull('confirmed_at')->whereNotNull('bank_transaction_id')
-            ->with('transaction:id,posted_on,transaction_on,amount_pence,tax_year')->orderBy('id')->get(['id', 'bank_transaction_id', 'tax_year', 'amount_pence', 'work_job_id']);
+        // Fuel on a bank line, and fuel you added yourself (by hand, or paid in cash or by a personal card on the phone).
+        $lines = Allocation::query()->where('kind', 'business_expense')->where('category_id', $fuel)->whereNotNull('confirmed_at')
+            ->where(fn ($q) => $q->whereNotNull('bank_transaction_id')->orWhereNotNull('manual_expense_id'))
+            ->with(['transaction:id,posted_on,transaction_on,amount_pence,tax_year', 'manualExpense:id,spent_on'])->orderBy('id')
+            ->get(['id', 'bank_transaction_id', 'manual_expense_id', 'tax_year', 'amount_pence', 'work_job_id']);
         if ($lines->isEmpty()) {
             return [];
         }
@@ -210,14 +213,15 @@ final class TravelDoubleClaim implements Detector
             return false;
         };
         $counted = $lines->filter(function (Allocation $a) use ($hiredJobs, $hiredOn) {
-            if ($a->transaction === null) {
+            $on = $a->bank_transaction_id !== null ? $a->transaction?->effectiveDate() : $a->manualExpense?->spent_on;
+            if ($on === null) {
                 return false;
             }
             if ($a->work_job_id !== null && isset($hiredJobs[$a->work_job_id])) {
                 return false;
             }
 
-            return ! $hiredOn(CarbonImmutable::parse($a->transaction->effectiveDate()->format('Y-m-d')));
+            return ! $hiredOn(CarbonImmutable::parse($on->format('Y-m-d')));
         });
         $drafts = [];
         foreach ($counted->groupBy('tax_year') as $label => $as) {
@@ -231,7 +235,7 @@ final class TravelDoubleClaim implements Detector
                 detail: $as->count().' fuel '.($as->count() === 1 ? 'payment is' : 'payments are').' recorded as a business cost, but every vehicle you have uses simplified mileage, '
                     .'which already covers fuel. Fuel for a hire car is fine (it’s left out here). Change the rest to personal, or move the vehicle to actual costs on the Mileage page.',
                 href: '/transactions?year='.$label.'&category='.$this->fuelCategory(), subjectRef: Ref::make('year', $label), scopeRef: Ref::make('year', $label),
-                evidence: $as->take(19)->map(fn (Allocation $a) => Ref::make('tx', $a->bank_transaction_id))->all(),
+                evidence: $as->take(19)->map(fn (Allocation $a) => $a->bank_transaction_id !== null ? Ref::make('tx', $a->bank_transaction_id) : Ref::make('exp', $a->manual_expense_id))->all(),
                 amountPence: $total, direction: 'at_risk', grade: Grades::CERTAIN, detectorVersion: self::VERSION,
             );
         }

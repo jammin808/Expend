@@ -6,7 +6,7 @@ import { Progress } from '@/components/ui/progress';
 import AppLayout from '@/layouts/app-layout';
 import { day, daysUntil, money } from '@/lib/format';
 import { Head, Link } from '@inertiajs/react';
-import { AlertTriangle, ArrowRight, Inbox, ShieldCheck, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Camera, Inbox, ShieldCheck, Upload } from 'lucide-react';
 
 interface YearCard {
     label: string;
@@ -243,7 +243,13 @@ export default function Dashboard({ years, mtd, vat, counts, twoFactor, todo, ov
                             </Link>
                         )}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
+                        {/* A plain link, not an Inertia visit: the Add expense screen opens from the phone's cache with no signal. */}
+                        <Button variant="outline" asChild>
+                            <a href="/quick">
+                                <Camera /> Add expense
+                            </a>
+                        </Button>
                         <Button variant="outline" asChild>
                             <Link href="/imports">
                                 <Upload /> Import statement
