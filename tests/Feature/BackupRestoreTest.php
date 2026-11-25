@@ -55,6 +55,17 @@ class BackupRestoreTest extends TestCase
         }
     }
 
+    /** The key inside a backup archive, opened with the test's private key. */
+    private function archiveKey(string $file): string
+    {
+        $out = $this->dir.'/key-check';
+        File::ensureDirectoryExists($out);
+        $this->assertTrue(Process::run(['tar', '-xf', $file, '-C', $out, 'key.enc'])->successful());
+        $this->assertTrue(Process::run(['openssl', 'pkeyutl', '-decrypt', '-inkey', $this->dir.'/keys/private.pem', '-pkeyopt', 'rsa_padding_mode:oaep', '-in', $out.'/key.enc', '-out', $out.'/key.txt'])->successful());
+
+        return File::get($out.'/key.txt');
+    }
+
     private function scratch(string $name): string
     {
         $db = 'ledger_restore_'.$name.'_'.getmypid();
@@ -157,6 +168,10 @@ class BackupRestoreTest extends TestCase
         $this->assertFileExists($file.'.sha256');
         // The server can't read its own backups: nothing in the archive is plain text.
         $this->assertStringNotContainsString('ALEX SMITH EVENTS', (string) file_get_contents($file));
+        // The archive's key is 64 hex characters. openssl's -pass file: stops at the first newline or NUL byte, so a key
+        // of raw random bytes could leave a password of a few bytes, or an empty one.
+        $this->assertSame(32, strlen(hex2bin(trim($this->archiveKey($file)))));
+        $this->assertMatchesRegularExpression('/\A[0-9a-f]{64}\n\z/', $this->archiveKey($file));
 
         $this->assertSame(0, $check->exitCode(), $check->output().$check->errorOutput());
         $this->assertStringContainsString('Backup restores correctly.', $check->output());

@@ -32,7 +32,10 @@ MYSQL_PWD="$DB_PASS" mysqldump --single-transaction --routines --no-tablespaces 
 tar -czf "$WORK/payload.tar.gz" -C "$WORK" database.sql -C "$SHARED/storage/app" private
 
 # Hybrid encryption: a random key encrypts the archive; the public key encrypts that random key.
-openssl rand -out "$WORK/key.bin" 32
+# The key is 64 hex characters, not raw bytes: openssl's -pass file: reads only up to the first newline or NUL byte,
+# so raw random bytes could leave a password of a few bytes, an empty one, or none at all (the backup then fails).
+openssl rand -hex 32 > "$WORK/key.bin"
+grep -qxE '[0-9a-f]{64}' "$WORK/key.bin" || { echo "Couldn't make the backup's key; no backup written."; exit 1; }
 openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in "$WORK/payload.tar.gz" -out "$WORK/payload.enc" -pass "file:$WORK/key.bin"
 openssl pkeyutl -encrypt -pubin -inkey "$PUBKEY" -pkeyopt rsa_padding_mode:oaep -in "$WORK/key.bin" -out "$WORK/key.enc"
 tar -cf "$OUT/ledger-${STAMP}.tar" -C "$WORK" payload.enc key.enc
