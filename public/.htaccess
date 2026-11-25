@@ -1,3 +1,8 @@
+# The web app manifest needs its own type, or some browsers won't offer "Add to Home Screen".
+<IfModule mod_mime.c>
+    AddType application/manifest+json .webmanifest
+</IfModule>
+
 <IfModule mod_rewrite.c>
     <IfModule mod_negotiation.c>
         Options -MultiViews -Indexes
