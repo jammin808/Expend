@@ -152,6 +152,21 @@ class NewFixesFrontendTest extends TestCase
         $this->assertSame(["\u{2212}JPY 1,500", 'JPY 17,500', "\u{2212}KWD 12.345", "\u{2212}£36.52", '€42.00', 'JPY 150,000.00', 'KWD 1,250.50', "\u{2212}£36.52", '2026-07-15'], $out);
     }
 
+    /**
+     * Amounts typed on a phone (the payment's "What is this for?" rows, the split editor) are turned into pence there,
+     * so they must be read as the server reads them: a comma only as a thousands separator. "12,50" isn't guessed as
+     * £1,250.00 (or £12.50): it's unreadable, and the row asks for an amount again.
+     */
+    public function test_typed_amounts_read_a_comma_only_as_thousands(): void
+    {
+        $out = $this->node(<<<'JS'
+            const f = await import(process.argv[2]);
+            console.log(JSON.stringify(['12.50', '£1,234.56', '1,250', '12,50', '0,5', '1,23,456', '-3.5', ' 450 ', '12.345', ''].map((v) => f.toPence(v))));
+            JS);
+
+        $this->assertSame([1250, 123456, 125000, null, null, null, -350, 45000, null, null], $out);
+    }
+
     /** N58: the rate a line was converted at, in words; a line converted at the exchange it came from has no rate of its own. */
     public function test_the_rate_says_where_the_sterling_came_from_without_an_empty_rate(): void
     {

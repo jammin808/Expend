@@ -1,11 +1,15 @@
+import { ClientSelect } from '@/components/client-select';
 import { Explain } from '@/components/explain';
+import { JobCombobox } from '@/components/job-combobox';
 import { NativeSelect } from '@/components/native-select';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { turnoverId } from '@/lib/income';
 import { cn } from '@/lib/utils';
 import { type Allocation, type Decision, type JobRef, type Kind, type Lookups } from '@/types';
+import { X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 const quickKinds: { value: Kind; label: string; key: string }[] = [
@@ -15,16 +19,28 @@ const quickKinds: { value: Kind; label: string; key: string }[] = [
     { value: 'transfer', label: 'Transfer', key: 'T' },
 ];
 
-export function initialDecision(amount: number, allocations: Allocation[]): Decision {
+/**
+ * The decision a payment's lines show now, to start from: its business line (kind, category, job, business share and
+ * note), with the invoice and client that line names. Money in with nothing yet starts as turnover.
+ */
+export function initialDecision(amount: number, allocations: Allocation[], lookups?: Lookups): Decision {
     const business = allocations.find((a) => a.kind === 'business_expense' || a.kind === 'business_income');
     const first = business ?? allocations[0];
-    if (!first) return { kind: amount < 0 ? 'business_expense' : 'business_income', category_id: null, work_job_id: null, business_pct: 100 };
+    if (!first)
+        return {
+            kind: amount < 0 ? 'business_expense' : 'business_income',
+            category_id: amount > 0 && lookups ? turnoverId(lookups) : null,
+            work_job_id: null,
+            business_pct: 100,
+        };
     return {
         kind: first.kind,
         category_id: first.category_id,
         work_job_id: first.work_job_id,
         business_pct: business?.business_use_pct ?? 100,
         note: first.note,
+        ...(first.invoice_id ? { invoice_id: first.invoice_id } : {}),
+        ...(first.client_id ? { client_id: first.client_id } : {}),
     };
 }
 
@@ -34,24 +50,42 @@ export function CategorySelect({
     value,
     onChange,
     id,
+    className,
+    both = false,
     placeholder = 'Choose a category…',
+    'aria-label': ariaLabel,
 }: {
     lookups: Lookups;
     kind: Kind;
     value: number | null | undefined;
     onChange: (v: number | null) => void;
     id?: string;
+    className?: string;
+    /** Income and expense categories together (a filter), income first. */
+    both?: boolean;
     placeholder?: string;
+    'aria-label'?: string;
 }) {
     const wanted = kind === 'business_income' ? 'income' : 'expense';
     const groups = useMemo(() => {
         const map = new Map<string, typeof lookups.categories>();
-        lookups.categories.filter((c) => c.kind === wanted).forEach((c) => map.set(c.group, [...(map.get(c.group) ?? []), c]));
+        lookups.categories
+            .filter((c) => both || c.kind === wanted)
+            .sort((a, b) => (both ? Number(a.kind !== 'income') - Number(b.kind !== 'income') : 0))
+            .forEach((c) =>
+                map.set(c.kind === 'income' && both ? 'Income' : c.group, [...(map.get(c.kind === 'income' && both ? 'Income' : c.group) ?? []), c]),
+            );
         return [...map.entries()];
-    }, [lookups.categories, wanted]);
+    }, [lookups.categories, wanted, both]);
 
     return (
-        <NativeSelect id={id} value={value ?? ''} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
+        <NativeSelect
+            id={id}
+            aria-label={ariaLabel}
+            className={className}
+            value={value ?? ''}
+            onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
+        >
             <option value="">{placeholder}</option>
             {groups.map(([group, cats]) => (
                 <optgroup key={group} label={group}>
@@ -74,16 +108,18 @@ export function JobSelect({
     value,
     onChange,
     id,
+    className,
 }: {
     lookups: Lookups;
     near?: JobRef[];
     value: number | null | undefined;
     onChange: (v: number | null) => void;
     id?: string;
+    className?: string;
 }) {
     const nearIds = new Set(near.map((j) => j.id));
     return (
-        <NativeSelect id={id} value={value ?? ''} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
+        <NativeSelect id={id} className={className} value={value ?? ''} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
             <option value="">General business (no job)</option>
             {near.length > 0 && (
                 <optgroup label="Around this date">
@@ -121,6 +157,16 @@ interface Props {
     onApplyToMerchant?: (v: boolean) => void;
     showRule?: boolean;
     autoFocusCategory?: boolean;
+    /** The payment's date: the job search starts nearest it. */
+    on?: string | null;
+    /** What the payment's lines say now, by name: the job and the client it counts for. */
+    jobName?: string | null;
+    clientName?: string | null;
+    /** The invoice the decision pays, by number, when it names one. */
+    invoiceName?: string | null;
+    /** Money in: pick a client and search every job (true unless a page decides many payments at once without a client). */
+    incomePickers?: boolean;
+    disabled?: boolean;
 }
 
 /** Choose what an item is: the core of every review screen. */
@@ -135,15 +181,38 @@ export function DecisionForm({
     applyToMerchant,
     onApplyToMerchant,
     showRule = true,
+    on,
+    jobName,
+    clientName,
+    invoiceName,
+    incomePickers = true,
+    disabled,
 }: Props) {
     const [moreKinds, setMoreKinds] = useState(!quickKinds.some((k) => k.value === value.kind));
+    // The picked job's client, by name: income on a job counts for the job's client.
+    const [jobClient, setJobClient] = useState<string | null>(value.work_job_id ? (clientName ?? null) : null);
+    const [jobTitle, setJobTitle] = useState<string | null>(jobName ?? null);
     const needsCategory = value.kind === 'business_expense' || value.kind === 'business_income';
+    const income = amount > 0 && value.kind === 'business_income' && incomePickers;
 
     useEffect(() => {
         if (!quickKinds.some((k) => k.value === value.kind)) setMoreKinds(true);
     }, [value.kind]);
 
     const set = (patch: Partial<Decision>) => onChange({ ...value, ...patch });
+
+    /** Another kind: its category goes (money in's income starts as turnover), and so does an invoice it carried. */
+    const setKind = (kind: Kind) => {
+        if (kind === value.kind) return;
+        set({
+            kind,
+            category_id: kind === 'business_income' && amount > 0 ? turnoverId(lookups) : null,
+            ...(value.invoice_id !== undefined ? { invoice_id: null } : {}),
+        });
+    };
+
+    // An invoice or several lines can't be given to every payment from there: "Apply to all" is for one plain decision.
+    const canApplyToAll = merchantCount > 1 && !!onApplyToMerchant && !value.invoice_id;
 
     return (
         <div className="space-y-4">
@@ -154,9 +223,10 @@ export function DecisionForm({
                         type="button"
                         role="radio"
                         aria-checked={value.kind === k.value}
-                        onClick={() => set({ kind: k.value, category_id: value.kind === k.value ? value.category_id : null })}
+                        disabled={disabled}
+                        onClick={() => setKind(k.value)}
                         className={cn(
-                            'rounded-full border px-3 py-1.5 text-sm transition-colors',
+                            'min-h-10 rounded-full border px-3 py-1.5 text-sm transition-colors disabled:opacity-50',
                             value.kind === k.value
                                 ? 'border-neutral-900 bg-neutral-900 text-white dark:border-white dark:bg-white dark:text-neutral-900'
                                 : 'hover:bg-muted',
@@ -168,15 +238,22 @@ export function DecisionForm({
                 ))}
                 <button
                     type="button"
+                    disabled={disabled}
                     onClick={() => setMoreKinds(!moreKinds)}
-                    className="text-muted-foreground hover:bg-muted rounded-full border px-3 py-1.5 text-sm"
+                    className="text-muted-foreground hover:bg-muted min-h-10 rounded-full border px-3 py-1.5 text-sm"
                 >
                     More…
                 </button>
             </div>
 
             {moreKinds && (
-                <NativeSelect value={value.kind} onChange={(e) => set({ kind: e.target.value as Kind, category_id: null })} aria-label="Other types">
+                <NativeSelect
+                    className="h-11"
+                    value={value.kind}
+                    disabled={disabled}
+                    onChange={(e) => setKind(e.target.value as Kind)}
+                    aria-label="Other types"
+                >
                     {lookups.kinds.map((k) => (
                         <option key={k.value} value={k.value}>
                             {k.label}
@@ -185,8 +262,42 @@ export function DecisionForm({
                 </NativeSelect>
             )}
 
+            {value.kind === 'business_income' && value.invoice_id ? (
+                // What Save saves, said before you press it: this payment pays that invoice.
+                <p className="flex items-center gap-2 text-sm">
+                    <span className="rounded-full border border-sky-600 bg-sky-50 px-3 py-1.5 text-sky-900 dark:bg-sky-950 dark:text-sky-100">
+                        Pays {invoiceName ?? 'an invoice'}
+                    </span>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-10"
+                        disabled={disabled}
+                        aria-label={`Not for ${invoiceName ?? 'that invoice'}`}
+                        onClick={() => set({ invoice_id: null })}
+                    >
+                        <X />
+                    </Button>
+                </p>
+            ) : null}
+
             {needsCategory && (
                 <div className="grid gap-3 sm:grid-cols-2">
+                    {income && (
+                        <div className="space-y-1.5 sm:col-span-2">
+                            <Label htmlFor="decision-client">Who is it from?</Label>
+                            <ClientSelect
+                                id="decision-client"
+                                clients={lookups.clients}
+                                value={value.client_id}
+                                name={clientName}
+                                allowNone
+                                disabled={disabled}
+                                placeholder={value.work_job_id && jobClient ? `${jobClient} (from the job)` : 'Pick the client'}
+                                onChange={(c) => set({ client_id: c?.id ?? null })}
+                            />
+                        </div>
+                    )}
                     <div className="space-y-1.5">
                         <Label htmlFor="decision-category" className="flex items-center gap-1.5">
                             HMRC category
@@ -200,6 +311,7 @@ export function DecisionForm({
                         </Label>
                         <CategorySelect
                             id="decision-category"
+                            className="h-11"
                             lookups={lookups}
                             kind={value.kind}
                             value={value.category_id}
@@ -208,13 +320,41 @@ export function DecisionForm({
                     </div>
                     <div className="space-y-1.5">
                         <Label htmlFor="decision-job">Job</Label>
-                        <JobSelect
-                            id="decision-job"
-                            lookups={lookups}
-                            near={near}
-                            value={value.work_job_id}
-                            onChange={(v) => set({ work_job_id: v })}
-                        />
+                        {income ? (
+                            <JobCombobox
+                                id="decision-job"
+                                value={value.work_job_id}
+                                label={jobTitle}
+                                known={lookups.jobs}
+                                client={value.client_id ?? null}
+                                on={on}
+                                forIncome
+                                disabled={disabled}
+                                noneLabel="No job"
+                                onChange={(j) => {
+                                    setJobTitle(j?.title ?? null);
+                                    setJobClient(j?.client ?? null);
+                                    // Another job: an invoice the decision carried goes with the old one.
+                                    set({
+                                        work_job_id: j?.id ?? null,
+                                        ...(value.invoice_id !== undefined ? { invoice_id: null } : {}),
+                                        ...(j?.client_id ? { client_id: j.client_id } : {}),
+                                    });
+                                }}
+                            />
+                        ) : (
+                            <JobSelect
+                                id="decision-job"
+                                className="h-11"
+                                lookups={lookups}
+                                near={near}
+                                value={value.work_job_id}
+                                onChange={(v) => set({ work_job_id: v, ...(value.invoice_id !== undefined ? { invoice_id: null } : {}) })}
+                            />
+                        )}
+                        {income && value.client_id && !value.work_job_id && (
+                            <p className="text-muted-foreground text-xs">A job is optional: with the client set, this is done.</p>
+                        )}
                     </div>
                     {value.kind === 'business_expense' && (
                         <div className="space-y-1.5">
@@ -223,9 +363,10 @@ export function DecisionForm({
                                 <Input
                                     id="decision-pct"
                                     type="number"
+                                    inputMode="numeric"
                                     min={1}
                                     max={100}
-                                    className="w-24"
+                                    className="h-11 w-24"
                                     value={value.business_pct ?? 100}
                                     onChange={(e) => set({ business_pct: Math.max(1, Math.min(100, Number(e.target.value) || 100)) })}
                                 />
@@ -240,21 +381,22 @@ export function DecisionForm({
                 <Label htmlFor="decision-note">Note (optional)</Label>
                 <Input
                     id="decision-note"
+                    className="h-11"
                     value={value.note ?? ''}
                     onChange={(e) => set({ note: e.target.value })}
                     placeholder="For example: client lunch, kit for the Leeds show"
                 />
             </div>
 
-            <div className="flex flex-col gap-2 text-sm">
-                {merchantCount > 1 && onApplyToMerchant && (
-                    <label className="flex items-center gap-2">
-                        <Checkbox checked={!!applyToMerchant} onCheckedChange={(v) => onApplyToMerchant(!!v)} />
+            <div className="flex flex-col gap-1 text-sm">
+                {canApplyToAll && (
+                    <label className="flex min-h-10 items-center gap-3">
+                        <Checkbox checked={!!applyToMerchant} onCheckedChange={(v) => onApplyToMerchant?.(!!v)} />
                         Apply to all {merchantCount} undecided from {merchant ?? 'this merchant'}
                     </label>
                 )}
                 {showRule && (
-                    <label className="flex items-center gap-2">
+                    <label className="flex min-h-10 items-center gap-3">
                         <Checkbox checked={!!value.make_rule} onCheckedChange={(v) => set({ make_rule: !!v })} />
                         Suggest this next time for {merchant ?? 'this merchant'}
                     </label>

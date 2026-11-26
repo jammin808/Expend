@@ -68,11 +68,11 @@ export function JobFinds({
             <span className="flex gap-1">
                 {f.status === 'possible' &&
                     (f.type === 'payment' && f.undecided ? (
-                        <Button size="sm" variant="outline" onClick={() => onOpenPayment(Number(f.ref))}>
+                        <Button size="sm" variant="outline" className="h-11" onClick={() => onOpenPayment(Number(f.ref))}>
                             Decide
                         </Button>
                     ) : (
-                        <Button size="sm" variant="outline" onClick={() => router.post(`/job-finds/${f.id}/accept`, {}, opts)}>
+                        <Button size="sm" variant="outline" className="h-11" onClick={() => router.post(`/job-finds/${f.id}/accept`, {}, opts)}>
                             Link
                         </Button>
                     ))}
@@ -81,7 +81,7 @@ export function JobFinds({
                         {f.locked === 'paid' ? 'Paid, so it stays with this job' : 'Issued: void it and issue a new one to move it'}
                     </span>
                 ) : (
-                    <Button size="sm" variant="ghost" onClick={() => router.post(`/job-finds/${f.id}/reject`, {}, opts)}>
+                    <Button size="sm" variant="ghost" className="h-11" onClick={() => router.post(`/job-finds/${f.id}/reject`, {}, opts)}>
                         {f.status === 'linked' ? 'Undo' : 'Not this job'}
                     </Button>
                 )}
@@ -105,6 +105,7 @@ export function JobFinds({
                 <Button
                     size="sm"
                     variant="outline"
+                    className="h-11"
                     disabled={busy}
                     onClick={() =>
                         router.post(`/jobs/${jobId}/gather`, {}, { ...opts, onStart: () => setBusy(true), onFinish: () => setBusy(false) })
@@ -121,7 +122,9 @@ export function JobFinds({
             )}
             {linked.length > 0 && (
                 <details>
-                    <summary className="cursor-pointer text-sm font-medium">Linked by the search ({linked.length})</summary>
+                    <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium">
+                        Linked by the search ({linked.length})
+                    </summary>
                     <ul className="divide-y">{linked.map(row)}</ul>
                 </details>
             )}

@@ -1,3 +1,5 @@
+import { ResponsiveSheet, SheetBody, SheetFooter } from '@/components/calendar-pick/responsive-sheet';
+import { ClientSelect } from '@/components/client-select';
 import { CategorySelect, DecisionForm, decisionProblem } from '@/components/decision-form';
 import { Explain } from '@/components/explain';
 import { ItemDrawer } from '@/components/item-drawer';
@@ -12,7 +14,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
 import { day, decidedByLabels, kindLabels, londonToday, money, moneyMinor, movedBetweenAccounts, paidIn, paidWith, rateText } from '@/lib/format';
-import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
+import { cn } from '@/lib/utils';
+import { type ClientRef, type Decision, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, router, useForm, usePage } from '@inertiajs/react';
 import { Camera, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -27,9 +30,24 @@ interface Props {
 
 function summary(item: Item): string {
     if (item.allocations.length === 0) return '';
-    if (item.allocations.length > 1) return `Split into ${item.allocations.length}`;
+    if (item.allocations.length > 1) {
+        // Income across invoices or jobs names them, and who it's for when that's one client.
+        const invoices = item.allocations.map((a) => a.invoice_number).filter(Boolean);
+        const clients = [...new Set(item.allocations.map((a) => a.client).filter(Boolean))];
+        return [`Split into ${item.allocations.length}`, invoices.length ? invoices.join(' + ') : null, clients.length === 1 ? clients[0] : null]
+            .filter(Boolean)
+            .join(' · ');
+    }
     const a = item.allocations[0];
-    return [kindLabels[a.kind], a.category, a.job ?? (a.kind === 'business_expense' ? 'General business' : null)].filter(Boolean).join(' · ');
+    return [
+        kindLabels[a.kind],
+        a.category,
+        a.invoice_number,
+        a.job ?? (a.kind === 'business_expense' ? 'General business' : null),
+        a.kind === 'business_income' ? a.client : null,
+    ]
+        .filter(Boolean)
+        .join(' · ');
 }
 
 function ManualExpenseDialog({ open, onClose, lookups }: { open: boolean; onClose: () => void; lookups: Lookups }) {
@@ -171,6 +189,7 @@ function ManualExpenseDialog({ open, onClose, lookups }: { open: boolean; onClos
                         lookups={lookups}
                         value={decision}
                         showRule={false}
+                        incomePickers={false}
                         onChange={(x) =>
                             form.setData({
                                 ...d,
@@ -196,6 +215,13 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
     const [bulk, setBulk] = useState(false);
     const [bulkDecision, setBulkDecision] = useState<Decision>({ kind: 'business_expense', business_pct: 100 });
     const [adding, setAdding] = useState(false);
+    const [settingClient, setSettingClient] = useState(false);
+    // On a phone, the filters used less often wait behind "More filters", so the payments come first.
+    const [moreFilters, setMoreFilters] = useState(false);
+    const more = moreFilters ? '' : 'max-md:hidden';
+    const hidden =
+        ['account', 'status', 'kind', 'decided_by', 'category', 'job', 'unassigned'].filter((k) => filters[k]).length +
+        (filters.sort === 'amount' ? 1 : 0);
     const [q, setQ] = useState(filters.q ?? '');
 
     const apply = (patch: Record<string, string | undefined>) => {
@@ -207,6 +233,9 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
     };
 
     const all = page.data.length > 0 && selected.length === page.data.length;
+    const chosen = page.data.filter((t) => selected.includes(t.id));
+    // "Decide selected" for money in only: who it's from and any job can be given to them all.
+    const allIn = chosen.length > 0 && chosen.every((t) => t.amount_pence > 0);
 
     return (
         <AppLayout breadcrumbs={[{ title: 'Transactions', href: '/transactions' }]}>
@@ -247,13 +276,44 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                             apply({ q });
                         }}
                     >
-                        <Input placeholder="Search description or merchant" value={q} onChange={(e) => setQ(e.target.value)} />
+                        <Input placeholder="Search description or merchant" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search" />
                     </form>
-                    <NativeSelect value={filters.year ?? ''} onChange={(e) => apply({ year: e.target.value })} aria-label="Tax year">
+                    <NativeSelect className="h-10" value={filters.year ?? ''} onChange={(e) => apply({ year: e.target.value })} aria-label="Tax year">
                         <option value="">All years</option>
                         {nav?.years.map((y) => <option key={y.label}>{y.label}</option>)}
                     </NativeSelect>
-                    <NativeSelect value={filters.account ?? ''} onChange={(e) => apply({ account: e.target.value })} aria-label="Account">
+                    <NativeSelect
+                        className="h-10"
+                        value={filters.direction ?? ''}
+                        onChange={(e) => apply({ direction: e.target.value })}
+                        aria-label="Direction"
+                    >
+                        <option value="">Money in and out</option>
+                        <option value="out">Money out</option>
+                        <option value="in">Money in</option>
+                    </NativeSelect>
+                    <NativeSelect
+                        className="h-10"
+                        value={filters.client ?? ''}
+                        onChange={(e) => apply({ client: e.target.value })}
+                        aria-label="Client"
+                    >
+                        <option value="">Any client</option>
+                        {lookups.clients.map((c) => (
+                            <option key={c.id} value={c.id}>
+                                {c.name}
+                            </option>
+                        ))}
+                    </NativeSelect>
+                    <Button variant="outline" className="h-10 md:hidden" aria-expanded={moreFilters} onClick={() => setMoreFilters((v) => !v)}>
+                        {moreFilters ? 'Fewer filters' : `More filters${hidden > 0 ? ` (${hidden} set)` : ''}`}
+                    </Button>
+                    <NativeSelect
+                        className={cn('h-10', more)}
+                        value={filters.account ?? ''}
+                        onChange={(e) => apply({ account: e.target.value })}
+                        aria-label="Account"
+                    >
                         <option value="">All accounts</option>
                         {lookups.accounts.map((a) => (
                             <option key={a.id} value={a.id}>
@@ -261,13 +321,23 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                             </option>
                         ))}
                     </NativeSelect>
-                    <NativeSelect value={filters.status ?? ''} onChange={(e) => apply({ status: e.target.value })} aria-label="Status">
+                    <NativeSelect
+                        className={cn('h-10', more)}
+                        value={filters.status ?? ''}
+                        onChange={(e) => apply({ status: e.target.value })}
+                        aria-label="Status"
+                    >
                         <option value="">Any status</option>
                         <option value="unreviewed">To decide</option>
                         <option value="suggested">Suggested</option>
                         <option value="confirmed">Confirmed</option>
                     </NativeSelect>
-                    <NativeSelect value={filters.kind ?? ''} onChange={(e) => apply({ kind: e.target.value })} aria-label="Type">
+                    <NativeSelect
+                        className={cn('h-10', more)}
+                        value={filters.kind ?? ''}
+                        onChange={(e) => apply({ kind: e.target.value })}
+                        aria-label="Type"
+                    >
                         <option value="">Any type</option>
                         {lookups.kinds.map((k) => (
                             <option key={k.value} value={k.value}>
@@ -275,7 +345,12 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                             </option>
                         ))}
                     </NativeSelect>
-                    <NativeSelect value={filters.decided_by ?? ''} onChange={(e) => apply({ decided_by: e.target.value })} aria-label="Decided by">
+                    <NativeSelect
+                        className={cn('h-10', more)}
+                        value={filters.decided_by ?? ''}
+                        onChange={(e) => apply({ decided_by: e.target.value })}
+                        aria-label="Decided by"
+                    >
                         <option value="">Decided by anyone</option>
                         <option value="you">You</option>
                         <option value="rule">Your rules</option>
@@ -284,12 +359,20 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                     </NativeSelect>
                     <CategorySelect
                         placeholder="Any category"
+                        aria-label="Category"
+                        className={cn('h-10', more)}
+                        both
                         lookups={lookups}
                         kind="business_expense"
                         value={filters.category ? Number(filters.category) : null}
                         onChange={(v) => apply({ category: v ? String(v) : '' })}
                     />
-                    <NativeSelect value={filters.job ?? ''} onChange={(e) => apply({ job: e.target.value })} aria-label="Job">
+                    <NativeSelect
+                        className={cn('h-10', more)}
+                        value={filters.job ?? ''}
+                        onChange={(e) => apply({ job: e.target.value })}
+                        aria-label="Job"
+                    >
                         <option value="">Any job</option>
                         <option value="none">Business, no job</option>
                         {lookups.jobs.map((j) => (
@@ -298,25 +381,37 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                             </option>
                         ))}
                     </NativeSelect>
-                    <NativeSelect value={filters.direction ?? ''} onChange={(e) => apply({ direction: e.target.value })} aria-label="Direction">
-                        <option value="">Money in and out</option>
-                        <option value="out">Money out</option>
-                        <option value="in">Money in</option>
-                    </NativeSelect>
-                    <NativeSelect value={filters.sort ?? 'date'} onChange={(e) => apply({ sort: e.target.value })} aria-label="Sort">
+                    <NativeSelect
+                        className={cn('h-10', more)}
+                        value={filters.sort ?? 'date'}
+                        onChange={(e) => apply({ sort: e.target.value })}
+                        aria-label="Sort"
+                    >
                         <option value="date">Newest first</option>
                         <option value="amount">Largest first</option>
                     </NativeSelect>
+                    <label className={cn('flex min-h-10 items-center gap-3 rounded-md border px-3 text-sm sm:col-span-2', more)}>
+                        <Checkbox
+                            checked={filters.unassigned === '1' || filters.unassigned === 'true'}
+                            onCheckedChange={(v) => apply({ unassigned: v ? '1' : '' })}
+                        />
+                        Income not given a client, job or invoice
+                    </label>
                 </div>
 
                 {selected.length > 0 && (
                     <div className="bg-muted sticky top-2 z-10 flex flex-wrap items-center gap-2 rounded-lg p-2 text-sm shadow-sm">
                         <span className="px-2 font-medium">{selected.length} selected</span>
-                        <Button size="sm" onClick={() => setBulk(true)}>
+                        <Button className="h-10" onClick={() => setBulk(true)}>
                             Decide selected
                         </Button>
+                        {chosen.some((t) => t.amount_pence > 0) && (
+                            <Button className="h-10" variant="outline" onClick={() => setSettingClient(true)}>
+                                Set client
+                            </Button>
+                        )}
                         <Button
-                            size="sm"
+                            className="h-10"
                             variant="outline"
                             onClick={() =>
                                 router.post('/decisions/confirm', { ids: selected }, { preserveScroll: true, onSuccess: () => setSelected([]) })
@@ -324,7 +419,7 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                         >
                             Accept suggestions
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => setSelected([])}>
+                        <Button className="h-10" variant="ghost" onClick={() => setSelected([])}>
                             Clear selection
                         </Button>
                     </div>
@@ -334,42 +429,52 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                     <table className="w-full text-sm">
                         <thead className="bg-muted/50 text-muted-foreground text-left text-xs">
                             <tr>
-                                <th className="w-8 p-2">
-                                    <Checkbox
-                                        checked={all}
-                                        onCheckedChange={(v) => setSelected(v ? page.data.map((t) => t.id) : [])}
-                                        aria-label="Select all"
-                                    />
+                                <th className="w-10 p-0">
+                                    <label className="flex size-10 items-center justify-center">
+                                        <Checkbox
+                                            checked={all}
+                                            onCheckedChange={(v) => setSelected(v ? page.data.map((t) => t.id) : [])}
+                                            aria-label="Select all"
+                                        />
+                                    </label>
                                 </th>
-                                <th className="p-2">Date</th>
+                                <th className="hidden p-2 sm:table-cell">Date</th>
                                 <th className="p-2">Description</th>
                                 <th className="hidden p-2 md:table-cell">Account</th>
                                 <th className="p-2 text-right">Amount</th>
                                 <th className="hidden p-2 lg:table-cell">Decision</th>
-                                <th className="p-2">Status</th>
+                                <th className="hidden p-2 sm:table-cell">Status</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y">
                             {page.data.map((t) => (
                                 <tr key={t.id} className="hover:bg-muted/40 cursor-pointer" onClick={() => setDrawer({ source: 'bank', id: t.id })}>
-                                    <td className="p-2" onClick={(e) => e.stopPropagation()}>
-                                        <Checkbox
-                                            checked={selected.includes(t.id)}
-                                            onCheckedChange={(v) => setSelected((s) => (v ? [...s, t.id] : s.filter((x) => x !== t.id)))}
-                                            aria-label="Select"
-                                        />
+                                    <td className="p-0" onClick={(e) => e.stopPropagation()}>
+                                        <label className="flex size-10 items-center justify-center">
+                                            <Checkbox
+                                                checked={selected.includes(t.id)}
+                                                onCheckedChange={(v) => setSelected((s) => (v ? [...s, t.id] : s.filter((x) => x !== t.id)))}
+                                                aria-label="Select"
+                                            />
+                                        </label>
                                     </td>
-                                    <td className="p-2 whitespace-nowrap tabular-nums">
+                                    <td className="hidden p-2 whitespace-nowrap tabular-nums sm:table-cell">
                                         {day(t.date)}
                                         {t.time && <p className="text-muted-foreground text-xs">{t.time}</p>}
                                     </td>
-                                    <td className="max-w-80 p-2">
+                                    {/* On a phone the date and status go under the description and the amount, so the amount fits. */}
+                                    <td className="max-w-[11rem] p-2 sm:max-w-80">
+                                        <p className="text-muted-foreground text-xs tabular-nums sm:hidden">
+                                            {day(t.date)}
+                                            {t.time ? ` ${t.time}` : ''}
+                                        </p>
                                         <p className="flex items-center gap-1.5">
                                             <span className="truncate">{t.description}</span>
                                             <Explain url={`/explain/${t.source ?? 'bank'}/${t.id}`} />
                                         </p>
                                         {t.place && <p className="text-muted-foreground truncate text-xs">{t.place}</p>}
                                         <p className="text-muted-foreground text-xs md:hidden">{paidWith(t)}</p>
+                                        {summary(t) && <p className="text-muted-foreground truncate text-xs lg:hidden">{summary(t)}</p>}
                                     </td>
                                     <td className="text-muted-foreground hidden p-2 whitespace-nowrap md:table-cell">
                                         {t.account?.name}
@@ -381,6 +486,7 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                                     </td>
                                     <td className="p-2 text-right whitespace-nowrap">
                                         <Money pence={t.amount_pence} />
+                                        <StatusPill status={t.review_status} className="mt-1 ml-auto flex w-fit sm:hidden" />
                                         {paidIn(t) && (
                                             <p className="text-muted-foreground text-xs tabular-nums" title={rateText(t.fx, t.original_currency)}>
                                                 {paidIn(t)}
@@ -391,7 +497,7 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                                         <p className="truncate">{summary(t)}</p>
                                         {t.allocations[0] && <p className="text-xs">by {decidedByLabels[t.allocations[0].decided_by]}</p>}
                                     </td>
-                                    <td className="p-2">
+                                    <td className="hidden p-2 sm:table-cell">
                                         <StatusPill status={t.review_status} />
                                     </td>
                                 </tr>
@@ -414,7 +520,7 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                     <div className="flex gap-2">
                         <Button
                             variant="outline"
-                            size="sm"
+                            className="h-10"
                             disabled={!page.links.prev}
                             onClick={() => page.links.prev && router.get(page.links.prev, {}, { preserveScroll: true })}
                         >
@@ -422,7 +528,7 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                         </Button>
                         <Button
                             variant="outline"
-                            size="sm"
+                            className="h-10"
                             disabled={!page.links.next}
                             onClick={() => page.links.next && router.get(page.links.next, {}, { preserveScroll: true })}
                         >
@@ -466,16 +572,18 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
             />
             <ManualExpenseDialog open={adding} onClose={() => setAdding(false)} lookups={lookups} />
 
-            <Dialog open={bulk} onOpenChange={setBulk}>
-                <DialogContent className="sm:max-w-xl">
-                    <DialogHeader>
-                        <DialogTitle>Decide {selected.length} items</DialogTitle>
-                        <DialogDescription>
-                            This replaces any current decision on the selected items. Each change is logged and can be changed again later.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <DecisionForm amount={-1} lookups={lookups} value={bulkDecision} onChange={setBulkDecision} showRule={false} />
+            <ResponsiveSheet
+                open={bulk}
+                onOpenChange={setBulk}
+                title={`Decide ${selected.length} ${selected.length === 1 ? 'item' : 'items'}`}
+                description="This replaces any current decision on the selected items. Each change is logged and can be changed again later."
+            >
+                <SheetBody>
+                    <DecisionForm amount={allIn ? 1 : -1} lookups={lookups} value={bulkDecision} onChange={setBulkDecision} showRule={false} />
+                </SheetBody>
+                <SheetFooter>
                     <Button
+                        className="h-11 w-full sm:w-auto"
                         onClick={() => {
                             const problem = decisionProblem(bulkDecision);
                             if (problem) return toast(problem, 'error');
@@ -487,8 +595,118 @@ export default function Transactions({ page, totals, manual, filters, lookups }:
                     >
                         Save for {selected.length}
                     </Button>
-                </DialogContent>
-            </Dialog>
+                </SheetFooter>
+            </ResponsiveSheet>
+            <SetClientSheet
+                open={settingClient}
+                onClose={() => setSettingClient(false)}
+                rows={chosen}
+                year={filters.year}
+                lookups={lookups}
+                onDone={() => setSelected([])}
+            />
         </AppLayout>
+    );
+}
+
+/**
+ * "Set client" for the selected money in: these payments, or every payment from their payer (in the year shown, or
+ * all years), set as one client's, decided as you. Money out, locked years and payments decided as something else
+ * are left as they are, and the message says so.
+ */
+function SetClientSheet({
+    open,
+    onClose,
+    rows,
+    year,
+    lookups,
+    onDone,
+}: {
+    open: boolean;
+    onClose: () => void;
+    rows: Item[];
+    year?: string;
+    lookups: Lookups;
+    onDone: () => void;
+}) {
+    const [client, setClient] = useState<ClientRef | null>(null);
+    const [scope, setScope] = useState<'these' | 'payer'>('these');
+    const [busy, setBusy] = useState(false);
+    const moneyIn = rows.filter((t) => t.amount_pence > 0);
+    const payers = [...new Set(moneyIn.map((t) => t.merchant_key))];
+    const payer = payers.length === 1 ? payers[0] : null;
+    const everyFrom = payer && scope === 'payer';
+
+    useEffect(() => {
+        if (!open) return;
+        setScope('these');
+        // Who the lines say they're for already, when they all agree.
+        const named = [...new Set(moneyIn.flatMap((t) => t.allocations.map((a) => a.client_id).filter(Boolean)))];
+        const id = named.length === 1 ? (named[0] as number) : null;
+        setClient(id ? (lookups.clients.find((c) => c.id === id) ?? null) : null);
+        // Only when the sheet opens: the rows don't change while it's open.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open]);
+
+    const save = () => {
+        if (!client) return toast('Pick the client first.', 'error');
+        setBusy(true);
+        router.post(
+            '/decisions/bulk-client',
+            (everyFrom
+                ? { client_id: client.id, merchant_key: payer, ...(year ? { tax_year: year } : {}) }
+                : { client_id: client.id, ids: moneyIn.map((t) => t.id) }) as never,
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    onClose();
+                    onDone();
+                },
+                onError: (errors) => toast(Object.values(errors)[0] ?? 'That didn’t save. Try again.', 'error'),
+                onFinish: () => setBusy(false),
+            },
+        );
+    };
+
+    return (
+        <ResponsiveSheet
+            open={open}
+            onOpenChange={(o) => !o && onClose()}
+            title="Who is this money from?"
+            description="Each payment is saved as income from that client, with no job. You can still change any one of them later."
+        >
+            <SheetBody className="space-y-4">
+                <ClientSelect clients={lookups.clients} value={client?.id ?? null} name={client?.name} onChange={setClient} />
+                {payer && (
+                    <fieldset className="space-y-1 text-sm">
+                        <legend className="mb-1 font-medium">Which payments?</legend>
+                        <label className="flex min-h-11 items-center gap-3">
+                            <input type="radio" name="scope" className="size-5" checked={scope === 'these'} onChange={() => setScope('these')} />
+                            Only the {moneyIn.length} selected
+                        </label>
+                        <label className="flex min-h-11 items-center gap-3">
+                            <input type="radio" name="scope" className="size-5" checked={scope === 'payer'} onChange={() => setScope('payer')} />
+                            Every payment from {payer}
+                            {year ? ` in ${year}` : ''}
+                        </label>
+                    </fieldset>
+                )}
+                {moneyIn.length < rows.length && (
+                    <p className="text-muted-foreground text-sm">
+                        {rows.length - moneyIn.length} selected {rows.length - moneyIn.length === 1 ? 'is' : 'are'} money out: left as{' '}
+                        {rows.length - moneyIn.length === 1 ? 'it is' : 'they are'}.
+                    </p>
+                )}
+            </SheetBody>
+            <SheetFooter>
+                <Button className="h-auto min-h-11 w-full py-2 whitespace-normal sm:w-auto" disabled={busy || !client} onClick={save}>
+                    {!client
+                        ? 'Pick the client first'
+                        : everyFrom
+                          ? `All from ${payer} are ${client.name}`
+                          : `Set ${moneyIn.length} as ${client.name}’s`}
+                </Button>
+            </SheetFooter>
+        </ResponsiveSheet>
     );
 }

@@ -418,8 +418,9 @@ class TaxYearController extends Controller
             // What was kept when the year was last locked, and (when asked: "Check it") whether it still holds.
             'lock' => YearChecks::lockShown($year),
             'lock_check' => Inertia::optional(fn () => YearChecks::verifyLock($year)),
-            // Years before the cash basis was the default: client figures are counted when paid.
-            'cash_basis_note' => ClientFigures::cashBasisNote($label),
+            // Years before the cash basis was the default: how these figures are worked out, and the limit that applied.
+            'cash_basis_note' => ClientFigures::cashBasisNote($label) === null ? null
+                : 'Expend works these figures out on the cash basis (counted when paid). For '.$label.' you must choose the cash basis on your return (SA103): it was allowed only with turnover of £150,000 or less. If you didn’t use the cash basis for '.$label.', ask an accountant.',
             'unlock_note' => 'Changing a client, job or invoice doesn’t change your return.',
         ]);
     }

@@ -25,6 +25,8 @@ per-sender parsers, the Calendar API, refund tracking for cancellations, and mea
 **Update (24 Nov 2026):** Gmail is searched for a job's emails and POs when the job is added, and again when its PO
 number, dates, client or venue change, leaving out your Sent mail (docs/mail-and-calendar.md, batch 1). The Gmail
 connection asks for `gmail.modify`, so it can read and add Expend's own labels; it never sends, moves or deletes.
+*Since 25 Nov 2026 it also writes Expend's own invoice and reminder drafts, sends one only when you press Send, and
+deletes only its own drafts you haven't edited (§6.13).*
 
 **Update (25 Nov 2026):** you can pick several days, dates and runs of dates on the calendar (Jobs › Calendar) or with
 **Add days** on a job, and make them one job or add them to one you have (§6.3, "Picking a job's days"). Moving a whole
@@ -38,6 +40,17 @@ once with their photo; a business-card receipt waits for its bank line and is of
 counted twice. The screens, the server and the checks are built and tested; trying it on the real phones is still to
 do (§6.12, "Still to check on the phones").
 
+**Update (25 Nov 2026, clients, jobs and invoices):** the three requests of 25 Nov are built (§6.13), with income
+assigned to clients, jobs and invoices (income design v3) and the owner's answers of 24 Nov. A **client area**
+(`/clients`): each client's jobs (as the one who pays and as the end client), what they owe, money and costs by tax year,
+their usual arrangement for travel and expenses, and duplicates to merge. **Done**: suggested the morning after a job's
+last day, one tap, and it gets the draft invoice ready. **Drafts that follow the job**: every travel cost and expense
+linked to the job is listed, ticked where the client usually pays it, until you issue it; a sent invoice never
+changes, and a cost linked later goes on the client's next invoice. Invoices go in the booking's Gmail conversation as
+drafts for you to send, and reminders are made only when you ask (docs/mail-and-calendar.md, "The money end of batch
+4"). §6.9's planned `recharges` table is replaced by `cost_charges` and a worked-out status; disbursements aren't
+supported.
+
 ---
 
 ## 0. What changed from v1
@@ -46,7 +59,7 @@ do (§6.12, "Still to check on the phones").
 |---|---|---|---|
 | Tax compliance | "Exportable records for an accountant or HMRC-compatible software" | Making Tax Digital for Income Tax (MTD ITSA) is a first-class requirement: HMRC categories, quarterly periods, quarter close, digital-link export | MTD ITSA has been live since 6 Apr 2026 for qualifying income over £50k; £30k from Apr 2027; £20k from Apr 2028 |
 | Data model | Originals kept separately | Three layers (immutable source, allocations, disposable projections); integer pence; splits must sum exactly; hash-chained audit log; period locks | Makes wrong figures structurally hard to produce |
-| Email | Gmail API | Gmail API (`gmail.modify` since 24 Nov 2026: read, plus Expend's own labels; it never sends, moves or deletes), with narrow searches (bookings, receipts) and an access log. Forwarding mailbox as the privacy-first alternative | Hotel-stay checks need on-demand searches around job dates. Searches stay narrow, writes are limited to Expend's own labels by Expend's own rule, and the OAuth token-expiry trap is avoided |
+| Email | Gmail API | Gmail API (`gmail.modify` since 24 Nov 2026: read, plus Expend's own labels and, from 25 Nov, its own invoice and reminder drafts, sent only on your press; it never moves or deletes your mail), with narrow searches (bookings, receipts) and an access log. Forwarding mailbox as the privacy-first alternative | Hotel-stay checks need on-demand searches around job dates. Searches stay narrow, writes are limited to Expend's own labels by Expend's own rule, and the OAuth token-expiry trap is avoided |
 | Calendar | Calendar API | Default: Google Calendar's secret iCal feed (read-only). API optional | No OAuth to maintain |
 | Hotel stays | Not covered | Each stay is assembled from Gmail bookings, calendar and bank payments, then classified night by night against job dates and venue distance. Never auto-confirmed | Hotels are the classic mixed business/personal expense |
 | Travel journeys | Not covered | Uber, Bolt, taxis, Trainline and train operators, TfL, coaches, parking, tolls and fuel are matched to each job's travel window, grouped into one trip per job and confirmed per trip | Travel is mixed business/personal too, and a job with no recorded travel often means a missed claim |
@@ -212,10 +225,10 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `accounts` | Bank and card accounts: type, last four digits only |
 | `import_batches` | File hash, import profile, period covered, opening/closing balance, balance-check result, status (committed, quarantined, reverted, discarded), review note. A failed balance check quarantines the batch until accepted with a reason or discarded. "Undo this import" marks the batch's rows reversed and voids their allocations (nothing is deleted) and can be restored |
 | `bank_transactions` | Raw, immutable rows: account, batch, posting date, `amount_pence`, raw description, balance after, fingerprint, occurrence, state (active, quarantined, reversed). Only active rows count anywhere; the duplicate check applies to active rows only, so a reversed statement can be imported again |
-| `allocations` | Explains a transaction: type (`business_expense`, `business_income`, `personal`, `transfer`, `drawings`, `capital_introduced`, `refund`, `loan`, `tax_payment`), HMRC category, job, `amount_pence`, business-use %, `vat_pence`, status (`suggested`/`confirmed`), decided by (`you`, `rule`, `matcher`, `ai`), `manual` flag (you set or changed it), confirmed at, reason, rule |
+| `allocations` | Explains a transaction: type (`business_expense`, `business_income`, `personal`, `transfer`, `drawings`, `capital_introduced`, `refund`, `loan`, `tax_payment`), HMRC category, job, `amount_pence`, business-use %, `vat_pence`, status (`suggested`/`confirmed`), decided by (`you`, `rule`, `matcher`, `ai`), `manual` flag (you set or changed it), confirmed at, reason, rule. **As built (income v3):** also `invoice_id` and `client_id`, the client a line is for when neither its invoice nor its job names one (kept only on business income and business expense lines). A line's client is worked out, never copied: its invoice's client, else its job's, else its own (`Income\IncomeClient`), merges resolved. A fee or commission the payer took off is a deduction: a negative business-expense line beside the income |
 | `suggestions` | Every suggestion ever made, from any source (rule, matcher, AI), with its confidence and reasons, and whether you accepted, changed or rejected it. Feeds the accuracy figures and rule learning |
 | `documents` | Receipts, statements, invoice PDFs: SHA-256, MIME type, size, private path; linked to transactions, allocations or jobs |
-| `clients`, `jobs` | A job has a client, date range, location, status and agreed fee |
+| `clients`, `jobs` | A job has a client, date range, location, status and agreed fee. **As built (25 Nov 2026):** clients gain `invoice_name`, `billing_email`, `billing_address`, `payment_terms_days` (else Settings' `invoice_terms_days`, 30), `invoice_route` (`thread`, the default; `new`; `none`, "they pay without an invoice from me") and `merged_into_id` (a merge is a pointer, never a rewrite). Jobs (`work_jobs`) gain `end_client_id` (who it was for, when the one who pays is an agency), `rate_pence` and `rate_unit` (a day or hourly rate), `days_agreed`, `done_at`, `cancel_charge` (`none`, `fee`, `costs`) and `cancel_fee_pence`; status is `booked`, `done` or `cancelled` |
 | `calendar_events` | ICS UID, start/end, location, linked job |
 | `stays` | One per booking: provider, booking reference, hotel, address, postcode, check-in/out, guests, total and nightly amounts, currency, status (`booked`, `amended`, `cancelled`, `completed`), paid by (`me`, `client`, `rechargeable`), linked job |
 | `stay_nights` | One row per night: date, `amount_pence`, linked job, classification (`business`, `personal`, `review`), reasons, confirmed |
@@ -225,8 +238,8 @@ post-deploy smoke test requests `/.env`, `/composer.json`, `/storage/` and `/ven
 | `journey_sources` | Links a journey to Gmail message IDs, bank transactions, TfL journey-history rows and calendar events |
 | `merchant_patterns` | Bank-description pattern mapped to provider and type (hotel, ride, rail, TfL, food delivery, parking, penalty charge…). Seeded, editable, refined from your statements |
 | `settings` | Home postcode, overnight-stay distance bands (default 12 and 40 miles), early-start and late-finish times, hotel and travel sender lists |
-| `recharges` | Expense or trip items being claimed back from a client: client, job, status (`to_claim`, `claimed`, `reimbursed`, `not_reimbursed`), claim method (invoice or client expense form), linked reimbursement payment |
-| `invoices`, `invoice_lines`, `payments`, `credit_notes` | `payments` links an invoice to bank transactions; partial payments allowed |
+| ~~`recharges`~~ | **Replaced (25 Nov 2026)** by `cost_charges` and a worked-out status (§6.9). `cost_charges` keeps only your decisions about a cost (`cost_ref`, `charge`: `recharge`, `no_charge`, `elsewhere`, `invoiced` with its invoice; `pair` `same`/`distinct` with `pair_ref`; `outcome` `paid_back`/`not_paid`). `charge_terms` keeps a client's or a job's usual arrangement, one row per kind of cost (`per_mile`, `at_cost`, `per_job`, `per_day`, `day_rate`, `their_form`, `none`, with a rate where it needs one) |
+| `invoices`, `invoice_lines`, `payments`, `credit_notes` | `payments` links an invoice to bank transactions; partial payments allowed. **As built:** there's no `payments` table: a payment is linked by its allocation lines (`allocations.invoice_id`), and what's paid, part paid, overpaid, closed or still to come is worked out (`Invoices\InvoicePayments::received`). Invoices gain `closed_minor`, `closed_reason`, `closed_at`, `closed_linked_minor` and `replaced_by_id` (income v3), and `lines_seen_event_id` and `synced_at`. Lines gain where they came from (`source`, `source_ref`, `source_job_id`), `included` (the tick), `ticked_by`, `own_text`, `own_amount`, `source_amount_minor`, `source_quantity` and `flag`. `invoice_emails` records each Gmail draft and send. No `credit_notes` yet: an invoice that won't be paid in full is closed, with a reason |
 | `vehicles`, `mileage_trips` | Vehicle claim method (simplified mileage or actual costs, fixed per vehicle); trips with date, from/to, miles, job and a snapshot of the rate used. A trip's claim is a travel expense for its job |
 | `exchange_rates` | Cached HMRC monthly rates: currency, month, units per £1, source; plus manual overrides |
 | `periods` | Tax years and quarters. Tax-year status: `outstanding`, `in_progress`, `ready_to_file`, `filed` (date and HMRC reference), `amending`. Quarter status: `open`, `closed`, `submitted`. Lock metadata |
@@ -384,7 +397,11 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
 ### 5.4 Other rules
 
 - **Cash basis** is the default since 2024-25; accruals is an option. Store invoice dates and payment dates
-  separately so either view can be produced.
+  separately so either view can be produced. **As built:** every year's figures are on the cash basis (confirmed
+  lines, counted when paid), so marking a job done, issuing or sending an invoice changes no tax figure. For a year
+  before 2024-25 (`cash_basis_default` false) the year page and the client page say so ("If you didn't use the cash
+  basis for 2023-24, ask an accountant"), and the pre-filing checks warn (`cash_basis`) when turnover is over
+  £150,000, the limit then (`YearChecks::CASH_BASIS_LIMIT_PENCE`). Accruals isn't built.
 - **Trading allowance** (£1,000) versus actual expenses: show which is better in the tax summary.
 - **Mileage:** simplified flat rates for cars and goods vehicles are **55p a mile for the first 10,000
   business miles from 2026-27 (45p before 6 April 2026)**, then 25p; motorcycles 24p. Rates come from
@@ -418,10 +435,26 @@ figure, but categorise anyway: the detail is needed for SA103F and for your own 
   bank is a transfer between your own accounts, never an expense. Card interest and fees are allowable
   only for business borrowing, in proportion on a card used for both.
 - **VAT:** you aren't VAT-registered. The dashboard tracks taxable turnover over the last 12 months
-  (recharges included) against the registration threshold (£90,000) and warns at 80%. If you register
+  (recharges included) against the registration threshold (£90,000) and warns at 80%. **As built:** the watch
+  (`TaxSavings`, on the current year's page) counts money received: confirmed business income by bank date over the
+  last 12 months, gross of any fee the payer took off, recharges included. Measuring supplies made (invoices issued)
+  instead isn't built. If you register
   later, VAT tracking switches on and MTD for VAT applies, with its own submission route.
 - **Invoices:** sequential numbers that are never reused or deleted. Issued invoices are immutable (PDF
-  stored with its hash); corrections go through credit notes. Partial payments and ageing are tracked.
+  stored with its hash); corrections go through credit notes. Partial payments and ageing are tracked. **As built:**
+  credit notes and ageing buckets aren't built. Instead, an issued invoice that won't be paid in full is **closed**
+  with a reason (`Invoice::CLOSED_REASONS`: `short_paid`, `charges`, `wont_chase`, `paid_other_currency`, `other`;
+  audited `invoice.closed`, undone by Reopen, `invoice.reopened`). Closing writes no ledger line and changes no figure:
+  income is what was received, on the cash basis, so a bad debt is never deducted (closing never offers it). A void
+  invoice can name the invoice that replaced it (`invoice.replaced`, same client only), so what was paid against the
+  void one counts there. Voiding needs a reason. Overdue counts only once an invoice was sent, from the later of the
+  due date and the day it was sent plus its terms.
+- **Tax taken off at source isn't handled** (the owner's answer): a fee or commission the payer took off is the only
+  deduction recorded (a negative business-expense line). There's no CIS or withholding line, no tax credit and no
+  employment income: PAYE agency pay would need its own allocation kind and SA102 figures. Wherever a deduction is
+  offered the screen says "Only for a fee or commission. If they took off tax or National Insurance, don't record it
+  here: ask an accountant." (`IncomeText::DEDUCTION_NOTE`), and payers whose words look like a payslip are never
+  offered a fee shortcut.
 - **Tax estimate:** income tax plus Class 4 NIC, payments on account (31 Jan and 31 Jul), and a "set aside
   for tax" figure on the dashboard. Rates come only from `tax_parameters`, never from code. Support
   Scottish income-tax bands if they apply.
@@ -838,6 +871,35 @@ the airport.
   thresholds measure. Some items can be treated differently (for example, as disbursements); the app
   links the HMRC guidance so you can check.
 
+**As built (25 Nov 2026): `cost_charges` and a worked-out status, not a `recharges` table.** Nothing about a recharge
+is stored except your own decisions (`cost_charges`, written by `Charges\CostCharges` as you and audited
+`cost.charge_set`, `cost.claimed`, `cost.charge_cleared`, `cost.outcome_set`, `cost.paired`). Where each cost stands is
+worked out every time from the job, the client's (or job's) arrangement, the invoices' ticked lines and your
+decisions (`Charges\ChargeStatus`; docs/intelligence-cycle.md 4.7 has the statuses). The plan's states map onto it:
+
+| Planned | As built |
+|---|---|
+| to claim | `owed` or `owed_late` (to go on an invoice), or `to_claim` (the arrangement says their expense form) |
+| claimed | `on_invoice` (ticked on an issued invoice, or you said it was), or `elsewhere` (charged another way, or claimed on their form: [Claimed on their expense form]) |
+| reimbursed | the invoice's paid state (`InvoicePayments`), or the outcome `paid_back` you give a month later |
+| not reimbursed | `not_charged`, or the outcome `not_paid`: it stays your own cost |
+
+- Recharging is never assumed for a single cost: a cost is ticked on a draft when you said "Charge to Acme", or when
+  its kind is one the client's arrangement charges (at cost, per mile; set by your preset or "Save these ticks as
+  Acme's usual"). Expend never learns an arrangement by itself.
+- Costs are charged at what you paid, with no markup (the owner's answer). Mileage charged per mile is turnover; your
+  mileage claim on the return stays at HMRC's rate, separately.
+- "Recharge to Acme" on a payment or cash cost with no job (`POST items/{source}/{id}/recharge`; the drawer's
+  "Charge it to a client…" on a business cost with no job) puts it on that client's next draft, under "From earlier
+  jobs". "Which client a cost with no job was for" (`POST items/{source}/{id}/expense-client`) has no button yet: a
+  recharge counts a confirmed cost with no job in the client's costs too.
+- A cost claimed on their form (or charged another way) 30 days ago with nothing said since comes back on the to-do
+  list: "Was Uber 12 Mar paid back?" [Paid back] [Not paid back] (`claimed:{cost}`).
+- **Disbursements aren't supported** (the owner's default): every recharge is turnover when it's paid, and the cost
+  keeps its own treatment (a fine stays disallowable, though it can be charged).
+- **Not built:** the claim pack (receipts as one PDF for a client's expense form), and outstanding recharges by age
+  per client beyond the client page's chips and the to-do list.
+
 ---
 
 ### 6.10 Documents, job sheets and invoices from POs
@@ -866,7 +928,9 @@ terms and where to send the invoice. Every fact keeps the exact quote and page i
 - **Invoices from POs:** a PO's line items, PO number, billing entity, address and terms prefill a draft
   invoice. You edit and issue it; numbering is sequential and issued invoices can't be edited (void and
   re-issue instead). The draft total is checked against the PO total. Incoming payments of the invoice
-  amount are suggested as that invoice's payment.
+  amount are suggested as that invoice's payment. **As built:** a job's draft is made from its PO's lines when it has
+  exactly one PO document whose lines were read; otherwise from its fee, rate and days. Either way the draft then
+  follows the job (§6.13), and a payment is matched by what's still to come on the invoice, not its total.
 
 ### 6.11 The AI assistant and "no made-up data"
 
@@ -1020,12 +1084,204 @@ job (`work_job_id`, decided by you); a card entry's job reaches its bank line's 
 suggestion; `QuickEntry::scopeWaitingOnJob($jobId)` lists receipts whose bank line hasn't come in, so an invoice draft
 can say "1 receipt is still waiting for its bank line". "Recharge to the client" goes in the quick screen's More sheet
 (marked in `resources/js/pages/quick/index.tsx`), as a new field in `EntryFields` (`resources/js/lib/quick.ts`) and in
-`QuickController::wellFormed`, written with the same decision.
+`QuickController::wellFormed`, written with the same decision. *As built (25 Nov 2026):* a quick entry's cost on a job
+is listed on the job's draft like any other cost (§6.13), and the job page lists "Receipts waiting for their bank
+line". The More sheet's "Recharge to the client" isn't built yet: recharge the cost from its drawer ("Charge it to a
+client…" for a cost with no job) or the job page.
 
 **Still to check on the phones.** Tested in headless Chrome at phone size only. On the real iPhone and Android phone:
 the home-screen install and Remember me inside the iPhone app; flight mode, then signal back (the waiting entries go
 by themselves); Background Sync with the app closed (Android); the real share sheet; HEIC photos from the iPhone camera;
 Android Back with a sheet open; and the iPhone SE's small screen.
+
+### 6.13 Clients, jobs and invoices (built 25 Nov 2026)
+
+The owner asked (25 Nov 2026): "Expend needs a client area. Clients can be associated with jobs, and expenses."; to mark
+a job done (suggested by date) and go straight to a checked, sendable invoice; and "Any auto generated invoice needs to
+consider travel and expenses related to that job. Changing the invoice line items needs to be fluid with what's
+associated to it." It is built on income design v3 (money in assigned to a client, a job, or several jobs and
+invoices) and the owner's answers of 24 Nov, which bind: costs at cost with no markup; every linked cost suggested,
+ticked where the client usually pays it; a draft follows the job and shows what changed, and a sent invoice never
+changes; reminders only when you ask; Telegram's one-tap Send only when safe; both "Issue and send" and "Issue and put
+in Gmail drafts"; income links are never confirmed by automation; a locked year changes nothing (unlock with a reason
+first); client-only income is done once the client is set. The domain code is in `app/Domain/{Clients,Charges,Income,
+Invoices,Jobs}`; the pages are `resources/js/pages/{clients,jobs,invoices}` and `todo.tsx`. Every screen is built for a
+360px phone first (16px margins, no sideways scrolling, one main button in a sticky bar, tap targets of at least 40px
+and 44px for main buttons; a button that names a client or a payer wraps onto a second line rather than being cut
+off), and bottom sheets replace the browser's prompts and confirms on the client, job, invoice, to-do, Inbox and year
+pages (the item drawer's "Remove this expense" asks with a second tap on the button itself; the job finder,
+opportunities, mileage, imports, documents and some settings pages still use the browser's). No answer at all (no
+signal at a venue) is said in words on every page, whatever was pressed, and the sheet stays open with what you typed.
+A read that a page makes while it shows (the to-do list's second load, a picker's search) never writes the session, so
+a press made meanwhile keeps its message, its Undo and what to do next (`LeaveSessionOnReads`).
+
+**A job's journey.** Each job has one stage, worked out when asked (`Jobs\JobStage::of`, read only, batched): upcoming;
+under way ("Day 2 of 3 · last day Fri 14 Mar"); Done? (its last day has finished, it's still booked, and it finished in
+the last 60 days); not marked done (finished longer ago, or you said it isn't finished: it keeps "Invoice <job>");
+done, no invoice yet; draft ("Draft · 2 changes"); waiting for payment (the client pays without an invoice from you);
+not sent ("In Gmail drafts", "Putting it in Gmail…", "Gmail draft deleted, not sent", "Not sent": never overdue); sent
+("Due 25 Dec"); overdue ("Overdue 3 days"); part paid ("Part paid £450 of £900"); paid; closed; cancelled · to invoice
+(a fee or costs owed); cancelled. The to-do list has one item per job that moves on with the stage: `job_done:{job}`,
+then `invoice:{job}`, then `unsent:{invoice}`, then `invoice_overdue:{invoice}`. A second item appears only for a cost
+linked after sending (`charge:{cost}`, `recharge:{booking}`) or a follow-up draft (`draft:{invoice}`).
+
+**Done, suggested by date, never set by it.** A job finishes at the end of its last day in London time
+(`JobStage::finishAt`: the day's finish time, the next morning for a show ending after midnight, 23:59 with no times).
+Only you mark it done (`Jobs\JobStatus`, every status change, from any screen, audited `job.done`, `job.reopened`,
+`job.cancelled`, `job.uncancelled`). It's offered on the job page ("All done? Marking it done gets its invoice ready to
+check." [Done] [Not yet] [Cancelled…]), on the jobs list (a Done? chip and button, and a Done? filter:
+`/jobs?show=done_due`), on the calendar (a "?" on the job's last day), on the to-do list (`job_done:{job}`) and on
+Telegram the morning after (docs/mail-and-calendar.md). Done makes the draft, or reuses the open one
+(`InvoiceService::draftForJob`): "Marked done. Its invoice is ready to check.", or what's missing ("What did you charge
+for it?"; "Acme's travel isn't set yet: 2 costs aren't ticked"). A job with days still to come asks "Did it finish
+early?" and removes them first (`POST jobs/{id}/done` with `remove_days`). A job already invoiced or paid gets no new
+draft; a client set to "they pay without an invoice from me" gets none ("Waiting for payment", then after 45 days with
+nothing in, "Acme hasn't paid for Arena load-in yet"). **Not yet** snoozes the question for 3 days ("Not finished
+yet") with [Add days] (`/jobs/{id}#days`). **Undo** puts it back to booked; Done's draft is deleted only if you haven't
+touched it ("Back to booked. The draft stays: you've changed it."). The job form's status goes through `JobStatus`
+too: Done on an existing job makes the draft; a job created already done only offers "Draft its invoice?", so adding
+old jobs never makes a pile of drafts. At release only jobs that finished in the last 60 days ask "Is it done?"; older
+ones keep "Invoice <job>".
+
+**Cancelled, and what they owe.** Cancelled asks "Do they owe you anything?": No, Just my costs, or A cancellation fee…
+(`POST jobs/{id}/cancel` with `charge` `none`, `costs` or `fee` and `fee`; the to-do and Telegram buttons offer No and
+Just my costs, and link to `/jobs/{id}#cancel` for a fee). With a fee or costs the job keeps (or gets) a draft: a
+cancellation fee line plus its costs by the arrangement. With nothing owed, an untouched draft is removed
+(`invoice.deleted`); one you changed stays, its lines from the job gone, and the job's costs aren't charged. An issued
+invoice stays (void it only if it's wrong). Undo (`POST jobs/{id}/uncancel`) puts back what it was. A job cancelled
+with a fee or costs still owes: the nightly sweep keeps its suggestions, and the Verifier lets its payments fit.
+
+**The client area** (`/clients`, in the sidebar after Jobs; clients never log in):
+
+- **The list:** search by any name a client goes by (on invoices, merged into them, or the name they pay you under),
+  filter chips Owe you, To invoice and All, and each row's first fact: what they owe (red when overdue), else jobs to
+  invoice, else their latest work. Two clients that may be the same (`ClientIds::possibleDuplicates`) are offered as
+  [Compare] [Not the same]; Not the same is remembered. Merging (`POST clients/{id}/merge`) is tied to both clients as
+  compared (`ClientMerge::fingerprint`), is refused while it would move a locked year's records
+  (`ClientMerge::lockedYears`), rewrites nothing (`merged_into_id`; `client.merged`) and can be undone
+  (`POST clients/{id}/unmerge`, `client.unmerged`). **New client** checks the name first: "You already have Acme
+  Events." [Use Acme Events] [It's a different client] (`POST clients`, which answers JSON `{id, name, existing}` and
+  takes `different`).
+- **A client's page** (`/clients/{id}`), in sections: **Owed** (open invoices with their state, jobs not invoiced yet
+  with their stage, costs to charge, costs to claim on their form), **Jobs** ("They pay" and "They're the end client";
+  the latest five, then all at `/jobs?client={id}`), **Money** by tax year (`Clients\ClientFigures`: made from them,
+  spent for them, fees taken off, mileage, profit, charged back on invoices, still to charge, invoiced, outstanding
+  and closed short; confirmed records only, counted when paid, with the cash-basis note before 2024-25), **Costs**
+  (every cost for this client, on a job or for the client only, with the chips To charge, On a draft, Charged, To
+  claim, Not charged and Charged another way; a cost's sheet has Charge to Acme, Not charged, Charged another way…,
+  Claimed on their expense form and Open the payment), **Travel and expenses** (their usual arrangement: presets Everything at cost, Mileage
+  at this year's HMRC rate (55p) + fares at cost, It's in my rate, Fixed travel fee, then one row per kind of cost; "Per-mile covers fuel";
+  `PUT clients/{id}/terms`, tied to the rows as loaded; `/clients/{id}#terms` opens it) and **Details** (name on
+  invoices, billing email, address, payment terms 14, 30 or 60 days or your usual, how invoices go: in the booking
+  conversation, as a new email to their accounts address, or they pay without an invoice from me; notes; merged
+  clients). "Draft an invoice for them" (`POST clients/{id}/invoice`) makes a draft with no job for costs still to
+  charge. A job's page has its own arrangement (`PUT jobs/{id}/terms`), "Costs and what's charged", and its Invoice
+  card.
+- A job has the client who pays (an agency, say) and, optionally, the end client it was for; pages and totals can show
+  either, and the end client is shown on the draft, not printed. A job's paying client can't change while it has
+  income in a locked year that takes its client from the job ("unlock it (with a reason) first").
+
+**The check screen: a draft invoice** (`/invoices/{id}`). Lines in groups, each with its subtotal: Work, Travel and
+expenses, From earlier jobs (a cost linked after an earlier invoice went, or the client's own costs) and Your lines.
+Each row is a tick that saves at once (`PATCH invoices/{id}/lines/{line}` with that line's version: changed by the sync
+meanwhile, nothing is saved and the row shows the change), with badges: your wording, your price, not confirmed, no
+payment yet, no price, check, maybe the same, gone from the job. A row's sheet changes the description, quantity and
+price, has "Use Expend's figures again", and for a cost [Not this job's cost] (the payment's drawer) and [Shared with another job…] (in
+the line's sheet: it shows the payment's whole split as it is now and sends its fingerprint, so a page left open while
+the payment changed moves nothing and shows the split again; a locked year is refused) and [Charged another way…]; only
+your own lines can be removed. A slow reload never throws away what you typed in a line's sheet: if the line changed
+meanwhile it says so, and Save keeps your words. Above the lines: **Since you last looked** (what the sync added, changed or removed, with [Got
+it]: `POST invoices/{id}/seen`), then **Needs you** (what blocks issuing, and warnings such as "Mileage not recorded
+yet" with [Add them]). **+ Add a cost** lists payments from 60 days before the job's first day to 7 days after its
+last, bookings and mileage trips not on the job (`GET invoices/{id}/costs`), each opened in its drawer to put on the
+job. The menu has Preview the PDF, **I invoiced this another way** (deletes the draft and sets "Invoice <job>" aside as
+Already sorted, so the job counts as covered: `DELETE invoices/{id}` with `another_way`) and Delete the draft. The sticky
+bar says the total and how many lines are ticked, with [Issue…].
+
+**Issuing.** The sheet shows the next number ("Issue it as INV-0005?"), who it's to, the amount and lines, the issue and due dates, each payment
+it will confirm with its whole split, where it goes (the address and the conversation, with "Use another
+conversation") and that after issuing it can't change. With Gmail: [Issue and send to accounts@acme.example]
+(only when the address is known), [Issue and put in Gmail drafts] and [Issue only]; without Gmail, one Issue button
+and "after issuing, email it from Expend, or download the PDF and send it yourself". "Save these ticks as Acme's usual" is offered
+when Acme has no arrangement. The request carries `lines_version`, `seen_up_to`, each payment's fingerprint and, for a
+job already invoiced, `second_invoice`; if anything changed since the sheet opened the answer is 409 with the sheet
+again (`{message, changed, sheet}`), so nothing is issued unseen. Issuing confirms only the ticked costs the sheet
+showed, never in a locked year, and then looks for waiting payments that fit (docs/intelligence-cycle.md 4.2, "the on-issue
+match"; "1 waiting payment looks like it's for it").
+
+**After issuing** the page shows where its money stands (paid, part paid, overpaid, closed, waiting), its email
+(drafted, sent, deleted unsent, failed, with the buttons for each), [Make a reminder] once it's sent and overdue,
+[They've paid], its payments with **Link a payment** (`/invoices/{id}#payments`, the payment's drawer with this
+invoice ticked), what was left off, costs linked to the job after it was sent ([Invoice it now] [Not charged]) and what
+happened. An invoice issued 7 days ago or more and still not sent says "Dated 25 Nov and still not sent: send it today,
+or void it and issue a new one dated today if the date matters." It can be closed with a reason (§5.4,
+`POST invoices/{id}/close`, `reopen`), voided with a reason, and a void one can name its replacement
+(`POST invoices/{id}/replaced-by`). **I sent it myself** asks "When did it go?" (`/invoices/{id}#sent` opens it). The
+invoices list (`/invoices`) has All, Drafts, To send, Waiting for payment, Overdue and Paid or closed. Gmail drafts,
+sending, reminders and the Telegram messages are in docs/mail-and-calendar.md, "The money end of batch 4".
+
+**Income on bank lines (income design v3).** Money in is for a client, a job, an invoice, or several jobs and invoices.
+In the Inbox and every drawer, money in asks "What is this payment for?" (`IncomeAllocator`): the client (from the
+payment's lines, else who the payer usually pays for), what they still owe as rows to tick (`GET lookups/owed`; a job
+or invoice found by search, `lookups/jobs` and `lookups/invoices`), and a footer that saves only when it adds up. When
+the ticked invoices come to more than the payment, either a fee or commission was taken off (recorded as a deduction)
+or they paid less; anything left over goes to the client with no job, or onto an invoice as overpaid. Nothing is
+ticked or accepted for you: suggestions show as chips with what they'd do ("INV-0042 · £450") and a "Why?" panel.
+Many at once: "Set client" (`POST decisions/bulk-client` with ids, or a payer's `merchant_key` and a tax year), and the
+year page's "Decide all" for a payer's group with a client filled in from who the payer usually pays for.
+Transactions filter by client and by income with no client, job or invoice. A locked year changes nothing: these
+refuse it and say so; unlock it with a reason first (moving income between jobs or clients too). Unlocking a filed
+year keeps what it was (`tax_year.unlocked`: its status and figures, and on the full form each expense box), and
+locking it again with nothing changed puts it back to filed (`tax_year.locked` with `status_restored`), so unlocking to
+move a client never leaves a false "amend your return".
+
+**Catching up on past years.** Assign a year's income by client and job: "Set client" for each payer, or decide one
+payment and let the rest be suggested the same way, then accept them. Don't enter old invoices as new ones: a "Record
+a past invoice" (its own number and date, sent outside Expend, never nudged) isn't built, and an invoice issued now
+would take the next number and today's date. On the cash basis an invoice changes no figure anyway.
+
+**Reports that changed.** The year spreadsheet adds Client (worked out) and Invoice (its number) after Note, and a
+deduction reads "Business expense (taken off the payment)" (`Export\YearExporter`). The connections map's links
+carry each line's amount, and an income node shows only its lines on the jobs shown. The assistant's `invoices` tool
+has each invoice's state and what's outstanding; `search_transactions` takes `client_id` and gives `lines_total`;
+`propose_decision` takes `lines` (with `invoice_number`, `deduction` and `client_id`) and is always a suggestion. The
+tax pot's Telegram line is net of a fee and names the client, and the planning review's top-client share goes by the
+worked-out client. None changes a tax figure.
+
+**The audit trail** (every write you'd care about, in the hash chain, with its actor): `client.created`,
+`client.updated`, `client.merged`, `client.unmerged`, `charge_terms.updated`; `cost.charge_set`, `cost.claimed`,
+`cost.charge_cleared`, `cost.outcome_set`, `cost.paired`; `job.done`, `job.reopened`, `job.cancelled`,
+`job.uncancelled`; `invoice.drafted`, `invoice.line_added`, `invoice.line_changed`, `invoice.line_removed`,
+`invoice.line_flagged`, `invoice.filled`, `invoice.legacy_draft`, `invoice.lines_edited`, `invoice.client_changed`,
+`invoice.converted`, `invoice.deleted`, `invoice.rollback_prepared`, `invoice.issued`, `invoice.voided`,
+`invoice.closed`, `invoice.reopened`, `invoice.replaced`; `invoice.gmail_drafted`, `invoice.reminder_drafted`,
+`invoice.gmail_failed`, `invoice.gmail_draft_deleted`, `invoice.gmail_draft_removed`, `invoice.sent`,
+`invoice.reminder_sent`, `invoice.marked_sent` (with `sent_on`).
+
+**Routes** (`routes/web.php`; each Gmail call and each search has its own named limit):
+
+| Area | Routes |
+|---|---|
+| Clients | `GET clients`, `POST clients` (`clients-store`, 60 a minute), `GET clients/{id}`, `PATCH clients/{id}`, `GET clients/{a}/compare/{b}`, `POST clients/{id}/merge`, `unmerge`, `not-same`, `PUT clients/{id}/terms`, `POST clients/{id}/invoice` |
+| Jobs | `GET jobs?show=done_due&client={id}`, `POST jobs/{id}/done`, `reopen`, `cancel`, `uncancel`, `draft`, `PUT jobs/{id}/terms` |
+| Costs | `POST costs/{cost}/charge`, `claimed`, `outcome`, `clear`, `pair` (the cost's id, `CostRef::toId`); `POST items/{bank\|manual}/{id}/recharge` and `expense-client` |
+| Drafts | `PATCH invoices/{id}/lines/{line}`, `POST invoices/{id}/seen`, `share`, `usual`, `GET invoices/{id}/costs` (`invoice-costs`, 60) |
+| Issuing and Gmail | `POST invoices/{id}/issue`, `gmail` (`invoice-gmail`, 20), `issue-and-send` (`invoice-issue-send`, 20), `GET invoices/{id}/gmail/preview` (`invoice-gmail-preview`, 30), `POST invoices/{id}/gmail/send` (`invoice-gmail-send`, 20), `gmail/check` (`invoice-gmail-check`, 30), `GET invoices/{id}/threads` (`invoice-threads`, 20), `POST invoices/{id}/sent-self` |
+| After issuing | `POST invoices/{id}/reminder` (`invoice-reminder`, 20), `paid-wait`, `close`, `reopen`, `replaced-by`, `void`, `send` (the mail route) |
+| Income | `POST decisions/bulk-client`; `GET lookups/jobs` (`lookups-jobs`, 120), `lookups/owed` (`lookups-owed`, 120), `lookups/invoices` (`lookups-invoices`, 120) |
+
+A JSON call from a sheet gets JSON back (`{message}`, or the refusal's words, `paid-wait` and `share` included); a
+stale one gets 409 with what changed (`share` sends the payment's fingerprint as `fp` and gets the payment as it is
+now in `sheet.payment`). Accept on an Inbox card and the drawer's "Accept suggestion" (`POST items/{source}/{id}/confirm`)
+send `shown`, the ids of the lines they showed: a suggestion replaced since is refused ("This changed since the page was
+shown"), never confirmed. Times on the invoice page (sent, reminded, the changes and email rows) are UK time.
+
+**Not built** (owner decisions or later): credit notes and automatic credits; disbursements; VAT on invoices; a VAT
+watch on supplies made; the claim pack; Expend learning an arrangement by itself; converting costs into another
+currency for a foreign invoice (they're listed unpriced); receipts attached to invoice emails; statutory interest;
+"Record a past invoice"; per-row "costs to charge" on the client list; the price form with source chips, the PO
+prompts ("Ask for it", "Use its lines") and the "statements behind" warning on the check screen; and "Recharge to the
+client" on the quick add screen (§6.12).
 
 ## 7. Security
 
@@ -1185,6 +1441,7 @@ Android Back with a sheet open; and the iPhone SE's small screen.
    invoices and sync problems.
 2. **Money:** accounts, imports, and **Review all**: every transaction and its allocation in one table.
 3. **Jobs:** clients, jobs, job P&L, mileage, a trip view for each job, and a year timeline of jobs and travel.
+   *As built:* **Clients** has its own menu item after Jobs (§6.13).
 4. **Invoices:** create, send, track, credit notes.
 5. **Tax:** quarters, tax-year summary, estimate and set-aside, exports.
 
@@ -1239,7 +1496,10 @@ how you paid.
 
   Then lock the period and export the MTD summary and the records pack.
 - **Invoice.** Start from a job, with client and fee pre-filled. Generate the PDF, mark it sent, and the
-  incoming payment is matched automatically.
+  incoming payment is matched automatically. *As built (§6.13):* mark the job Done (suggested the morning after its
+  last day); its draft lists the work and every linked travel cost and expense, ticked by the client's arrangement;
+  check it, then [Issue…] and [Issue and send to …] or [Issue and put in Gmail drafts]; the payment is suggested
+  against what's still to come on the invoice, and you accept it.
 
 ### 9.3 Standards
 

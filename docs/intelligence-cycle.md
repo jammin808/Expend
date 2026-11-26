@@ -10,6 +10,13 @@ M1 to M7 are built. Where the build differs from the first draft (names, dates, 
 below say what was built, and each milestone's **As built** notes what was left or done differently. Law 4 (section
 5.1) was amended on 24 November 2026 by the owner's mail and calendar decision (docs/mail-and-calendar.md).
 
+**Income v3 and clients, jobs and invoices (built 25 Nov 2026)** change these parts, each marked where it is:
+payer aliases are worked out, not stored (3.2); invoice matching is `Income\InvoiceMatcher`, with two new methods, a
+tie rule and a match on issue (2.4, 4.2); `relate.sweep`, "Not this job" and the Verifier read income links (4.2,
+4.3, 4.6); six new to-do keys and their finding codes, and `income.unlinked` version 2 (4.4); the new to-do actions,
+the toast's Undo and the daily invoice nudge (4.5); charge statuses and draft invoices that follow the job (4.7);
+`income.invoice` never acts (5.3, 5.4, M10); and the schedule entries outside the cycle (6.1).
+
 ---
 
 ## 1. The cycle in one picture
@@ -180,7 +187,9 @@ prefix) for rows written before the method column existed.
 | `transfer.one_sided` | `TransferPairer::suggestOneSided` | `OwnAccounts::reason` kind | matcher + OwnAccounts reasons |
 | `transfer.partner` | `TransferPairer::afterYourDecision` → `confirm()` | n/a | `allocation.confirmed` right after the partner's owner decision |
 | `revolut.exchange` | `RevolutImport` (exchange legs) | exchange key | matcher + its reason |
-| `suggest.invoice` | `Suggester::suggestFor` (invoice branch) | candidates count, payer match | matcher + "Matches invoice " |
+| `suggest.invoice` | `Suggester::suggestFor` (invoice branch). **As built (income v3):** version 2, written only by `Income\InvoiceMatcher`'s exact level: the only open invoice whose amount still to come is the payment ("Matches what's still to come on INV-0042 (£450)") | how many open invoices had that amount still to come | matcher + "Matches invoice " (v1) |
+| `suggest.invoice_set` **(income v3)** | `InvoiceMatcher`'s set level: 2 to 4 of the payer's sole client's oldest 12 open pound invoices that add up to the payment, when exactly one combination does ("INV-0041 + INV-0043 add up to £1,350") | how many of the client's open invoices were searched | n/a |
+| `suggest.invoice_net` **(income v3)** | `InvoiceMatcher`'s net level: one invoice, or 2 to 4, with a fee or commission taken off (the bank's own pound fee, `RevolutImport::poundFee`, or the payer's usual: 2 of its last 5 receipts you decided with a deduction agreeing within 1p or 10 basis points); never for a payslip-like payer | how many open invoices were tried | n/a |
 | `suggest.hmrc`, `suggest.penalty`, `suggest.car_hire`, `suggest.travel` | `Suggester` branches | pattern | matcher + "Looks like a payment to HMRC" / "Looks like a fine" / "Looks like car hire" / travel reason |
 | `categorise.merchant`, `.similar`, `.bank_learned`, `.hint`, `.bank_hint` | `Categoriser::propose` (`source` already returned) | n of m | matcher + `Categoriser::REASONS` (minus Suggester's) |
 | `rule.learned`, `rule.owner` | `RuleLearner::accept`, `DecisionService::apply` | rule id | rule + `rule.learned` audit event |
@@ -420,6 +429,17 @@ Unique: (method, subject_ref, shape, visibility). Index: (method, method_version
 
 Unique: (counterparty_key, client_id).
 
+**As built (income v3, 25 Nov 2026): not a table.** `Income\PayerAliases` works out who pays for whom from your
+decisions each time it's asked, in one grouped query for a page or a run (`PayerAliases::forKeys`): confirmed
+business income on active statements, counted by payer (the line's `merchant_key`) and the line's worked-out client
+(`Income\IncomeClient`: its invoice's client, else its job's, else the line's own `allocations.client_id`), each
+payment once. A line counts when you made it, or when you accepted it and its client comes from its invoice or job;
+never a client that automation filled in from these very counts and you merely accepted. Rule-confirmed lines, waiting
+suggestions, money paid back, voided lines and "UNKNOWN" payers don't count. A payer who has paid for more than one
+client is shared, and `sole()` names no client for it. Nothing is migrated or backfilled, and a merge or a corrected
+decision shows at once. The client page lists them read only ("Pays you as ACME PAYROLL (5 payments)",
+`PayerAliases::keysFor`).
+
 ### 3.3 Columns added to existing tables
 
 | Table | Columns (all nullable, appended) | Milestone |
@@ -456,6 +476,9 @@ act records live in the audit `after` payload, so no further audit columns are n
 | `intel_report_detail` | `full` | `full` or `counts` |
 | `mailbox_last_result` | null | {ok, at, error}: the forwarding mailbox's last change of state, written by `ledger:fetch-email` and read by `health.mailbox`. The error is never shown |
 | `intel_backfills_done` | `[]` | finished backfills |
+| `invoice_nudges` | `[]` | **(clients, jobs and invoices)** what `ledger:invoice-nudges` told you, `{key: {at, n}}`, kept 400 days. Not the audit log: a message isn't a change. Not in `Setting::DEFAULTS` |
+| `invoice_emails_blind` | null | **(same)** "Expend can't see Gmail": `{since, why, told}`, kept while checks can't read Gmail and cleared by the next one that works (`InvoiceEmails::BLIND_SETTING`). Not in `Setting::DEFAULTS` |
+| `job_finished_told` | `[]` | **(same, rekeyed)** the jobs `ledger:job-finished` asked about, `{"{job}@{finish}": day sent}`, plus `{job}@{finish}#{day}` for the ask after a "Not finished yet" snooze ends; kept 400 days. Rows kept by job id alone count as asked for any finish up to that day |
 | `intel_audit_context` | true (from M7) | audit events record channel, correlation and run id (hash v2). Off in M6, so M6 can still be rolled back; on by default from M7 (a stored `false` still turns it off). From M7, roll back no further than M6 |
 
 `ai_usage_YYYY_MM` gains `reserved` and `by_purpose` fields (M2, M5).
@@ -581,6 +604,41 @@ The steps:
   waiting. Today `ledger:categorise` runs only `Categoriser`. The invoice branch also changes:
   - it refuses when two open invoices have the same total;
   - it requires a payer resembling the client (`payer_aliases` in M10).
+
+  **As built (income v3, 25 Nov 2026).** `relate.route` itself is still M8, but the invoice branch is rebuilt for
+  every path that runs the Suggester (a new statement, and `ledger:categorise` and `relate.categorise`, which run the
+  whole chain):
+  - It is `Income\InvoiceMatcher`, the only writer of `suggest.invoice`, `suggest.invoice_set` and
+    `suggest.invoice_net` (section 2.4), one level per pass: exact, else set, else net. An invoice is open when it is
+    issued with money still to come: what's outstanding (`InvoicePayments::received`), less what other payments
+    waiting in the Inbox name for it, less what this run has already proposed for it (the tally), so two payments
+    never take the same amount.
+  - **The tie rule.** Tied exact candidates keep those of the payer's sole client; still tied, nothing is proposed,
+    and the Inbox shows the invoices as chips (`Income\IncomeTargets`). A set or a net fit counts only when exactly one
+    combination fits. The matcher never writes over an invoice suggestion, whatever made it; an open one is replaced
+    only after `relate.sweep` takes it back.
+  - **The payer.** A payer known to pay for one client from 2 or more of your payments is matched only to that
+    client's invoices (or client-less ones billed to that name). A payment must come no earlier than 3 days before the
+    invoice's date (`InvoiceMatcher::SLACK_DAYS`), or 60 for a deposit from its known payer (`DEPOSIT_DAYS`).
+    Invoices you said a payment isn't for (and the invoices that replaced them), and the invoices of a job you said
+    it isn't for, are dropped before any search.
+  - **The on-issue match.** `InvoiceService::issue` calls `InvoiceMatcher::forInvoice` once the issue commits: up to
+    200 waiting payments (`FOR_INVOICE_LIMIT`) that could be for the new invoice are tried, oldest first, with one
+    shared tally. A payment counts when it has no lines, or an open suggestion that isn't an invoice suggestion and
+    ranks below the matcher's 5 (`AllocationWriter::PRECEDENCE`), which it then replaces; a rule's open suggestion
+    (rank 6) stays. It never fails the issue, and the issue's message says "1 waiting payment looks like it's for
+    it".
+  - **Client enrichment.** `PayerAliases::enrich` gives the job-less, invoice-less business-income lines of a rule or
+    categoriser suggestion (and of `RuleLearner::accept`) the payer's sole client, adds " · for Acme Events (from your
+    payments)" to the reason and the payment it was learned from as `tx:` evidence. Nothing is enriched when two
+    clients are plausible.
+  - **Never confirmed.** Every automatic income link is a suggestion (the owner's answer of 24 Nov 2026):
+    `AllocationWriter::decide` stores any automatic write of money in unconfirmed when a line names an invoice, a job or
+    a client, and `confirm()` refuses an automatic actor ("Only you can accept an income link."). So a turnover rule
+    that confirms on its own leaves a payment from a payer with a sole client as a suggestion (`decided_by` rule,
+    `client_id` set). A plain turnover rule with no link still confirms as before.
+  - The background AI (`TransactionAdvisor`) gets no jobs around the date for money in: it proposes the kind and
+    category only.
 - **`relate.categorise`** runs `Categoriser::suggestFor` in chunks of 300 with a cursor, as `routes/console.php`
   does today. M2 fixes `Categoriser::isOurs`: `'Looks like '` in `REASONS` matches Suggester's "Looks like a
   payment to HMRC/a fine/car hire", so `learnFrom` can overwrite those suggestions. From M6 the check uses the
@@ -591,7 +649,13 @@ The steps:
   the queued job can't run at once. From M7, `followUp`'s "Same PO number" invoice link (line 466) respects
   `job_finds` rejections and vetoes.
 - **`relate.sweep`** (M7) withdraws unconfirmed machine suggestions whose basis is gone: the job was cancelled, the
-  invoice was voided or paid, the rule was deleted, or a veto was added.
+  invoice was voided or paid, the rule was deleted, or a veto was added. **As built (income v3):** its parts are
+  `void_invoice`, `paid_invoice`, `cancelled_job`, `deleted_rule` and `vetoed` (`RelateSweep::PARTS`). `paid_invoice`
+  goes by what is still to come, not by the total: a match is taken back when its invoice has nothing outstanding
+  (paid by payments you confirmed, or closed), or less than the match puts on it (in pence for a pound invoice; in its
+  own currency for another when the payment came in it), with a reason naming what's still to come.
+  `cancelled_job` leaves alone a job cancelled with something owed (`cancel_charge` `fee` or `costs`: its draft
+  carries them), and a match to an invoice of it that is still issued and unpaid.
 - **Learning from accepted suggestions** (M7): `Categoriser` and `RuleLearner::offers` count accepted suggestions
   (`confirmed_by = you` on a machine `method`) at half weight. They never learn from unreviewed rule or policy acts.
 
@@ -627,6 +691,14 @@ Code that changes:
   - M2: `save()` audits with the real model subject and id instead of a type string with a null id.
   - M8: a **blind second read** by a different model, which is not shown the claims (today the second read prompt
     lists them, line 158). It runs only for money-bearing scans, under the `verify` AI purpose.
+  - **As built (income v3):** `Verifier::transaction` reads a negative business-expense line on money in that also has
+    an income line as a deduction (a fee or commission taken off: its sign is right, and it gets the income's date
+    window, from 30 days before the job starts to 120 after it ends). A line naming an invoice is checked against that
+    invoice rather than the job's dates. A job cancelled with a fee or its costs to charge still fits. Money in from a
+    payer whose sole client you've charged costs to (on an issued invoice, or another way), suggested as something
+    other than turnover (personal, a transfer, a loan, money put in, a refund or other income), gets a failed 'Who
+    paid' check: "Looks like Acme Events paying you: that's turnover (box 15), not a refund or other income". Only
+    open automatic suggestions are checked: a repayment you confirmed yourself is not warned about.
 
 ### 4.4 Identify discrepancies
 
@@ -656,6 +728,40 @@ Code that changes:
 | `stale:{a}:{line}` → **`stale:{a}`** | acct.stale | `acct:a` | acct | none |
 | `missing:{t}` | travel.payment_missing | `travel:t` | job | unrecorded |
 | `doc:{d}` | doc.held | `doc:d` | none | none |
+| `invoice_overpaid:{i}`, `invoice_void_paid:{i}` **(income v3)** | invoice.overpaid, invoice.void_paid | `inv:i` | job | none |
+| `job_done:{j}` **(clients, jobs and invoices)** | job.done_due | `job:j` | job | owed_to_you |
+| `draft:{i}` **(same)** | invoice.draft | `inv:i` | job | owed_to_you |
+| `claimed:{cost}`, `charge:{cost}` **(same)**; the cost's button id, `CostRef::toId` (`tx:381:j45`, `travel:7`, `trip:3`) | cost.claimed, cost.late | `tx:`, `exp:`, `travel:` or `trip:` | job (from `j45`) | owed_to_you |
+
+**As built (25 Nov 2026), the new keys** (`TodoGroupsDetector::TABLE`, with grades in `Intel\Grades` and names in
+`DetectorLevels`, all graded certain from your own records):
+
+- `invoice_overpaid:{i}`: "Acme Events paid £100 more than INV-0042", with [Keep £100 as Acme Events, no job]
+  (`inv_over_keep`, pound invoices with a client) and "I paid it back" (a link to that payer's money out).
+- `invoice_void_paid:{i}`: "INV-0041 was voided after £500 was paid against it" (`InvoicePayments::stranded`), with
+  [INV-0043 replaced it] (`inv_replace`, `{void}:{replacement}`) when exactly one issued invoice of the same client, dated
+  that day or later, is still owed at least that much. Reminders to that client wait until you say.
+- `job_done:{j}`: "Is Arena load-in done?" for a booked job whose last day finished in the last 60 days
+  (`JobStage::DONE_WINDOW_DAYS`), with Done, Not yet and Cancelled… (`job_done`, `job_not_yet`, `job_cancel`). It
+  replaces "Invoice <job>" (`invoice:{j}`) while shown; older finished jobs keep "Invoice <job>". Its snooze reasons
+  include "Not finished yet" (`TodoActions::NOT_FINISHED_NOTE`, 3 days, `NOT_YET_DAYS`).
+- `draft:{i}`: a follow-up draft (late costs of a job already invoiced) or a client's draft with no job, "Draft · 3
+  lines · 2 changes since you looked".
+- `claimed:{cost}`: "Was Uber 12 Mar paid back?" for a cost charged another way or claimed on the client's form 30 days
+  ago or more with nothing said since (`TodoList::CLAIMED_DAYS`), with [Paid back] and [Not paid back]
+  (`cost_paid_back`, `cost_not_paid`).
+- `charge:{cost}`: "Charge Taxi 13 Mar to Acme Events" for a cost linked to a job after its invoice was sent
+  (ChargeStatus `owed_late`, invoices issued in the last 400 days: `TodoList::LATE_COST_DAYS`), with [Invoice it now]
+  (`cost_invoice_now`), [Not charged] (`cost_no_charge`) and [It was on INV-0042] (`cost_invoiced`). The job's latest
+  issued invoice shows the same costs once it was sent, by the same rule, so a cost decided in one place goes from both.
+  `JobCloseout` no longer counts these late costs, so they aren't asked about twice.
+
+Also changed: `invoice_overdue:{i}` counts only once an invoice was sent, from the later of its due date and the day
+it was sent plus its terms (`ChaseLadder::daysOverdue`); an issued invoice never sent stays `unsent:{i}`. A part-paid
+invoice gains a ghost "Close it: £350 isn't coming" (`inv_close`, `{id}:sp`), and one paid in another currency "It's
+paid (in another currency)" (`{id}:fx`). `invoice:{j}` is written by `JobBilling` (a job billed by income alone, or by
+another job's invoice, isn't asked about), and for a client who pays without an invoice from you it reads "Acme Events
+hasn't paid for Arena load-in yet" once 45 days have gone by with nothing in (`TodoList::NO_INVOICE_DAYS`).
 
 The routine groups (`payments`, `rules`, `transfers`, `stays`: `FindingsRegistry::ROUTINE`) remain proposals, not
 findings. The two re-keyed entries use rekeyed events (M3), so a partly filled gap becomes a `changed` event on the
@@ -681,7 +787,7 @@ same finding instead of a new finding.
 | `year.filed_drift` | M1 | `ReturnSummary::for($label)` against `tax_years.filed_turnover/expenses/profit_pence` for filed or amending years; the amend-by date is `FilingDates::deadline` plus one year | owed_by_you or claimable | certain |
 | `job.closeout` | M4 | Per finished job: `invoices.po_total_minor` and PO facts (`doc:#f=…`), invoice total and lines, `InvoicePayments::received`, recharge-decided `travel_items` against `invoice_lines`, costs and job days. One verdict per job. | owed_to_you | strong or likely (from the PO fact's check) |
 | `travel.double_claim` | M4 | Mileage from home on a morning after a hotel night near the venue; mileage plus a confirmed train for the same job day; confirmed fuel while every vehicle uses simplified mileage | at_risk | certain |
-| `income.unlinked` | M4 | Confirmed `business_income` with no invoice and no job | none | certain |
+| `income.unlinked` | M4; **version 2** (income v3) | Confirmed `business_income` with no invoice and no job. **As built:** per line, and a line counts as assigned once its worked-out client (`IncomeClient`), job or invoice is set: client-only income is done (the owner's answer). A payment is flagged for the sum of its unassigned turnover lines, titled "Income with no client, job or invoice" (`IncomeUnlinked::VERSION` 2) | none | certain |
 | `receipt.unmatched`, `cost.no_receipt` | M4 | `receipt.match`: receipts with no payment (often a card that isn't imported); confirmed business costs over `intel_receipt_threshold_pence` with no document | unrecorded, none | likely |
 | `dupe.cross_source` | M4 | A cash `manual_expenses` row and a card line with the same amount, a similar merchant, within a day. An expense added from the phone is left to `quick.maybe_card` | at_risk | likely |
 | `rule.drift` | M4 | Rules the owner overrode at least twice in 90 days (from honest audit events since M2) | none | certain |
@@ -726,6 +832,29 @@ Interfaces:
   - `cand_merge` (mail and calendar batch 1): "Part of <job>" on a possible job, id `{candidate}:{job}`, through
     `JobFinder::merge`, which then searches the job again (`GatherForJob`);
   - `act_undo`, `run_undo` (M9).
+  - **As built (income v3 and clients, jobs and invoices, 25 Nov 2026)**, every one bound by its fingerprint:
+    - income: `tx_invoice`, `tx_client` (an Inbox chip as one press), `tx_fee` (the payer's usual fee taken off),
+      `tx_job` ("It was for this job" on an `invoice:{j}` item), `inv_close` (`{id}:sp`, `{id}:fx`), `inv_over_keep`,
+      `inv_replace` (`{void}:{replacement}`);
+    - jobs: `job_done`, `job_not_yet` (snoozes `job_done:{id}` for 3 days, "Not finished yet"), `job_cancel` (a bare
+      job id only asks; `{id}:none` and `{id}:costs` cancel it; a fee is given on the job's page, `/jobs/{id}#cancel`),
+      `job_reopen` and `job_uncancel` (the Undos), `todo_undo` (Undo of a snooze a button made: Not yet, They've
+      paid, Remind me Monday);
+    - invoices: `inv_draft_later` ("Remind me Monday"), `inv_to_gmail`, `inv_gmail_send`, `inv_sent_self` (today; the
+      item adds a "Pick a date" link to `/invoices/{id}#sent`), `inv_chase` (Make a reminder: `ChaseLadder::make` with
+      once true; with no usable Gmail it emails the reminder through `InvoiceMailer`), `inv_chase_send`,
+      `inv_chase_later` ("Not yet", 7 days), `inv_paid_wait` ("They've paid");
+    - costs, by the cost's button id (`CostRef::toId`): `cost_charge`, `cost_no_charge`, `cost_elsewhere`,
+      `cost_claimed`, `cost_invoiced` (`{cost}:{invoice}`), `cost_paid_back`, `cost_not_paid`, `cost_clear`,
+      `cost_invoice_now` (all through `Charges\CostCharges`, as you);
+    - `link`: an action with an `href` and no fingerprint, which decides nothing (it opens a page).
+  - **What follows a press** (`TodoActions::followUp`): a link to what the press made or opened, and Undo where it
+    can be undone, worked out after the press so each is bound to what it left. On Telegram they replace the
+    pressed message's buttons; on the web `TodoController::act` flashes `undo` (`{code, id, label, fp}`) and
+    `follow_up` (buttons `{code, id, label, fp}`, links `{label, href}`), which the toaster shows as buttons
+    (`resources/js/components/toaster.tsx`, `resources/js/lib/todo.ts`): 10 seconds with buttons, 9 for an error, 4.5
+    otherwise, held while touched, and kept until answered when it asks. On the to-do page, Cancelled…'s question
+    ("Do they owe you anything?") is asked in a bottom sheet instead, so it can't time out.
 - **Fingerprints (M7, `Todo\Fingerprints`).** Every deciding action is bound to the state it was offered on: 6 hex
   characters of a hash of what it would act on (a payment's lines, an invoice's status and total, a finding's key and
   code), never of fields a night's run rewrites (a finding's title or amount, an opportunity's last-seen time or
@@ -735,7 +864,12 @@ Interfaces:
   why), decide nothing.
 - **`ledger:invoice-nudges`** (`routes/console.php`): M2 makes it skip `invoice_overdue:{id}` keys in
   `TodoDismissal::activeKeys()`. M5 makes it read the `invoice.overdue` findings (brought up to date first with
-  `FindingsRegistry::refresh()`), so the to-do list and the nudges share one logic.
+  `FindingsRegistry::refresh()`), so the to-do list and the nudges share one logic. **As built (25 Nov 2026):** it is a
+  command class, `app/Console/Commands/InvoiceNudges.php`, under the same name, daily at 09:13 London (it was
+  weekdays): drafts waiting, invoices not sent, a deleted Gmail draft and overdue invoices, each at its own pace, with
+  quiet hours (21:00 to 08:00), a wait on job days (at most 2 days) and at most one message per invoice a day; what it
+  told is kept in `settings.invoice_nudges`. It only tells: every button is yours, and nothing it does writes a
+  reminder draft or sends an email (docs/mail-and-calendar.md, "The money end of batch 4").
 
 ### 4.6 Preserve decisions
 
@@ -776,6 +910,11 @@ Interfaces and code that changes:
   - unpairs a transfer;
   - unlinks a payment from a booking (`TravelMatcher::decide` with `client_booked`);
   - rejects an invoice-to-job link (`JobGatherer::reject`);
+  - says "Not this job" on a payment (`JobGatherer::unlinkPayment`, income v3): when its lines were automatic and named
+    the job's invoice, the invoice is dropped too and an `invoice_payment` veto is recorded (reason code
+    `not_this_job`), so the matcher doesn't offer it again. The matcher's job-only "not this job" memory is read from
+    the job's rejected `job_finds` rows, not a veto row (it isn't in the vetoes list; deleting the rejected find, or
+    the job's own undo, lifts it);
   - says "didn't drive" for a mileage day;
   - undoes a rule (`RuleLearner::undo` also adds the merchant to `rule_offers_declined`).
 
@@ -804,6 +943,65 @@ Interfaces and code that changes:
 - **`deploy/restore-check.sh`** (M2): with `--load`, also checks the audit chain of the loaded copy, in SQL, the
   way `AuditLog::verify()` does. It never runs `ledger:verify-audit` there: that command writes a setting and sends
   the Telegram alarm, and a restored copy holds the owner's Telegram token.
+
+### 4.7 Charges and draft invoices (built 25 Nov 2026, outside the cycle's steps)
+
+Clients, jobs and invoices (docs/PLAN.md §6.13) add work that the cycle reads but never does: no cycle step changes a
+draft, a charge decision or an invoice email.
+
+**Charge statuses are worked out, not stored** (`Charges\ChargeStatus::for`, read only, a few queries per batch).
+Each cost (a payment's line on a job, a cash expense, a booking, a mileage trip, or part of the job's work) is one of
+`ChargeStatus::STATUSES`, in this order:
+
+| Status | Means |
+|---|---|
+| `covered` | The job was billed before Expend tracked where lines come from, or another way (an issued invoice with no sync, income with no Expend invoice through `JobBilling`, or "Already sorted" on its `invoice:{job}` item). Its costs are never ticked or pulled onto a draft: `JobCloseout` asks about them instead |
+| `on_invoice` | Charged on an issued (or legacy paid) invoice, or you said it was. A voided invoice is followed to the one that replaced it (up to 5 steps); voiding frees a cost |
+| `elsewhere` | Charged another way, or claimed on the client's expense form |
+| `to_claim` | The arrangement says their form, and it isn't claimed yet |
+| `not_charged` | You said so; or it was left off an issued invoice (unless your recharge decision is newer); or the arrangement doesn't charge it; or its job was cancelled with nothing owed |
+| `on_draft` | Ticked on a draft |
+| `owed`, `owed_late` | Something left that's expected to be charged (you said recharge, its kind is charged at cost or per mile, or it's work); `owed_late` once the job has a tracked issued invoice: it goes on the client's next draft, "From earlier jobs", and is the to-do list's `charge:{cost}` |
+
+The client page's chips group them (`ChargeStatus::CHIPS`: To charge, On a draft, Charged, To claim, Not charged,
+Charged another way). What's charged is the ticked lines on issued invoices whose ref is the cost's, so a ticket charged
+once has nothing left when it's later split between jobs; a refund is ticked only within what was charged for its
+kind on the job. Two records that may be one cost (`CostUnits` flags the one made second) aren't both charged: once
+one is charged, the other is unticked too, until you say they're the same or different (`pair`).
+
+**Your decisions** about a cost are rows in `cost_charges` (`CostCharge::CHARGES`: `recharge`, `no_charge`,
+`elsewhere`, `invoiced`; `pair` `same` or `distinct` with its `pair_ref`; `outcome` `paid_back` or `not_paid`), written
+only by `Charges\CostCharges` as you and audited: `cost.charge_set`, `cost.claimed`, `cost.charge_cleared`,
+`cost.outcome_set`, `cost.paired`. A client's or a job's usual arrangement is `charge_terms` rows (one per kind of cost,
+`ChargeTerm::CHARGES`: `per_mile`, `at_cost`, `per_job`, `per_day`, `day_rate`, `their_form`, `none`), written by
+`ChargeTermsWriter` from your presets (`ChargeTermsWriter::PRESETS`: `at_cost`, `mileage`, `in_rate`, `travel_fee`) or
+your rows, tied to the rows you were shown, and audited `charge_terms.updated`. Expend never learns an arrangement by
+itself: only your presets, your rows, or "Save these ticks as Acme's usual" at issue.
+
+**Draft invoices follow the job** (`Invoices\InvoiceDraftSync::sync`, as `policy`, on drafts only; an issued invoice
+never changes). A draft gets its job's work (`InvoiceDraftSync::WORK_SOURCES`: `po`, `fee`, `days`, `hours`, `extra`,
+`tdays`, `tfee`, `meals`, `cancel`), every cost of the job (ticked where the client usually pays it), its mileage trips,
+and "From earlier jobs" (late costs of the same paying client's other jobs, plus client costs with no job you marked to
+recharge; each on one draft only). A line follows its cost unless you changed its wording (`own_text`), its amount
+(`own_amount`) or its tick (`ticked_by` `you`). A line whose cost has gone is deleted when untouched, and otherwise
+stays flagged `gone`, which blocks issuing (`InvoiceDraftSync::BLOCKING`: `gone`, `no_amount`, `check`). A cost in
+another currency is listed unpriced and unticked. On a draft made before line sources, the job's work takes over a
+typed line only when exactly one has exactly its amount; otherwise work lines aren't added at all, recorded once as
+`invoice.legacy_draft`. With nothing changed it takes no lock and writes nothing; otherwise it takes the locks in the
+usual order (audit head, then the paying client or the job, then the invoice and its lines) and audits
+`invoice.line_added`, `invoice.line_changed`, `invoice.line_removed`, `invoice.line_flagged` and `invoice.filled`. It
+runs when a draft is made, saved or issued, when a job's status or client changes, when the check screen opens
+(`InvoiceController::show`), and nightly in `ledger:sync-drafts` (03:37, section 6.1); a cost linked to a job in
+between reaches its draft on the next of these.
+
+`ledger:sync-drafts --before-rollback`, run before going back to the release before this one, deletes every unticked
+line of every draft, typed ones too (that release bills every line), and turns the lines that stay into plain typed
+lines (`invoice.rollback_prepared`, as `policy`). Issued invoices aren't touched.
+
+**Issuing** stays your press (`InvoiceService::issue`). It refuses while anything changed since the lines you were
+shown (`lines_version`, `seen_up_to`: a stale press gets 409 with the sheet again), and confirms ticked costs whose
+payments weren't confirmed only from the issue sheet, each bound to its payment's whole split (`SourceState`), never
+in a locked year.
 
 ---
 
@@ -848,7 +1046,7 @@ nothing the owner sees except that it becomes visible and reversible.
 | `transfer.pair` | transfer.pair | 3 | 2 | Suggested |
 | `transfer.exchange` | revolut.exchange | 3 | 2 | Suggested |
 | `transfer.one_sided` | transfer.one_sided | 2 | 2 | Suggested |
-| `income.invoice` | suggest.invoice | 3 | 2 | Suggested |
+| `income.invoice` | suggest.invoice, suggest.invoice_set, suggest.invoice_net | **2** | 2 | Suggested. **Not to be raised (the owner's answer, 24 Nov 2026):** no income link (an invoice, a set, net of a fee, or a client from a payer) is ever confirmed by automation; `AllocationWriter` enforces it whatever a level says |
 | `tax.hmrc_payment` | suggest.hmrc | 3 | 2 | Suggested |
 | `category.rule` | rule.learned, rule.owner | 3 | **3** for rules with `auto_confirm = true` (every rule made from "Always do this": `RuleLearner::accept` line 166); 2 otherwise | Same |
 | `category.learned`, `category.pattern` | categorise.*, suggest.penalty/car_hire/travel | 2 | 2 | Suggested |
@@ -910,8 +1108,9 @@ full.
 - `tax.hmrc_payment`: the payee matches `HMRC_PATTERN`, **and** either the amount equals an obligation from
   `PenaltyEstimator::forYear` or `TaxSavings`' payments on account, or the reference contains the year's
   `hmrc_reference`.
-- `income.invoice`: exactly one open GBP invoice with that total, nothing received yet, and the payer is a
-  `payer_aliases` row learned from at least two owner-confirmed payments by that client.
+- ~~`income.invoice`~~: **not offered** (the owner's answer of 24 Nov 2026: income links are never confirmed by
+  automation, so its ceiling is 2; see 5.3). The design was: exactly one open GBP invoice with that total, nothing
+  received yet, and the payer known from at least two owner-confirmed payments by that client.
 
 ### 5.5 Reversibility, verification and demotion
 
@@ -991,6 +1190,18 @@ foreground of `schedule:run`: Laravel runs due events in sequence, and nothing i
 | morning | from 07:05, after Starling's 06:41 import | acquire.health, detect.*, detect.sync, recommend.report (at `intel_report_time`), recommend.alerts, preserve.seal |
 | import | queued after an owner upload or a Starling import | detect.todo, detect.sync, preserve.seal. **As built (M5)** this is not yet limited to the account: the batch and account refs are kept as the steps' scope, and detect.sync runs with complete coverage, so nothing is resolved wrongly. Scoping needs `FindingsRegistry` support |
 | manual | "Check now" on `/intel` (`POST /intel/check`, at most 6 a minute) | detect.*, detect.sync, preserve.seal |
+
+**Outside the cycle, whatever its mode** (clients, jobs and invoices, 25 Nov 2026; `routes/console.php`). No cycle
+step touches drafts or invoice emails, so these run on their own schedule even when the cycle is `on`:
+
+| Entry | When (London) | What |
+|---|---|---|
+| `ledger:sync-drafts` | 03:37 daily, `withoutOverlapping` | Every open draft brought up to date with what's linked to its job (`InvoiceDraftSync`, as `policy`); section 4.7 |
+| `invoice-emails-check` (`App\Jobs\CheckInvoiceEmails`) | hourly at :23, `withoutOverlapping` | The drafts Expend put in your Gmail: sent from Gmail (recorded), deleted unsent, edited; and Expend's own unedited reminder drafts taken out once they aren't needed (`ChaseLadder::tidy`). It never writes a draft |
+| `ledger:invoice-nudges` | 09:13 daily (it was weekdays) | Telegram about drafts waiting, invoices not sent and overdue invoices; buttons only (section 4.5) |
+| `ledger:job-finished` | 08:37 daily, as before | Telegram: "All done?" the morning after a job's last day (section 7.6) |
+
+Reminders are never scheduled: `ChaseLadder::make` runs only on your press.
 
 `detect.*` is one `detect.<code>` step per registered detector (`Intel\Detectors\Registry`), `detect.todo` first, so
 a detector added to the registry joins the runs without other wiring. An import or "Check now" asked for while a run
@@ -1188,7 +1399,8 @@ for an invoice-to-job link (an issued invoice is never changed).
   time alerts are sent for real, critical findings open for over a day and not due within 7 days are taken as known
   (they're on the to-do list and in the Monday digest), so switching the cycle on doesn't flood the chat. Not
   alerted here: a broken audit chain (its own alarm, sent by `verify.audit_chain` and `ledger:verify-audit`),
-  `invoice.overdue` (left to the weekday nudge, which carries its Send a reminder button), and kinds below the fold.
+  `invoice.overdue` (left to the invoice nudge, daily since 25 Nov 2026, which carries its Make a reminder button;
+  `RecommendAlerts::NOT_ALERTED`), and kinds below the fold.
   A shadow run only counts what it would send.
 - **Buttons:** Snooze a week and Not relevant with preset reasons ("Both charges were real", "Refunded", "Not
   mine", "Other") from M3; Undo an act or the run from M9; Allow / Not yet on promotion offers (the first promotion
@@ -1199,6 +1411,12 @@ for an invoice-to-job link (an issued invoice is never changed).
   whose data wouldn't fit is left out, never cut; "Snooze a week" decides something, so an old 3-part snooze button is
   refused; a press on something already settled says "Already dealt with".
 - Only the paired chat is accepted (as today). The channel is recorded in the audit context.
+- **As built (clients, jobs and invoices, 25 Nov 2026):** `ledger:job-finished` asks "Arena load-in: last day was
+  yesterday. All done?" with [Done] [Not yet] / [Cancelled] [Open the job], once per job and finish
+  (`settings.job_finished_told`), and once more the morning a "Not finished yet" snooze ends; three or more jobs on one
+  morning go as one message. Only the jobs' names (cleaned by `MorningReport::clean`) and links are sent. After a press,
+  `Telegram::handleButton` edits the message with `TodoActions::followUp`'s buttons (links and Undo). Invoice messages
+  (`ledger:invoice-nudges`) and their quiet rules are in docs/mail-and-calendar.md.
 
 ### 7.7 The assistant
 
@@ -1814,6 +2032,11 @@ later milestone rebases on whatever has merged. Task 52 (job opportunities, PO c
   levels equal to today's.
 
 ### M10. Earned autonomy for three kinds
+
+**Changed by income v3 (25 Nov 2026).** `payer_aliases` and `PayerAlias` are no longer needed: who pays for whom is
+worked out by `Income\PayerAliases` (section 3.2), which a `PayerAliasCheck` can read. `income.invoice` is not one of
+the kinds offered: the owner chose that income links are never confirmed by automation (section 5.3), so outcome
+capture and promotion would cover `transfer.pair` and `suggest.hmrc` only.
 
 **Scope.**
 

@@ -544,7 +544,12 @@ final class TodoList
             $money = fn (int $minor) => Money::format($minor, $currency);
             $dueOn = CarbonImmutable::parse($late[$i->id]['from']);
             $ago = (int) $late[$i->id]['days'];
-            $due = 'due '.$dueOn->format('j M Y').' ('.$ago.' '.($ago === 1 ? 'day' : 'days').' ago)';
+            $days = $ago.' '.($ago === 1 ? 'day' : 'days');
+            // The date printed on the invoice (as its page and the list say it); one sent late is overdue only from its
+            // terms after it went, and says so rather than give a second due date.
+            $printed = $i->due_date !== null ? CarbonImmutable::parse($i->due_date->format('Y-m-d')) : $dueOn;
+            $due = $printed->isSameDay($dueOn) ? 'due '.$dueOn->format('j M Y').' ('.$days.' ago)'
+                : 'due '.$printed->format('j M Y').', sent late so overdue since '.$dueOn->format('j M Y').' ('.$days.')';
             $client = $i->bill_to_name ?: 'the client';
             $inbox = $waiting > 0 ? ' '.Money::format($waiting).' that may be for it is waiting in the Inbox: decide it first.' : '';
             $extra = ['amount' => $r['outstanding'], 'currency' => $currency, 'due_on' => $dueOn->format('Y-m-d')];
@@ -852,18 +857,20 @@ final class TodoList
                 .($elsewhere > 0 ? ' · '.Money::format($elsewhere).' came in for this job in another currency: if that paid it, mark this not relevant' : '');
             $to = $money($i->total_minor).' to '.($i->bill_to_name ?: 'the client');
             $mailer = $i->bill_to_email && $email !== 'drafted' && $email !== 'pending' ? self::action('inv_send', $i->id, 'Email it') : null;
+            // "I sent it myself" here means today; another day is picked on the invoice ("When did it go?").
+            $pick = self::link('Pick a date', '/invoices/'.$i->id.'#sent');
             [$detail, $actions] = match (true) {
                 $blind && $email !== null => ['Expend can’t see Gmail: did '.$i->number.' go? '.$to.$after,
-                    [self::action('inv_sent_self', $i->id, 'Yes, I sent it'), self::link('Reconnect Gmail', '/settings/integrations#gmail')]],
+                    [self::action('inv_sent_self', $i->id, 'Yes, I sent it'), $pick, self::link('Reconnect Gmail', '/settings/integrations#gmail')]],
                 $email === 'drafted' => [$to.': it’s in your Gmail drafts'.$after, array_values(array_filter([
                     // One tap only when it's safe (InvoiceEmails::oneTapProblem: Expend's own unedited draft, to an
                     // address an earlier invoice to this client went to), as Telegram's nudges offer it.
                     app(InvoiceEmails::class)->oneTapProblem($i, 'invoice', live: false) === null ? self::action('inv_gmail_send', $i->id, 'Send it') : null,
-                    self::action('inv_sent_self', $i->id, 'I sent it myself', 'ghost'),
+                    self::action('inv_sent_self', $i->id, 'I sent it myself', 'ghost'), $pick,
                 ]))],
                 $email === 'pending' => [$to.': putting it in your Gmail drafts…'.$after, []],
                 $email === 'deleted' => [$to.': the Gmail draft was deleted without being sent'.$after,
-                    array_values(array_filter([$gmail ? self::action('inv_to_gmail', $i->id, 'Put it back in Gmail') : null, self::action('inv_sent_self', $i->id, 'I sent it another way', 'ghost')]))],
+                    array_values(array_filter([$gmail ? self::action('inv_to_gmail', $i->id, 'Put it back in Gmail') : null, self::action('inv_sent_self', $i->id, 'I sent it another way', 'ghost'), $pick]))],
                 $email === 'failed' => [$to.': it isn’t in your Gmail drafts yet ('.InvoiceEmails::reason((string) ($row->error ?: 'Gmail didn’t answer')).')'.$after,
                     array_values(array_filter([$gmail ? self::action('inv_to_gmail', $i->id, 'Try again') : null, $mailer !== null ? self::action('inv_send', $i->id, 'Email it from Expend', 'ghost') : null]))],
                 $gmail && $email === null && $row === null => [$to.': issued but not in Gmail'.($i->bill_to_email ? ' yet' : ': who should get it?').$after,
@@ -991,7 +998,7 @@ final class TodoList
             $who = $c['contact'] ?? null;
             // Worded the same every day (no "starts in 5 days"), so the findings history only notes a real change.
             $add('no_po', 2, 'no_po:'.$j->id, 'No PO: '.$j->title, $c
-                ? $j->starts_on->format('j M Y').'. '.($c['days_until'] < 0 && $j->ends_on->lt(today()) ? 'Done and not invoiced. ' : '').($who
+                ? $j->starts_on->format('j M Y').'. '.($c['days_until'] < 0 && $j->ends_on->lt(today()) ? ($j->status === 'done' ? 'Done' : 'Finished').' and not invoiced. ' : '').($who
                     ? 'Ask '.trim(($who['name'] ? $who['name'].' ' : '').'<'.$who['email'].'>').' for it: the job’s page has the request ready to send from your own email.'
                     : 'No one found to ask: link the PO email or attachment, add the number, or mark it not needed.')
                 : $j->starts_on->format('j M Y').'. Link the PO email or attachment, add the number, or mark it not needed.', '/jobs/'.$j->id,
@@ -1302,7 +1309,10 @@ final class TodoList
                 continue;
             }
             $client = $job->client?->name ?? 'the client';
-            $what = trim((string) ($u['description'] ?? 'A cost')).($u['date'] ?? null ? ' '.CarbonImmutable::parse($u['date'])->format('j M') : '');
+            // The cost's own words carry its date already ("Taxi: Addison Lee, 25 Aug 2025"): it isn't said twice.
+            $desc = trim((string) ($u['description'] ?? 'A cost'));
+            $on = ($u['date'] ?? null) ? CarbonImmutable::parse($u['date']) : null;
+            $what = $on !== null && ! str_contains($desc, $on->format('j M')) ? $desc.' '.$on->format('j M') : $desc;
             $amount = $u['amount_minor'] !== null ? Money::format(abs((int) $u['amount_minor']), $u['currency'] ?? 'GBP') : null;
             $id = CostRef::toId($u['ref']);
             $add('revenue', 2, 'charge:'.$id, 'Charge '.$what.' to '.$client,

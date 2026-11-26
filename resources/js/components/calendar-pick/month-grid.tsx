@@ -50,6 +50,7 @@ export function MonthGrid({
     jobDays,
     lockedYears,
     ownJobId,
+    askDone,
     onTap,
     onRange,
     onDrag,
@@ -66,6 +67,8 @@ export function MonthGrid({
     lockedYears: LockedYear[];
     /** On a job's page: that job's own days, drawn solid. */
     ownJobId?: number;
+    /** Jobs whose last day has finished and that are still booked ("Done?"), by that last day: a "?" on its bar. */
+    askDone?: Record<string, number[]>;
     onTap: (date: string) => void;
     onRange: (from: string, to: string) => void;
     onDrag: (from: string, to: string, mode: 'pick' | 'drop') => void;
@@ -146,6 +149,7 @@ export function MonthGrid({
                             const own = ownJobId !== undefined && jobs.some((j) => j.job_id === ownJobId);
                             const others = jobs.filter((j) => j.job_id !== ownJobId);
                             const locked = lockedYearOf(date, lockedYears);
+                            const asking = jobs.filter((j) => askDone?.[date]?.includes(j.job_id));
                             const free = entries.filter(looksFree);
                             const markers = [...free.map(() => 'dot'), ...entries.filter((e) => !looksFree(e)).map(() => 'ring')].slice(0, 3);
                             const label = [
@@ -154,6 +158,7 @@ export function MonthGrid({
                                 entries.length ? plural(entries.length, 'calendar entry', 'calendar entries') : null,
                                 own ? 'a day of this job' : null,
                                 ...others.map((j) => `a day of ${j.title}${j.cancelled ? ' (cancelled)' : ''}`),
+                                ...asking.map((j) => `${j.title} may be done`),
                                 locked ? `in ${locked.label}, which is locked` : null,
                                 picked ? 'picked' : null,
                             ]
@@ -227,6 +232,19 @@ export function MonthGrid({
                                 >
                                     {picked && <Check className="absolute top-1 left-1 size-3" aria-hidden />}
                                     {locked && <Lock className="absolute top-1 right-1 size-3 opacity-70" aria-hidden />}
+                                    {asking.length > 0 && (
+                                        <span
+                                            className={cn(
+                                                'absolute right-0.5 bottom-0.5 flex size-3.5 items-center justify-center rounded-full text-[10px] leading-none font-bold',
+                                                picked
+                                                    ? 'bg-white text-sky-700'
+                                                    : 'bg-amber-500 text-neutral-950 dark:bg-amber-400 dark:text-neutral-950',
+                                            )}
+                                            aria-hidden
+                                        >
+                                            ?
+                                        </span>
+                                    )}
                                     <span className={cn(date === today && 'underline underline-offset-2')}>{c.day}</span>
                                     <span className="mt-1 flex h-2 items-center gap-0.5" aria-hidden>
                                         {markers.map((m, i) =>

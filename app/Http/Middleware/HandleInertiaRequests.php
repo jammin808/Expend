@@ -79,7 +79,9 @@ class HandleInertiaRequests extends Middleware
                 // The last list's total (the one the dashboard or the to-do page just built, so they agree), for a
                 // couple of minutes after a change: the Inbox asks for this after every decision.
                 'todo' => TodoList::badge(),
-                'years' => TaxYear::query()->orderBy('label')->get(['label', 'status'])->toArray(),
+                // Each year's status, and whether it's locked: a page says so before you press anything in a locked year.
+                'years' => TaxYear::query()->orderBy('label')->get(['label', 'status', 'locked_at'])
+                    ->map(fn (TaxYear $y) => ['label' => $y->label, 'status' => $y->status, 'locked' => $y->locked_at !== null])->all(),
             ] : null,
         ];
     }

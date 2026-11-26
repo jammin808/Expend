@@ -114,12 +114,24 @@ class InvoicePageStaleTest extends TestCase
         $this->assertSame([true, null, 67340], [(bool) $line->included, $line->ticked_by, (int) $draft->fresh()->total_minor]);
     }
 
+    /**
+     * Changed on purpose for build slice F2 (the page was rebuilt as the check screen): the old version pinned the legacy
+     * form's remount key and its useForm copy of the lines. The new page keeps no copy of the lines (it shows them
+     * from the page's props, loaded again after every press), and every save, line press and issue carries what it
+     * showed: the lines version and the last change for a save and an issue, each line's version for a press on it.
+     */
     public function test_the_page_sends_what_it_showed_and_starts_again_when_the_lines_change(): void
     {
-        $source = (string) file_get_contents(resource_path('js/pages/invoices/show.tsx'));
+        $page = (string) file_get_contents(resource_path('js/pages/invoices/show.tsx'));
+        $lib = (string) file_get_contents(resource_path('js/lib/invoice.ts'));
+        $issue = (string) file_get_contents(resource_path('js/components/invoice/issue-sheet.tsx'));
 
-        $this->assertStringContainsString('<InvoicePage key={props.invoice.lines_version ?? props.invoice.status} {...props} />', $source);
-        $this->assertStringContainsString('lines_version: invoice.lines_version,', $source);
-        $this->assertStringContainsString('{ lines_version: invoice.lines_version, seen_up_to: invoice.seen_up_to }', $source);
+        $this->assertStringNotContainsString('useForm', $page);
+        $this->assertStringContainsString("router.reload({ only: ['invoice', 'draft', 'issued'] })", $page);
+        $this->assertStringContainsString('lines_version: invoice.lines_version,', $lib);
+        $this->assertStringContainsString('seen_up_to: invoice.seen_up_to,', $lib);
+        $this->assertStringContainsString('version: line.version,', $lib);
+        $this->assertStringContainsString('lines_version: binding.lines_version,', $issue);
+        $this->assertStringContainsString('seen_up_to: binding.seen_up_to,', $issue);
     }
 }

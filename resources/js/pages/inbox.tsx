@@ -5,12 +5,14 @@ import { ItemDrawer } from '@/components/item-drawer';
 import { Money } from '@/components/money';
 import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
+import { WhyPanel } from '@/components/why-panel';
 import AppLayout from '@/layouts/app-layout';
 import { day, decidedByLabels, kindLabels, paidIn, paidWith } from '@/lib/format';
+import { lockedWords, turnoverId, yearLocked } from '@/lib/income';
 import { cn } from '@/lib/utils';
-import { type Decision, type Item, type Lookups, type SharedData } from '@/types';
+import { type Decision, type IncomeTarget, type Item, type Lookups, type SharedData } from '@/types';
 import { Head, Link, router, usePage } from '@inertiajs/react';
-import { CalendarDays, Camera, Check, ChevronLeft, ChevronRight, Keyboard, PartyPopper, Sparkles, X } from 'lucide-react';
+import { CalendarDays, Camera, Check, ChevronLeft, ChevronRight, Keyboard, Lock, PartyPopper, Sparkles, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /** An Inbox item, with what its suggestion rests on and what you've said no to for it. */
@@ -36,6 +38,13 @@ interface Props {
 
 /** The lines a card shows, by id: what a decision or "Not this" there is about. */
 const shownIds = (item: Item) => item.allocations.map((a) => a.id);
+
+/** Whether a decision is still the one the card first showed (an Accept accepts only that). */
+function sameDecision(a: Decision | null, b: Decision | null): boolean {
+    if (!a || !b) return false;
+    const keys: (keyof Decision)[] = ['kind', 'category_id', 'work_job_id', 'business_pct', 'note', 'invoice_id', 'client_id', 'make_rule'];
+    return keys.every((k) => (a[k] ?? null) === (b[k] ?? null));
+}
 
 const RECENT_KEY = 'ledger.recentCategories';
 
@@ -64,6 +73,10 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
     const [askingWhy, setAskingWhy] = useState(false);
     const [index, setIndex] = useState(0);
     const [decision, setDecision] = useState<Decision | null>(null);
+    // The decision the card first showed: a right swipe or Enter accepts the suggestion only while it's unchanged.
+    const [shownDecision, setShownDecision] = useState<Decision | null>(null);
+    // A chip you tapped (an invoice, a set, a job, the client): its lines are what Save saves.
+    const [picked, setPicked] = useState<IncomeTarget | null>(null);
     const [applyAll, setApplyAll] = useState(false);
     const [done, setDone] = useState(0);
     const [drawer, setDrawer] = useState<{ source: 'bank' | 'manual'; id: number } | null>(null);
@@ -82,10 +95,19 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
 
     const item = queue[index];
     const suggestion = item?.allocations.length && !item.allocations[0].confirmed ? item.allocations[0] : null;
+    const moneyIn = !!item && item.amount_pence > 0;
+    const locked = yearLocked(nav, item?.tax_year);
+    const business = item?.allocations.find((a) => a.kind === 'business_expense' || a.kind === 'business_income');
+    // An invoice or several lines are for this payment alone: "Apply to all" is only for one plain decision.
+    const canApplyAll = (item?.merchant_count ?? 1) > 1 && !picked && !decision?.invoice_id;
+    const unchanged = !picked && sameDecision(decision, shownDecision);
 
     useEffect(() => {
         if (item) {
-            setDecision(initialDecision(item.amount_pence, item.allocations));
+            const first = initialDecision(item.amount_pence, item.allocations, lookups);
+            setDecision(first);
+            setShownDecision(first);
+            setPicked(null);
             setApplyAll(false);
             setAskingWhy(false);
         }
@@ -118,26 +140,31 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
     );
 
     const submit = useCallback(
-        (d: Decision, mode: 'decide' | 'accept') => {
+        (d: Decision, mode: 'decide' | 'accept', chip: IncomeTarget | null = null) => {
             if (!item) return;
-            if (mode === 'decide') {
+            if (yearLocked(nav, item.tax_year)) return toast(lockedWords(item.tax_year), 'error');
+            if (mode === 'decide' && !chip) {
                 const problem = decisionProblem(d);
                 if (problem) return toast(problem, 'error');
             }
             const current = item;
-            const all = applyAll && (current.merchant_count ?? 1) > 1;
+            const all = !chip && applyAll && canApplyAll;
             const url = mode === 'accept' ? `/items/bank/${current.id}/confirm` : all ? '/decisions/bulk' : `/items/bank/${current.id}/decide`;
             const payload = {
                 // A single decision says which lines it was shown, so deciding differently is remembered only for those.
+                // A chip saves its own lines, each naming its invoice and client.
                 ...(mode === 'accept'
-                    ? {}
-                    : all
-                      ? { ...d, merchant_key: current.merchant_key, tax_year: current.tax_year }
-                      : { ...d, shown: shownIds(current) }),
+                    ? // Accept accepts only the suggestion the card shows: one replaced since is refused, not confirmed.
+                      { shown: shownIds(current) }
+                    : chip
+                      ? { lines: chip.lines, shown: shownIds(current) }
+                      : all
+                        ? { ...d, merchant_key: current.merchant_key, tax_year: current.tax_year }
+                        : { ...d, shown: shownIds(current) }),
                 quiet: true,
             };
 
-            rememberCategory(d.category_id);
+            rememberCategory(chip ? chip.lines[0]?.category_id : d.category_id);
             setRecent(recentCategories());
             setDone((n) => n + (all ? (current.merchant_count ?? 1) : 1));
             if (all) {
@@ -154,6 +181,8 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                     if (flash?.error) {
                         setQueue((q) => [current, ...q]);
                         setIndex(0);
+                        // It changed since the card was shown: show it as it is now.
+                        if (flash.error.startsWith('This changed since')) router.reload({ only: ['items', 'remaining', 'nav'] });
                         return;
                     }
                     if (all) {
@@ -177,8 +206,18 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                 },
             });
         },
-        [item, applyAll, advance],
+        [item, applyAll, canApplyAll, advance, nav],
     );
+
+    /**
+     * Your press to save the card (a right swipe, Enter): the suggestion is accepted only while the card still shows it
+     * as it first did; anything you changed or picked is saved as your decision instead.
+     */
+    const press = useCallback(() => {
+        if (!decision) return;
+        if (picked) return submit(decision, 'decide', picked);
+        submit(decision, suggestion && unchanged ? 'accept' : 'decide');
+    }, [decision, picked, suggestion, unchanged, submit]);
 
     // "Not this one": the suggestion goes, with your reason, and isn't made for this payment again. The payment stays
     // here for you to decide.
@@ -212,7 +251,10 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                     : x,
                             ),
                         );
-                        setDecision(initialDecision(current.amount_pence, []));
+                        const fresh = initialDecision(current.amount_pence, [], lookups);
+                        setDecision(fresh);
+                        setShownDecision(fresh);
+                        setPicked(null);
                         setAskingWhy(false);
                         toast('OK: that won’t be suggested for this payment again. Decide it yourself.');
                     },
@@ -220,7 +262,7 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                 },
             );
         },
-        [item],
+        [item, lookups],
     );
 
     useEffect(() => {
@@ -230,34 +272,45 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
             if (drawer || !item || !decision) return;
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                 e.preventDefault();
-                return submit(decision, 'decide');
+                return submit(decision, 'decide', picked);
             }
+            // Another kind or category by key: a chip you'd picked, and an invoice the decision carried, go.
+            const change = (patch: Partial<Decision>) => {
+                setPicked(null);
+                setDecision({ ...decision, ...patch, ...(decision.invoice_id !== undefined ? { invoice_id: null } : {}) });
+            };
             // Browser and system shortcuts (Ctrl+P to print, Ctrl+D to bookmark, Alt+B…) aren't the Inbox's keys.
             if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
             const k = e.key.toLowerCase();
             if (k === 'enter') {
                 e.preventDefault();
-                submit(decision, suggestion ? 'accept' : 'decide');
+                press();
             } else if (k === 'j' || e.key === 'ArrowRight') setIndex((i) => Math.min(i + 1, queue.length - 1));
             else if (k === 'k' || e.key === 'ArrowLeft') setIndex((i) => Math.max(i - 1, 0));
-            else if (k === 'b') setDecision({ ...decision, kind: 'business_expense', category_id: null });
-            else if (k === 'i') setDecision({ ...decision, kind: 'business_income', category_id: null });
-            else if (k === 'p') submit({ ...decision, kind: 'personal', category_id: null }, 'decide');
-            else if (k === 't') setDecision({ ...decision, kind: 'transfer', category_id: null });
-            else if (k === 'a') setApplyAll((v) => !v);
+            else if (k === 'b') change({ kind: 'business_expense', category_id: null });
+            else if (k === 'i') change({ kind: 'business_income', category_id: item.amount_pence > 0 ? turnoverId(lookups) : null });
+            else if (k === 'p')
+                submit({ ...decision, kind: 'personal', category_id: null, ...(decision.invoice_id ? { invoice_id: null } : {}) }, 'decide');
+            else if (k === 't') change({ kind: 'transfer', category_id: null });
+            else if (k === 'a' && canApplyAll) setApplyAll((v) => !v);
             else if (k === 'd') setDrawer({ source: 'bank', id: item.id });
             else if (k === '?') setShowKeys((v) => !v);
             else if (/^[1-9]$/.test(k) && recentCats[Number(k) - 1]) {
                 const cat = recentCats[Number(k) - 1];
-                setDecision({ ...decision, kind: cat.kind === 'income' ? 'business_income' : 'business_expense', category_id: cat.id });
+                change({ kind: cat.kind === 'income' ? 'business_income' : 'business_expense', category_id: cat.id });
             }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [item, decision, suggestion, submit, queue.length, drawer, recentCats]);
+    }, [item, decision, picked, submit, press, canApplyAll, queue.length, drawer, recentCats, lookups]);
 
     const years = nav?.years ?? [];
     const left = Math.max(0, remaining - done);
+    // Money in: what it may be for, one tap each (in place of "Jobs around then", which is for money out). For money
+    // out, refunds and money back. Tapping fills the card; only Save (or a swipe) saves it.
+    const chips = item?.targets ?? [];
+    const pick = (t: IncomeTarget) => setPicked((p) => (p?.label === t.label ? null : t));
+    const saveLabel = picked ? picked.save : `Save${applyAll && canApplyAll && item ? ` all ${item.merchant_count}` : ''}`;
 
     return (
         <AppLayout breadcrumbs={[{ title: 'Inbox', href: '/inbox' }]}>
@@ -271,14 +324,23 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                         </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                        <Link href="/inbox" className={cn('rounded-full border px-3 py-1 text-sm', !filters.year && 'bg-foreground text-background')}>
+                        <Link
+                            href="/inbox"
+                            className={cn(
+                                'inline-flex min-h-10 items-center rounded-full border px-3 text-sm',
+                                !filters.year && 'bg-foreground text-background',
+                            )}
+                        >
                             All years
                         </Link>
                         {years.map((y) => (
                             <Link
                                 key={y.label}
                                 href={`/inbox?year=${y.label}`}
-                                className={cn('rounded-full border px-3 py-1 text-sm', filters.year === y.label && 'bg-foreground text-background')}
+                                className={cn(
+                                    'inline-flex min-h-10 items-center rounded-full border px-3 text-sm',
+                                    filters.year === y.label && 'bg-foreground text-background',
+                                )}
                             >
                                 {y.label}
                             </Link>
@@ -293,7 +355,7 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                         <p className="text-muted-foreground mt-1 text-sm">
                             Everything {filters.year ? `in ${filters.year} ` : ''}is decided. Check the tax year page for anything still to confirm.
                         </p>
-                        <Button className="mt-6" asChild>
+                        <Button className="mt-6 h-11" asChild>
                             <Link href={filters.year ? `/years/${filters.year}` : '/years'}>Go to tax years</Link>
                         </Button>
                     </div>
@@ -308,30 +370,36 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                 const dy = Math.abs(e.changedTouches[0].clientY - touch.current.y);
                                 touch.current = null;
                                 if (Math.abs(dx) < 90 || dy > 60) return;
-                                if (dx > 0) submit(decision, suggestion ? 'accept' : 'decide');
+                                // A swipe on a picker or a box you're typing in isn't a decision.
+                                if ((e.target as HTMLElement).closest('input, select, textarea, [role="listbox"]')) return;
+                                if (dx > 0) press();
+                                // Money in: left opens the details (what it's for), never a one-swipe Personal.
+                                else if (moneyIn) setDrawer({ source: 'bank', id: item.id });
                                 else submit({ ...decision, kind: 'personal', category_id: null }, 'decide');
                             }}
                         >
-                            <div className="space-y-3 p-5 md:p-6">
-                                <div className="text-muted-foreground flex items-center justify-between text-sm">
-                                    <span>
+                            <div className="space-y-3 p-4 md:p-6">
+                                <div className="text-muted-foreground flex items-center justify-between gap-2 text-sm">
+                                    <span className="min-w-0">
                                         {day(item.date)}
                                         {item.time ? ` ${item.time}` : ''} · {paidWith(item)}
                                         {item.place ? ` · ${item.place}` : ''} · {item.tax_year}
                                         {paidIn(item) ? ` · paid ${paidIn(item)}` : ''}
                                     </span>
-                                    <span className="flex items-center gap-1">
+                                    <span className="flex shrink-0 items-center">
                                         <button
                                             aria-label="Previous"
-                                            className="hover:bg-muted rounded p-1"
+                                            className="hover:bg-muted flex size-10 items-center justify-center rounded-full"
                                             onClick={() => setIndex((i) => Math.max(i - 1, 0))}
                                         >
                                             <ChevronLeft className="size-4" />
                                         </button>
-                                        {index + 1}/{queue.length}
+                                        <span className="tabular-nums">
+                                            {index + 1}/{queue.length}
+                                        </span>
                                         <button
                                             aria-label="Next"
-                                            className="hover:bg-muted rounded p-1"
+                                            className="hover:bg-muted flex size-10 items-center justify-center rounded-full"
                                             onClick={() => setIndex((i) => Math.min(i + 1, queue.length - 1))}
                                         >
                                             <ChevronRight className="size-4" />
@@ -339,9 +407,9 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                     </span>
                                 </div>
                                 <div className="flex items-start justify-between gap-4">
-                                    <span className="flex items-start gap-2">
+                                    <span className="flex min-w-0 items-start gap-2">
                                         <button
-                                            className="text-left text-lg leading-snug font-semibold hover:underline md:text-xl"
+                                            className="min-h-10 min-w-0 text-left text-lg leading-snug font-semibold break-words hover:underline md:text-xl"
                                             onClick={() => setDrawer({ source: 'bank', id: item.id })}
                                         >
                                             {item.description}
@@ -351,6 +419,7 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                     <Money pence={item.amount_pence} className="text-xl font-semibold md:text-2xl" />
                                 </div>
                                 <div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                                    {item.payer && <span className="text-foreground">{item.payer}</span>}
                                     {item.bank_category && <span>Bank says: {item.bank_category.replace(/_/g, ' ').toLowerCase()}</span>}
                                     {paidIn(item) && <span>Paid {paidIn(item)}</span>}
                                     {(item.merchant_count ?? 1) > 1 && (
@@ -369,10 +438,22 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                     )}
                                 </div>
 
+                                {locked && (
+                                    <p className="flex gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                                        <Lock className="mt-0.5 size-4 shrink-0" />
+                                        <span>
+                                            {lockedWords(item.tax_year)}{' '}
+                                            <Link href={`/years/${item.tax_year}`} className="font-medium underline underline-offset-2">
+                                                Open {item.tax_year}
+                                            </Link>
+                                        </span>
+                                    </p>
+                                )}
+
                                 {item.events && item.events.length > 0 && (
                                     <div className="bg-muted/50 flex gap-2 rounded-lg p-3 text-sm">
                                         <CalendarDays className="mt-0.5 size-4 shrink-0" />
-                                        <div>
+                                        <div className="min-w-0">
                                             {item.events.map((e, i) => (
                                                 <p key={i}>
                                                     {e.time ? <span className="tabular-nums">{e.time} </span> : null}
@@ -384,14 +465,14 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                     </div>
                                 )}
 
-                                {item.jobs_near && item.jobs_near.length > 0 && (
+                                {!moneyIn && item.jobs_near && item.jobs_near.length > 0 && (
                                     <div className="flex flex-wrap items-center gap-2 text-sm">
                                         <span className="text-muted-foreground">Jobs around then:</span>
                                         {item.jobs_near.map((j) => (
                                             <button
                                                 key={j.id}
                                                 className={cn(
-                                                    'rounded-full border px-2.5 py-0.5',
+                                                    'min-h-10 rounded-full border px-3',
                                                     decision.work_job_id === j.id &&
                                                         'border-sky-600 bg-sky-50 text-sky-800 dark:bg-sky-950 dark:text-sky-200',
                                                 )}
@@ -403,14 +484,42 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                     </div>
                                 )}
 
+                                {chips.length > 0 && (
+                                    <div className="space-y-1.5 text-sm">
+                                        <p className="text-muted-foreground">{moneyIn ? 'Could be for:' : 'Money back to a client?'}</p>
+                                        <div className="flex flex-wrap gap-2">
+                                            {chips.map((t) => (
+                                                <button
+                                                    key={t.label}
+                                                    type="button"
+                                                    disabled={locked}
+                                                    aria-pressed={picked?.label === t.label}
+                                                    onClick={() => pick(t)}
+                                                    className={cn(
+                                                        'min-h-11 rounded-full border px-3 py-2 text-left disabled:opacity-50',
+                                                        picked?.label === t.label
+                                                            ? 'border-sky-600 bg-sky-50 text-sky-900 dark:bg-sky-950 dark:text-sky-100'
+                                                            : 'hover:bg-muted',
+                                                    )}
+                                                >
+                                                    {picked?.label === t.label && <Check className="mr-1 inline size-4" />}
+                                                    {t.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
                                 {suggestion && (
-                                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950/40">
+                                    <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-950/40">
                                         <span className="flex items-start gap-2">
                                             <Sparkles className="mt-0.5 size-4 shrink-0 text-amber-600" />
-                                            <span>
+                                            <span className="min-w-0">
                                                 <span className="font-medium">
-                                                    {decidedByLabels[suggestion.decided_by]} suggests {kindLabels[suggestion.kind].toLowerCase()}
-                                                    {suggestion.category ? ` · ${suggestion.category}` : ''}
+                                                    {decidedByLabels[suggestion.decided_by]} suggests
+                                                    {item.suggestion_text
+                                                        ? `: ${item.suggestion_text}`
+                                                        : ` ${kindLabels[suggestion.kind].toLowerCase()}${suggestion.category ? ` · ${suggestion.category}` : ''}`}
                                                 </span>
                                                 {suggestion.reason && <span className="text-muted-foreground block">{suggestion.reason}</span>}
                                                 {item.suggestion_why?.method && (
@@ -435,13 +544,21 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                                         className="mt-1"
                                                     />
                                                 )}
+                                                {/* What it rests on: for a client learned from your payments, the payment it was learned from. */}
+                                                <WhyPanel key={item.id} refId={`tx:${item.id}`} className="mt-1" />
                                             </span>
                                         </span>
                                         <span className="flex flex-wrap items-center gap-2">
-                                            <Button size="sm" variant="outline" onClick={() => setAskingWhy((v) => !v)} aria-expanded={askingWhy}>
+                                            <Button
+                                                variant="outline"
+                                                className="h-10"
+                                                disabled={locked}
+                                                onClick={() => setAskingWhy((v) => !v)}
+                                                aria-expanded={askingWhy}
+                                            >
                                                 <X /> Not this
                                             </Button>
-                                            <Button size="sm" onClick={() => submit(decision, 'accept')}>
+                                            <Button className="h-10" disabled={locked} onClick={() => submit(decision, 'accept')}>
                                                 <Check /> Accept <kbd className="ml-1 hidden opacity-60 md:inline">↵</kbd>
                                             </Button>
                                         </span>
@@ -451,7 +568,7 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                                 {Object.entries(not_this_reasons).map(([code, label]) => (
                                                     <button
                                                         key={code}
-                                                        className="hover:bg-muted rounded-full border bg-white px-2.5 py-0.5 text-xs dark:bg-transparent"
+                                                        className="hover:bg-muted min-h-10 rounded-full border bg-white px-3 text-xs dark:bg-transparent"
                                                         onClick={() => notThis(code)}
                                                     >
                                                         {label}
@@ -469,53 +586,91 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                 )}
                             </div>
 
-                            <div className="space-y-4 border-t p-5 md:p-6">
-                                {recentCats.length > 0 && (
-                                    <div className="flex flex-wrap gap-1.5">
-                                        {recentCats.map((c, i) => (
+                            <div className="space-y-4 border-t p-4 md:p-6">
+                                {picked ? (
+                                    <div className="rounded-lg border border-sky-600/40 bg-sky-50 p-3 text-sm dark:bg-sky-950/40">
+                                        <p className="font-medium">{picked.label}</p>
+                                        <p className="text-muted-foreground mt-1">
+                                            Save saves this.{' '}
                                             <button
-                                                key={c.id}
-                                                className={cn(
-                                                    'hover:bg-muted rounded-md border px-2 py-1 text-xs',
-                                                    decision.category_id === c.id && 'bg-muted font-medium',
-                                                )}
-                                                onClick={() =>
-                                                    setDecision({
-                                                        ...decision,
-                                                        kind: c.kind === 'income' ? 'business_income' : 'business_expense',
-                                                        category_id: c.id,
-                                                    })
-                                                }
+                                                type="button"
+                                                className="inline-flex min-h-10 items-center underline underline-offset-2"
+                                                onClick={() => setPicked(null)}
                                             >
-                                                <kbd className="text-muted-foreground mr-1">{i + 1}</kbd>
-                                                {c.name}
+                                                Choose myself instead
                                             </button>
-                                        ))}
+                                        </p>
                                     </div>
+                                ) : (
+                                    <>
+                                        {recentCats.length > 0 && (
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {recentCats.map((c, i) => (
+                                                    <button
+                                                        key={c.id}
+                                                        className={cn(
+                                                            'hover:bg-muted min-h-10 rounded-md border px-2.5 text-xs',
+                                                            decision.category_id === c.id && 'bg-muted font-medium',
+                                                        )}
+                                                        onClick={() =>
+                                                            setDecision({
+                                                                ...decision,
+                                                                kind: c.kind === 'income' ? 'business_income' : 'business_expense',
+                                                                category_id: c.id,
+                                                            })
+                                                        }
+                                                    >
+                                                        <kbd className="text-muted-foreground mr-1 hidden md:inline">{i + 1}</kbd>
+                                                        {c.name}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                        <DecisionForm
+                                            key={item.id}
+                                            amount={item.amount_pence}
+                                            lookups={lookups}
+                                            value={decision}
+                                            onChange={setDecision}
+                                            near={item.jobs_near}
+                                            merchantCount={item.merchant_count}
+                                            merchant={item.merchant_key}
+                                            applyToMerchant={applyAll}
+                                            onApplyToMerchant={canApplyAll ? setApplyAll : undefined}
+                                            on={item.date}
+                                            jobName={business?.job}
+                                            clientName={business?.client}
+                                            invoiceName={business?.invoice_number}
+                                            disabled={locked}
+                                        />
+                                    </>
                                 )}
-                                <DecisionForm
-                                    amount={item.amount_pence}
-                                    lookups={lookups}
-                                    value={decision}
-                                    onChange={setDecision}
-                                    near={item.jobs_near}
-                                    merchantCount={item.merchant_count}
-                                    merchant={item.merchant_key}
-                                    applyToMerchant={applyAll}
-                                    onApplyToMerchant={setApplyAll}
-                                />
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <Button onClick={() => submit(decision, 'decide')}>
-                                        Save{applyAll && (item.merchant_count ?? 1) > 1 ? ` all ${item.merchant_count}` : ''}{' '}
-                                        <kbd className="ml-1 hidden opacity-60 md:inline">⌘↵</kbd>
+                                    <Button className="h-11 flex-1 sm:flex-none" disabled={locked} onClick={() => submit(decision, 'decide', picked)}>
+                                        {saveLabel} <kbd className="ml-1 hidden opacity-60 md:inline">⌘↵</kbd>
                                     </Button>
-                                    <Button variant="outline" onClick={() => submit({ ...decision, kind: 'personal', category_id: null }, 'decide')}>
+                                    <Button
+                                        variant="outline"
+                                        className="h-11"
+                                        disabled={locked}
+                                        onClick={() =>
+                                            submit(
+                                                {
+                                                    ...decision,
+                                                    kind: 'personal',
+                                                    category_id: null,
+                                                    ...(decision.invoice_id ? { invoice_id: null } : {}),
+                                                },
+                                                'decide',
+                                            )
+                                        }
+                                    >
                                         Personal <kbd className="ml-1 hidden opacity-60 md:inline">P</kbd>
                                     </Button>
-                                    <Button variant="ghost" onClick={() => setIndex((i) => Math.min(i + 1, queue.length - 1))}>
+                                    <Button variant="ghost" className="h-11" onClick={() => setIndex((i) => Math.min(i + 1, queue.length - 1))}>
                                         Skip <kbd className="ml-1 hidden opacity-60 md:inline">J</kbd>
                                     </Button>
-                                    <Button variant="ghost" onClick={() => setDrawer({ source: 'bank', id: item.id })}>
+                                    <Button variant="ghost" className="h-11" onClick={() => setDrawer({ source: 'bank', id: item.id })}>
                                         Details or split <kbd className="ml-1 hidden opacity-60 md:inline">D</kbd>
                                     </Button>
                                     <button
@@ -525,7 +680,9 @@ export default function InboxPage({ items, remaining, filters, lookups, not_this
                                         <Keyboard className="size-3.5" /> Shortcuts
                                     </button>
                                 </div>
-                                <p className="text-muted-foreground text-xs md:hidden">Swipe right to save or accept, left for personal.</p>
+                                <p className="text-muted-foreground text-xs md:hidden">
+                                    {moneyIn ? 'Swipe right to save, left for details.' : 'Swipe right to save or accept, left for personal.'}
+                                </p>
                                 {showKeys && (
                                     <div className="text-muted-foreground grid grid-cols-2 gap-x-6 gap-y-1 rounded-lg border p-3 text-xs sm:grid-cols-3">
                                         <span>↵ accept suggestion / save</span>

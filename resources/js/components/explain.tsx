@@ -90,7 +90,7 @@ export function Explain({ url, label = 'What is this, and can I claim it?', clas
                 }}
                 aria-label={label}
                 title={label}
-                className={cn('text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center', className)}
+                className={cn('text-muted-foreground hover:text-foreground -m-3 inline-flex shrink-0 items-center justify-center p-3', className)}
             >
                 <CircleHelp className="size-4" />
             </button>

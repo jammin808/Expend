@@ -115,8 +115,10 @@ class InvoiceThreadingTest extends TestCase
         Mail::fake();
         $invoice = $this->issuedInvoice('2026-09-01');
 
-        // Chased before it was ever emailed from Expend (sent another way): the reminder still points to the invoice's id.
-        app(InvoiceMailer::class)->send($invoice, reminder: true);
+        // Chased before it was ever emailed from Expend (sent another way, and marked as sent: a reminder can only follow
+        // a sent invoice, stage 4 lead decision): the reminder still points to the invoice's id.
+        $invoice->forceFill(['sent_at' => '2026-09-02 10:00:00'])->save();
+        app(InvoiceMailer::class)->send($invoice->fresh(), reminder: true);
         $id = $invoice->fresh()->message_id;
         $this->assertStringEndsWith('@acme-sound.example', $id, 'noreply@ on the site’s domain');
         app(InvoiceMailer::class)->send($invoice->fresh());

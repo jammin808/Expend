@@ -21,6 +21,7 @@ use App\Domain\Jobs\JobBilling;
 use App\Domain\Jobs\JobCreator;
 use App\Domain\Jobs\JobStage;
 use App\Domain\Todo\Dismissals;
+use App\Http\Presenters\Present;
 use App\Models\BankTransaction;
 use App\Models\Client;
 use App\Models\Invoice;
@@ -196,7 +197,7 @@ class ClientController extends Controller
 
             return ['ref' => $u['ref'], 'id' => CostRef::toId($u['ref']), 'subject' => $u['subject'], 'kind' => $u['kind'], 'class' => $u['class'],
                 'description' => $u['description'], 'date' => $u['date'], 'job_id' => $u['job_id'], 'currency' => $u['currency'],
-                'amount_minor' => $u['amount_minor'], 'status' => $s['status'], 'reason' => $s['reason'], 'chip' => ChargeStatus::chip($s['status']),
+                'amount_minor' => $u['amount_minor'], 'status' => $s['status'], 'reason' => $s['reason'], 'note' => $s['note'], 'chip' => ChargeStatus::chip($s['status']),
                 'actions' => ChargeStatus::actions($s), 'remaining' => $s['remaining'], 'decision' => $s['decision'] === null ? null : ['charge' => $s['decision']['charge'], 'note' => $s['decision']['note']]];
         })->values();
 
@@ -231,6 +232,8 @@ class ClientController extends Controller
             'chips' => collect(ChargeStatus::CHIPS)->map(fn (array $c, string $key) => ['key' => $key, 'label' => $c['label'], 'count' => $costs->where('chip', $key)->count()])->values(),
             'terms' => self::termsSheet($client),
             'invoice_routes' => Client::INVOICE_ROUTES,
+            // The decision pickers, only when a cost's payment is opened ("Open the payment"): asked for then.
+            'lookups' => Inertia::optional(fn () => Present::lookups()),
         ]);
     }
 

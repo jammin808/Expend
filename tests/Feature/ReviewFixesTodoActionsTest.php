@@ -139,6 +139,8 @@ class ReviewFixesTodoActionsTest extends TestCase
             'kind' => 'business_income', 'category_id' => Category::query()->where('kind', 'income')->value('id'), 'amount_pence' => 45000, 'invoice_id' => $invoice->id,
         ]], 'you');
         $this->assertSame(45000, $invoice->paidMinor());
+        // Sent (a reminder can only follow a sent invoice: stage 4 lead decision), then paid.
+        $invoice->forceFill(['sent_at' => '2025-05-15 10:00:00', 'sent_to' => 'accounts@client.example'])->save();
 
         // The old "Send a reminder" button from before it was paid.
         $message = app(TodoActions::class)->run('inv_chase', (string) $invoice->id);

@@ -83,20 +83,23 @@ export function londonToday(): string {
     return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
-/** Parse "12.30" / "£1,234.56" into pence; null when empty or unreadable. */
+/**
+ * Parse "12.30" / "£1,234.56" into pence; null when empty or unreadable. A comma is read only as a thousands
+ * separator (1,234.56), as the server reads amounts: "12,50" is unreadable (asked again), never £1,250.00.
+ */
 export function toPence(value: string): number | null {
-    const clean = value.replace(/[£$€,\s]/g, '');
-    if (clean === '' || !/^-?\d+(\.\d{1,2})?$/.test(clean)) return null;
-    const negative = clean.startsWith('-');
-    const [whole, frac = ''] = clean.replace('-', '').split('.');
-    const pence = parseInt(whole, 10) * 100 + parseInt((frac + '00').slice(0, 2), 10);
-    return negative ? -pence : pence;
+    const clean = value.replace(/[£$€\s]/g, '');
+    const m = /^(-?)(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?$/.exec(clean);
+    if (!m) return null;
+    const pence = parseInt(m[2].replace(/,/g, ''), 10) * 100 + parseInt(((m[3] ?? '') + '00').slice(0, 2), 10);
+    return m[1] === '-' ? -pence : pence;
 }
 
 export function day(iso: string | null | undefined, withYear = true): string {
     if (!iso) return '';
     const d = new Date(iso + (iso.length === 10 ? 'T12:00:00' : ''));
-    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(withYear ? { year: 'numeric' } : {}) });
+    // The month as the server writes it ("Sep", which some browsers write "Sept"), so both say the same date the same way.
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(withYear ? { year: 'numeric' } : {}) }).replace('Sept', 'Sep');
 }
 
 export const kindLabels: Record<string, string> = {

@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Audit\AuditLog;
+use App\Domain\Charges\ChargeStatus;
 use App\Domain\Charges\ChargeTerms;
 use App\Domain\Charges\ChargeTermsWriter;
 use App\Domain\Charges\CostRef;
+use App\Domain\Charges\CostUnits;
 use App\Domain\Clients\ClientIds;
 use App\Domain\Income\IncomeClient;
 use App\Domain\Income\IncomeText;
@@ -24,6 +26,8 @@ use App\Domain\Ledger\DecisionService;
 use App\Domain\Ledger\SourceState;
 use App\Domain\Matching\OwnAccounts;
 use App\Domain\Todo\Dismissals;
+use App\Domain\Todo\Fingerprints;
+use App\Http\Presenters\Present;
 use App\Jobs\CheckInvoiceEmails;
 use App\Models\Allocation;
 use App\Models\AuditEvent;
@@ -38,6 +42,8 @@ use App\Models\TravelItem;
 use App\Models\WorkJob;
 use App\Support\Money;
 use Brick\Math\BigDecimal;
+use Carbon\CarbonImmutable;
+use DateTimeInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -70,8 +76,12 @@ class InvoiceController extends Controller
 
     public function index(): Response
     {
+        $invoices = Invoice::query()->with(['job', 'client'])->orderByDesc('id')->limit(300)->get();
+
         return Inertia::render('invoices/index', [
-            'invoices' => self::rows(Invoice::query()->with(['job', 'client'])->orderByDesc('id')->limit(300)->get()),
+            'invoices' => self::rows($invoices),
+            // Each draft's changes since you last looked, by invoice id (none: left out), for its "2 changes" chip.
+            'changes' => (object) InvoiceDraftSync::changeCounts($invoices->where('status', 'draft')->pluck('id')->all()),
         ]);
     }
 
@@ -99,15 +109,15 @@ class InvoiceController extends Controller
                 'bill_to_address' => $invoice->bill_to_address, 'bill_to_email' => $invoice->bill_to_email, 'notes' => $invoice->notes,
                 'po_total_minor' => $invoice->po_total_minor, 'document' => $invoice->document ? ['id' => $invoice->document->id, 'name' => $invoice->document->original_name] : null,
                 'void_reason' => $invoice->void_reason,
-                'sent_at' => $invoice->sent_at?->format('Y-m-d H:i'), 'sent_to' => $invoice->sent_to,
-                'reminded_at' => $invoice->reminded_at?->format('Y-m-d H:i'), 'reminder_count' => $invoice->reminder_count,
+                'sent_at' => self::london($invoice->sent_at), 'sent_to' => $invoice->sent_to,
+                'reminded_at' => self::london($invoice->reminded_at), 'reminder_count' => $invoice->reminder_count,
                 'email_failed' => self::lastEmailFailed($invoice),
                 // The draft's lines as this page shows them, and the last change made to them: a save or an issue from a
                 // page left open while they changed is refused, and the page starts again from the lines as they are.
                 'lines_version' => $draft ? InvoiceDraftSync::linesVersion($invoice) : null,
                 'seen_up_to' => $draft ? InvoiceDraftSync::lastChange($invoice) : null,
                 // Every line, ticked or not, with where it came from and what you changed on it.
-                'lines' => $lines->map(fn (InvoiceLine $l) => self::lineProps($l, $jobTitles))->values(),
+                'lines' => self::linesProps($lines, $jobTitles, $draft),
                 'end_client' => $invoice->job?->endClient?->name,
                 'closed_reason' => $invoice->closed_reason, 'closed_minor' => $invoice->closed_minor, 'replaced_by_id' => $invoice->replaced_by_id,
             ],
@@ -115,6 +125,8 @@ class InvoiceController extends Controller
             'issued' => $draft ? null : $this->issuedView($invoice),
             'jobs' => WorkJob::query()->orderByDesc('starts_on')->limit(300)->get(['id', 'title', 'starts_on'])->map(fn ($j) => ['id' => $j->id, 'title' => $j->title, 'starts_on' => $j->starts_on->format('Y-m-d')]),
             'clients' => Client::query()->unmerged()->orderBy('name')->get(['id', 'name']),
+            // For a payment's drawer ("Link a payment", a cost to add) and a payment's whole split in words.
+            'lookups' => Present::lookups(),
         ]);
     }
 
@@ -353,12 +365,22 @@ class InvoiceController extends Controller
         return self::wantsJson($request) ? response()->json(['message' => $message]) : back()->with('success', $message);
     }
 
-    /** "I sent it myself" (or "I sent it another way"): marked as sent by hand; Expend's own unsent draft is taken out. */
+    /**
+     * "I sent it myself" (or "I sent it another way"): marked as sent by hand on the day you say it went ("When did it
+     * go?": today unless you pick another, never before it was issued or after today); Expend's own unsent draft is
+     * taken out.
+     */
     public function sentSelf(Request $request, Invoice $invoice, InvoiceEmails $emails): RedirectResponse
     {
-        $data = $request->validate(['to' => 'nullable|email:rfc,filter|max:200'], ['to.email' => 'That email address doesn’t look right. Use one address, like accounts@client.co.uk.']);
+        $data = $request->validate(['to' => 'nullable|email:rfc,filter|max:200', 'on' => 'nullable|date_format:Y-m-d'], [
+            'to.email' => 'That email address doesn’t look right. Use one address, like accounts@client.co.uk.',
+            'on.date_format' => 'Pick the day it went.',
+        ]);
+        if ($problem = InvoiceEmails::sentOnProblem($invoice, $data['on'] ?? null)) {
+            return back()->withErrors(['on' => $problem]);
+        }
         try {
-            $message = $emails->markSentSelf($invoice, $data['to'] ?? null);
+            $message = $emails->markSentSelf($invoice, $data['to'] ?? null, $data['on'] ?? null);
         } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }
@@ -397,6 +419,9 @@ class InvoiceController extends Controller
     public function reminder(Request $request, Invoice $invoice, ChaseLadder $ladder): JsonResponse|RedirectResponse
     {
         try {
+            if (in_array($invoice->status, InvoicePayments::PAYABLE, true) && $invoice->sent_at === null) {
+                throw new InvalidArgumentException(ChaseLadder::NOT_SENT);
+            }
             $r = $ladder->make($invoice);
         } catch (InvalidArgumentException $e) {
             return self::wantsJson($request) ? response()->json(['message' => $e->getMessage()], 422) : back()->with('error', $e->getMessage());
@@ -412,7 +437,10 @@ class InvoiceController extends Controller
     public function paidWait(Request $request, Invoice $invoice, InvoiceEmails $emails): JsonResponse|RedirectResponse
     {
         if (! in_array($invoice->status, InvoicePayments::PAYABLE, true)) {
-            return back()->with('error', 'Only an issued invoice can be paid.');
+            // Voided or paid in another tab since the page loaded: the reason in words, to the page's JSON press too.
+            $words = 'Only an issued invoice can be paid.';
+
+            return self::wantsJson($request) ? response()->json(['message' => $words], 422) : back()->with('error', $words);
         }
         Dismissals::dismiss('invoice_overdue:'.$invoice->id, 7, 'They’ve paid: waiting for the payment');
         $note = '';
@@ -481,8 +509,9 @@ class InvoiceController extends Controller
         $line = InvoiceLine::query()->where('invoice_id', $invoice->id)->find($data['line']);
         $ref = $line?->source_ref;
         $parsed = $ref !== null && CostRef::valid($ref) ? CostRef::parse($ref) : null;
+        $no = fn (string $words) => self::wantsJson($request) ? response()->json(['message' => $words], 422) : back()->with('error', $words);
         if ($parsed === null || ! in_array($parsed['type'], ['tx', 'exp'], true) || $parsed['job'] === null) {
-            return back()->with('error', 'Only a payment’s cost on a job can be shared with another job.');
+            return $no('Only a payment’s cost on a job can be shared with another job.');
         }
         $source = $parsed['type'] === 'tx' ? BankTransaction::query()->find($parsed['id']) : ManualExpense::query()->find($parsed['id']);
         try {
@@ -491,23 +520,27 @@ class InvoiceController extends Controller
             return $this->refused($request, new InvalidArgumentException('Give the other job’s share as an amount, like 42.25.'), $invoice);
         }
         if ($source === null) {
-            return back()->with('error', 'That payment no longer exists.');
+            return $no('That payment no longer exists.');
         }
         try {
             $decisions->shareCost($source, (int) $parsed['job'], (int) $data['job_id'], $pence, $data['fp'] ?? null);
         } catch (InvalidArgumentException $e) {
             if (str_contains($e->getMessage(), 'changed since you looked') && self::wantsJson($request)) {
-                return response()->json(['message' => $e->getMessage(), 'changed' => true, 'sheet' => ['fp' => SourceState::fingerprint($source), 'state' => SourceState::of($source)]], 409);
+                // What the payment is now, so the sheet can show it and the next press is tied to it.
+                return response()->json(['message' => 'This payment changed since you looked: check its split below, then press Share it again. Nothing was moved.',
+                    'changed' => true, 'sheet' => ['fp' => SourceState::fingerprint($source), 'state' => SourceState::of($source),
+                        'payment' => self::paymentNow($parsed['type'], (int) $parsed['id'])]], 409);
             }
 
-            return back()->with('error', $e->getMessage());
+            return $no($e->getMessage());
         }
         if ($invoice->status === 'draft') {
             $sync->sync($invoice);
         }
         $title = WorkJob::query()->whereKey($data['job_id'])->value('title');
+        $message = 'Shared with '.$title.'. The draft follows the new split.';
 
-        return back()->with('success', 'Shared with '.$title.'. The draft follows the new split.');
+        return self::wantsJson($request) ? response()->json(['message' => $message]) : back()->with('success', $message);
     }
 
     /** "Save these ticks as Acme's usual": the draft's ticks written as the client's arrangement, as you. */
@@ -672,8 +705,12 @@ class InvoiceController extends Controller
             ->whereIn('status', InvoicePayments::PAYABLE)->orderBy('id')->value('number');
 
         return [
-            'changes' => $changes->map(fn (AuditEvent $e) => self::change($e))->values(),
-            'changes_since' => $invoice->lines_seen_event_id ? AuditEvent::query()->whereKey($invoice->lines_seen_event_id)->value('occurred_at')?->format('Y-m-d H:i') : null,
+            'changes' => self::changes($changes, $invoice),
+            // The number it would be issued as now (the issue sheet asks "Issue it as INV-0005?").
+            'next_number' => InvoiceService::upcomingNumber(),
+            // Due this many days after it's issued (the issue sheet shows the due date).
+            'terms_days' => InvoiceService::termsDays($invoice),
+            'changes_since' => $invoice->lines_seen_event_id ? self::london(AuditEvent::query()->whereKey($invoice->lines_seen_event_id)->value('occurred_at')) : null,
             'checks' => $this->invoices->checks($invoice),
             'to_confirm' => collect($this->invoices->toConfirm($invoice))->map(fn (array $c) => ['source' => $c['source'], 'fp' => $c['fp'], 'state' => $c['state'],
                 'locked' => $c['locked'], 'tax_year' => $c['tax_year'], 'lines' => $c['lines']])->values(),
@@ -682,10 +719,64 @@ class InvoiceController extends Controller
             'addresses' => $emails->addresses($invoice),
             'threads' => [...$threads->candidates($invoice), ['thread_id' => 'new', 'how' => 'new', 'subject' => 'A new email', 'from' => null, 'at' => null]],
             'route' => $threads->route($invoice),
-            'client' => $client ? ['id' => $client->id, 'name' => $client->name, 'has_terms' => ChargeTerms::any(ChargeTerms::forClient($client))] : null,
+            'client' => $client ? self::clientSheet($client) : null,
             'stage' => $invoice->work_job_id && ($job = WorkJob::query()->find($invoice->work_job_id))
                 ? (JobStage::of([$job], null, InvoiceDraftSync::changeCounts([(int) $invoice->id]))[$job->id] ?? null) : null,
         ];
+    }
+
+    /**
+     * The client on the check screen: whether they have a usual arrangement for travel and expenses, and when they
+     * don't, the one-tap answers to "How does Acme pay travel?" (a fixed travel fee needs its amount: set up on their
+     * page), tied to the arrangement as it is now.
+     *
+     * @return array{id:int, name:string, has_terms:bool, terms:?array{fp:string, presets:list<array{key:string, label:string}>}}
+     */
+    private static function clientSheet(Client $client): array
+    {
+        $has = ChargeTerms::any(ChargeTerms::forClient($client));
+        $rate = ChargeTermsWriter::mileageRate();
+
+        return ['id' => (int) $client->id, 'name' => $client->name, 'has_terms' => $has, 'terms' => $has ? null : [
+            'fp' => ChargeTermsWriter::fingerprint($client),
+            'presets' => collect(['at_cost', 'mileage', 'in_rate'])->map(fn (string $p) => ['key' => $p, 'label' => ChargeTermsWriter::label($p, $p === 'mileage' ? $rate : null)])->values()->all(),
+        ]];
+    }
+
+    /**
+     * Costs linked to the invoice's job after it was sent (ChargeStatus owed_late), shown on the job's latest issued
+     * invoice: "on Acme's next invoice", with Invoice it now and Not charged as the to-do list offers them (each tied to
+     * the cost as it is now). The sent invoice itself never changes.
+     *
+     * @return list<array{id:string, what:string, amount_minor:?int, currency:string, actions:list<array<string, mixed>>}>
+     */
+    private static function lateCosts(Invoice $invoice): array
+    {
+        if (! in_array($invoice->status, InvoicePayments::PAYABLE, true) || $invoice->work_job_id === null || $invoice->sent_at === null) {
+            return [];
+        }
+        $latest = Invoice::query()->where('work_job_id', $invoice->work_job_id)->whereIn('status', InvoicePayments::PAYABLE)->orderByDesc('id')->value('id');
+        $job = WorkJob::query()->find($invoice->work_job_id);
+        if ($job === null || (int) $latest !== (int) $invoice->id) {
+            return [];
+        }
+        $units = collect(CostUnits::forJobs([$job])[$job->id] ?? [])->filter(fn (array $u) => $u['kind'] !== 'work')->values()->all();
+        $statuses = $units === [] ? [] : ChargeStatus::for($units);
+        $out = [];
+        foreach ($units as $u) {
+            $st = $statuses[$u['ref']] ?? null;
+            if ($st === null || $st['status'] !== 'owed_late' || ! $st['expected'] || ! CostRef::valid($u['ref'])) {
+                continue;
+            }
+            $id = CostRef::toId($u['ref']);
+            $out[] = [
+                'id' => $id, 'what' => trim((string) ($u['description'] ?? 'A cost')),
+                'amount_minor' => $u['amount_minor'] !== null ? abs((int) $u['amount_minor']) : null, 'currency' => (string) ($u['currency'] ?? 'GBP'),
+                'actions' => Fingerprints::attach([['code' => 'cost_invoice_now', 'id' => $id, 'label' => 'Invoice it now'], ['code' => 'cost_no_charge', 'id' => $id, 'label' => 'Not charged']]),
+            ];
+        }
+
+        return $out;
     }
 
     /**
@@ -740,6 +831,11 @@ class InvoiceController extends Controller
             'close_reasons' => Invoice::CLOSED_REASONS,
             'replace_with' => $replaceWith,
             'replaced_by' => $invoice->replaced_by_id ? Invoice::query()->whereKey($invoice->replaced_by_id)->value('number') : null,
+            // "Link a payment": recent money in from this client's payers, the likeliest first (nothing is linked here).
+            'to_link' => in_array($invoice->status, InvoicePayments::PAYABLE, true) && $r['outstanding'] > 0 ? self::paymentsToLink($invoice) : [],
+            // "When did it go?" (I sent it myself): not before the day it was issued.
+            'sent_from' => InvoiceEmails::issuedOn($invoice),
+            'late_costs' => self::lateCosts($invoice),
             'stale_date' => $invoice->status === 'issued' && $invoice->sent_at === null && $invoice->issue_date !== null && $invoice->issue_date->lte(today()->subDays(7))
                 ? 'Dated '.$invoice->issue_date->format('j M').' and still not sent: send it today, or void it and issue a new one dated today if the date matters.' : null,
         ];
@@ -751,7 +847,7 @@ class InvoiceController extends Controller
         return $row === null ? null : ['id' => $row->id, 'kind' => $row->kind, 'stage' => $row->stage, 'route' => $row->route, 'status' => $row->status,
             'to' => $row->to_address, 'subject' => $row->subject, 'thread_id' => $row->gmail_thread_id, 'error' => $row->error,
             'edited' => $row->current_message_id !== null && $row->draft_message_id !== null && $row->current_message_id !== $row->draft_message_id,
-            'drafted_at' => $row->drafted_at?->format('Y-m-d H:i'), 'sent_at' => $row->sent_at?->format('Y-m-d H:i')];
+            'drafted_at' => self::london($row->drafted_at), 'sent_at' => self::london($row->sent_at)];
     }
 
     /** The state pill's words: Paid, Part paid £x of £y, Closed · £30 not paid, Overpaid £100, Check: paid in another currency, Unpaid, Overdue. */
@@ -792,6 +888,52 @@ class InvoiceController extends Controller
     }
 
     /** @return array<string, mixed> a line as the check screen shows it */
+    /**
+     * The lines as the page shows them. On a draft, a payment's cost on a job (one that can be shared with another job)
+     * also carries the payment as it is now: its fingerprint, sent back with "Shared with another job…" so a share from
+     * a page left open is refused when the payment changed since, and its whole split in words, shown in that step.
+     *
+     * @param  Collection<int, InvoiceLine>  $lines
+     * @return list<array<string, mixed>>
+     */
+    private static function linesProps(Collection $lines, Collection $jobTitles, bool $draft): array
+    {
+        $payments = [];
+        if ($draft) {
+            foreach ($lines as $l) {
+                $parsed = $l->source_ref !== null && CostRef::valid($l->source_ref) ? CostRef::parse($l->source_ref) : null;
+                if ($parsed !== null && in_array($parsed['type'], ['tx', 'exp'], true) && $parsed['job'] !== null) {
+                    $subject = CostRef::subject($l->source_ref);
+                    $payments[$subject] ??= self::paymentNow($parsed['type'], $parsed['id']);
+                }
+            }
+        }
+
+        return $lines->map(fn (InvoiceLine $l) => self::lineProps($l, $jobTitles)
+            + ($draft ? ['payment' => $l->source_ref !== null ? ($payments[CostRef::subject($l->source_ref)] ?? null) : null] : []))->values()->all();
+    }
+
+    /**
+     * A payment as it is now, for the share step: its fingerprint (SourceState) and each part of its split in words.
+     *
+     * @return array{fp:string, split:list<array{amount_minor:int, words:string}>}|null
+     */
+    private static function paymentNow(string $type, int $id): ?array
+    {
+        $source = $type === 'tx' ? BankTransaction::query()->find($id) : ManualExpense::query()->find($id);
+        if ($source === null) {
+            return null;
+        }
+        $split = $source->allocations()->with(['job:id,title', 'category:id,name'])->orderBy('id')->get()
+            ->map(fn (Allocation $a) => ['amount_minor' => abs((int) $a->amount_pence), 'words' => match (true) {
+                $a->job !== null => $a->job->title,
+                $a->kind === 'business_expense' => ($a->category?->name ?? 'Business cost').', no job',
+                default => Allocation::KINDS[$a->kind] ?? $a->kind,
+            }])->values()->all();
+
+        return ['fp' => SourceState::fingerprint($source), 'split' => $split];
+    }
+
     private static function lineProps(InvoiceLine $l, Collection $jobTitles): array
     {
         return [
@@ -812,15 +954,34 @@ class InvoiceController extends Controller
         return ['lines_version' => InvoiceDraftSync::linesVersion($fresh), 'seen_up_to' => InvoiceDraftSync::lastChange($fresh)];
     }
 
-    /** @return array<string, mixed> a change since you last looked, in words */
-    private static function change(AuditEvent $e): array
+    /**
+     * The changes since you last looked, in words. A change that records no description (only a price or a quantity
+     * changed) names the line by its words now, so a draft with several lines says which one.
+     *
+     * @param  Collection<int, AuditEvent>  $events
+     * @return Collection<int, array<string, mixed>>
+     */
+    private static function changes(Collection $events, Invoice $invoice): Collection
+    {
+        $ids = $events->map(fn (AuditEvent $e) => ((array) ($e->after ?? []))['line'] ?? ((array) ($e->before ?? []))['line'] ?? null)->filter()->unique()->values()->all();
+        $names = $ids === [] ? collect() : InvoiceLine::query()->where('invoice_id', $invoice->id)->whereKey($ids)->pluck('description', 'id');
+
+        return $events->map(fn (AuditEvent $e) => self::change($e, $names))->values();
+    }
+
+    /**
+     * @param  Collection<int, string>|null  $names  each line's words now, by id
+     * @return array<string, mixed> a change since you last looked, in words
+     */
+    private static function change(AuditEvent $e, ?Collection $names = null): array
     {
         $after = (array) ($e->after ?? []);
         $before = (array) ($e->before ?? []);
         $money = fn (?int $minor) => $minor === null ? '' : ' '.Money::format($minor);
+        $named = $names?->get((int) ($after['line'] ?? $before['line'] ?? 0));
         $words = match ($e->action) {
             'invoice.line_added' => 'Added: '.($after['description'] ?? 'a line').$money(isset($after['amount']) ? (int) $after['amount'] : null),
-            'invoice.line_changed' => 'Changed: '.($after['description'] ?? $before['description'] ?? 'a line')
+            'invoice.line_changed' => 'Changed: '.($after['description'] ?? $before['description'] ?? $named ?? 'a line')
                 .(isset($before['quantity'], $after['quantity']) ? ' ('.$before['quantity'].' → '.$after['quantity'].')' : '')
                 .(isset($before['amount_minor'], $after['amount_minor']) ? ' ('.Money::format((int) $before['amount_minor']).' → '.Money::format((int) $after['amount_minor']).')' : ''),
             'invoice.line_removed' => 'Removed: '.($before['description'] ?? 'a line').' (no longer linked to the job)',
@@ -829,7 +990,7 @@ class InvoiceController extends Controller
             default => $e->action,
         };
 
-        return ['id' => $e->id, 'action' => $e->action, 'at' => $e->occurred_at?->format('Y-m-d H:i'), 'line' => $after['line'] ?? $before['line'] ?? null, 'words' => $words];
+        return ['id' => $e->id, 'action' => $e->action, 'at' => self::london($e->occurred_at), 'line' => $after['line'] ?? $before['line'] ?? null, 'words' => $words];
     }
 
     /** The issue sheet's fields: the date, and what it showed. */
@@ -921,8 +1082,8 @@ class InvoiceController extends Controller
             $lines = InvoiceLine::query()->where('invoice_id', $fresh->id)->orderBy('sort')->orderBy('id')->get();
             $titles = WorkJob::query()->whereKey($lines->pluck('source_job_id')->filter()->unique()->values()->all() ?: [0])->pluck('title', 'id');
             $sheet = self::linesState($fresh) + [
-                'lines' => $lines->map(fn (InvoiceLine $l) => self::lineProps($l, $titles))->values(),
-                'changes' => InvoiceDraftSync::changes($fresh)->map(fn (AuditEvent $ev) => self::change($ev))->values(),
+                'lines' => self::linesProps($lines, $titles, true),
+                'changes' => self::changes(InvoiceDraftSync::changes($fresh), $fresh),
                 'checks' => $this->invoices->checks($fresh),
                 'to_confirm' => $this->invoices->toConfirm($fresh),
                 'total_minor' => (int) $fresh->total_minor,
@@ -933,6 +1094,21 @@ class InvoiceController extends Controller
     }
 
     /** A request from a sheet that reads JSON (not an Inertia visit). */
+    /**
+     * A moment as the page shows it ("2026-06-12 10:30"): in UK time, as the owner lives it. Stored in UTC, so a send at
+     * 00:30 in June would otherwise read as the day before.
+     */
+    private static function london(mixed $at): ?string
+    {
+        if ($at === null || $at === '') {
+            return null;
+        }
+
+        $moment = $at instanceof DateTimeInterface ? CarbonImmutable::instance($at) : CarbonImmutable::parse((string) $at, (string) config('app.timezone'));
+
+        return $moment->setTimezone('Europe/London')->format('Y-m-d H:i');
+    }
+
     private static function wantsJson(Request $request): bool
     {
         return $request->expectsJson() && ! $request->header('X-Inertia');
@@ -954,7 +1130,7 @@ class InvoiceController extends Controller
             return null;
         }
 
-        return ['to' => $last->after['to'] ?? null, 'error' => $last->after['error'] ?? null, 'at' => $last->occurred_at->format('Y-m-d H:i'), 'reminder' => $last->action === 'invoice.reminder_failed'];
+        return ['to' => $last->after['to'] ?? null, 'error' => $last->after['error'] ?? null, 'at' => self::london($last->occurred_at), 'reminder' => $last->action === 'invoice.reminder_failed'];
     }
 
     /**
@@ -992,6 +1168,8 @@ class InvoiceController extends Controller
             'job' => $i->job ? ['id' => $i->job->id, 'title' => $i->job->title] : null, 'work_job_id' => $i->work_job_id,
             'po_number' => $i->po_number, 'currency' => $i->currency, 'total_minor' => $i->total_minor, 'paid_minor' => (int) $r['paid'],
             'issue_date' => $i->issue_date?->format('Y-m-d'), 'due_date' => $i->due_date?->format('Y-m-d'),
+            // Whether it has gone to the client (by any route, or marked as sent by you): one not sent isn't overdue.
+            'sent' => $i->sent_at !== null,
             // Overdue from the day after it's due, as on the to-do list and in the Telegram nudges: on the due date it's still on time.
             'overdue' => $overdue,
             'overdue_days' => $days,

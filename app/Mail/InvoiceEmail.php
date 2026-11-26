@@ -2,6 +2,7 @@
 
 namespace App\Mail;
 
+use App\Domain\Invoices\ChaseLadder;
 use App\Domain\Invoices\InvoiceMailer;
 use App\Models\Invoice;
 use App\Models\Setting;
@@ -72,8 +73,11 @@ class InvoiceEmail extends Mailable
         $amount = e(Money::format($i->total_minor, $i->currency, false));
         $due = $i->due_date?->format('j F Y');
         $po = $i->po_number ? ' for PO '.e($i->po_number) : '';
+        // Part paid, the reminder thanks them for what came in and asks for what's still to come (as the Gmail reminder
+        // does), never "I can't see a payment yet" for the whole amount.
         $body = $this->reminder
-            ? '<p>Hello,</p><p>A reminder that invoice '.e($i->number)."{$po}, for {$amount}, was due on {$due} and I can’t see a payment yet. The invoice is attached again.</p>"
+            ? '<p>Hello,</p><p>'.(ChaseLadder::partPaid($i) ? e(ChaseLadder::opening($i, 1))
+                : 'A reminder that invoice '.e($i->number)."{$po}, for {$amount}, was due on {$due} and I can’t see a payment yet.").' The invoice is attached again.</p>'
                 .'<p>If it’s already been paid, thank you, and please ignore this.</p>'
             : '<p>Hello,</p><p>Please find attached invoice '.e($i->number)."{$po} for {$amount}, due by {$due}.</p>";
         $bank = Setting::get('business_bank_details');

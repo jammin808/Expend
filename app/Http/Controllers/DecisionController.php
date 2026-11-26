@@ -179,9 +179,12 @@ class DecisionController extends Controller
     /** Accept a suggestion as it stands. Accepting is a choice of yours too: other payments waiting from there learn from it. */
     public function confirm(Request $request, string $source, int $id): RedirectResponse
     {
+        // Accept is tied to the suggestion the card or drawer showed (shown: its lines' ids): one replaced since, by an
+        // automatic suggestion say, is never confirmed by a press made on the old one.
+        $data = $request->validate(['shown' => 'nullable|array', 'shown.*' => 'integer']);
         $item = $this->find($source, $id);
         try {
-            $this->writer->confirm($item);
+            $this->writer->confirm($item, null, isset($data['shown']) ? array_map('intval', $data['shown']) : null);
         } catch (InvalidArgumentException $e) {
             return back()->with('error', $e->getMessage());
         }

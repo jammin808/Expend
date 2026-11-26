@@ -83,7 +83,8 @@ class JobFinishedTest extends TestCase
         $keyboard = $sent['reply_markup']['inline_keyboard'];
         $this->assertSame([['Done', Telegram::callbackData('job_done', (string) $job->id)], ['Not yet', Telegram::callbackData('job_not_yet', (string) $job->id)]],
             array_map(fn ($b) => [$b['text'], $b['callback_data']], $keyboard[0]));
-        $this->assertSame(['Cancelled', Telegram::callbackData('job_cancel', (string) $job->id)], [$keyboard[1][0]['text'], $keyboard[1][0]['callback_data']]);
+        // Worded as on the job page and the to-do list: it asks what they owe before anything is done.
+        $this->assertSame(['Cancelled…', Telegram::callbackData('job_cancel', (string) $job->id)], [$keyboard[1][0]['text'], $keyboard[1][0]['callback_data']]);
         $this->assertSame(['text' => 'Open the job', 'url' => url('/jobs/'.$job->id)], $keyboard[1][1]);
         $this->assertTrue((bool) Setting::get('telegram_buttons_on'), 'Presses are let through (allowButtons)');
         $this->assertStringNotContainsString('PO-4471', json_encode($this->sent), 'No references or amounts');

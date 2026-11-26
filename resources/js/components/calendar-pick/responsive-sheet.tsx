@@ -19,6 +19,7 @@ export function ResponsiveSheet({
     onDiscard,
     children,
     wide = false,
+    discardNote = 'Your picked days are kept. What you changed here is lost.',
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -30,6 +31,8 @@ export function ResponsiveSheet({
     onDiscard?: () => void;
     children: ReactNode;
     wide?: boolean;
+    /** What "Discard changes?" says is kept and lost (the day picker's own words by default). */
+    discardNote?: string;
 }) {
     const mobile = useIsMobile();
     const [asking, setAsking] = useState(false);
@@ -107,7 +110,7 @@ export function ResponsiveSheet({
                                 className="bg-background w-full max-w-sm space-y-3 rounded-xl border p-4 shadow-lg"
                             >
                                 <p className="font-medium">Discard changes?</p>
-                                <p className="text-muted-foreground text-sm">Your picked days are kept. What you changed here is lost.</p>
+                                <p className="text-muted-foreground text-sm">{discardNote}</p>
                                 <div className="flex gap-2">
                                     <Button className="h-11 flex-1" variant="outline" onClick={() => setAsking(false)} autoFocus>
                                         Keep editing

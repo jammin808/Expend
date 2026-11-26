@@ -41,6 +41,9 @@ final class ChaseLadder
 
     public function __construct(private InvoiceEmails $emails) {}
 
+    /** Why a reminder isn't made or sent for an invoice that hasn't been sent: a reminder can only follow it. */
+    public const NOT_SENT = 'Send the invoice first: a reminder can only follow it.';
+
     /**
      * How overdue an invoice is, for a reminder: days since the later of its due date and the day it was sent plus its
      * terms, and the stage its words are for (stage 1 below 14 days, even under 3: you asked).
@@ -223,19 +226,7 @@ final class ChaseLadder
     /** The reminder's words for its stage (see the class), standing on their own like the invoice's email. */
     public static function text(Invoice $invoice, int $stage, ?CarbonInterface $today = null): string
     {
-        $r = InvoicePayments::received([$invoice])[$invoice->id] ?? InvoicePayments::EMPTY;
-        $currency = InvoicePayments::currencyOf($invoice);
-        $about = InvoiceEmails::about($invoice);
-        $due = $invoice->due_date?->format('j F Y');
-        $paid = $r['paid'] > 0 && $r['outstanding'] > 0;
-
-        $first = match (true) {
-            $paid => 'Thank you for the '.IncomeText::money($r['paid'], $currency).' received '.self::receivedOn($invoice, $today).'. '
-                .IncomeText::money($r['outstanding'], $currency).' of invoice '.$invoice->number.$about.' is still to come: it was due on '.$due.'.',
-            $stage >= 3 => 'Invoice '.$invoice->number.$about.', for '.Money::format((int) $invoice->total_minor, $currency, false).', was due on '.$due.' and is now over a month overdue.',
-            $stage === 2 => 'Invoice '.$invoice->number.$about.', for '.Money::format((int) $invoice->total_minor, $currency, false).', was due on '.$due.' and is still unpaid.',
-            default => 'A reminder that invoice '.$invoice->number.$about.', for '.Money::format((int) $invoice->total_minor, $currency, false).', was due on '.$due.' and I haven’t received payment yet.',
-        };
+        $first = self::opening($invoice, $stage, $today);
         $paras = ['Hello,', $first.' The invoice is attached again.'];
         if ($stage === 2) {
             $paras[] = 'Could you let me know when it will be paid?';
@@ -249,6 +240,35 @@ final class ChaseLadder
         $paras[] = 'Many thanks,'."\n".trim((string) Setting::get('business_name'));
 
         return implode("\n\n", $paras)."\n";
+    }
+
+    /**
+     * The reminder's first sentence for its stage: part paid, it thanks them for what came in and says what's still to
+     * come; otherwise when it was due and that it hasn't been paid (the reminder Expend emails itself starts the same).
+     */
+    public static function opening(Invoice $invoice, int $stage, ?CarbonInterface $today = null): string
+    {
+        $r = InvoicePayments::received([$invoice])[$invoice->id] ?? InvoicePayments::EMPTY;
+        $currency = InvoicePayments::currencyOf($invoice);
+        $about = InvoiceEmails::about($invoice);
+        $due = $invoice->due_date?->format('j F Y');
+        $paid = $r['paid'] > 0 && $r['outstanding'] > 0;
+
+        return match (true) {
+            $paid => 'Thank you for the '.IncomeText::money($r['paid'], $currency).' received '.self::receivedOn($invoice, $today).'. '
+                .IncomeText::money($r['outstanding'], $currency).' of invoice '.$invoice->number.$about.' is still to come: it was due on '.$due.'.',
+            $stage >= 3 => 'Invoice '.$invoice->number.$about.', for '.Money::format((int) $invoice->total_minor, $currency, false).', was due on '.$due.' and is now over a month overdue.',
+            $stage === 2 => 'Invoice '.$invoice->number.$about.', for '.Money::format((int) $invoice->total_minor, $currency, false).', was due on '.$due.' and is still unpaid.',
+            default => 'A reminder that invoice '.$invoice->number.$about.', for '.Money::format((int) $invoice->total_minor, $currency, false).', was due on '.$due.' and I haven’t received payment yet.',
+        };
+    }
+
+    /** Whether some of the invoice has come in and some is still to come (its reminder thanks them for what came in). */
+    public static function partPaid(Invoice $invoice): bool
+    {
+        $r = InvoicePayments::received([$invoice])[$invoice->id] ?? InvoicePayments::EMPTY;
+
+        return $r['paid'] > 0 && $r['outstanding'] > 0;
     }
 
     /**

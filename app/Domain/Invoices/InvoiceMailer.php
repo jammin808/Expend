@@ -99,6 +99,10 @@ final class InvoiceMailer
             if ($reminder && ! $fresh->due_date?->lt(today())) {
                 throw new InvalidArgumentException("Invoice {$fresh->number} isn’t overdue".($fresh->due_date ? ' (it’s due on '.$fresh->due_date->format('j M Y').')' : '').', so it’s too early for a reminder.');
             }
+            // A reminder follows the invoice: one never sent (by any route, or marked as sent by you) gets none.
+            if ($reminder && $fresh->sent_at === null) {
+                throw new InvalidArgumentException(ChaseLadder::NOT_SENT);
+            }
 
             $typed = trim((string) $to);
             $to = $typed !== '' ? $typed : trim((string) $fresh->bill_to_email);

@@ -7,6 +7,7 @@ import { type JobDayMark, type LockedYear, type MonthEntry } from '@/components/
 import { CALENDAR_KEY, useDayPick } from '@/components/calendar-pick/use-day-pick';
 import { useMinWidth } from '@/components/calendar-pick/use-min-width';
 import { useMonths } from '@/components/calendar-pick/use-months';
+import { DoneButton } from '@/components/done-prompt';
 import { JobForm } from '@/components/job-form';
 import { JobsTabs } from '@/components/jobs-tabs';
 import { Button } from '@/components/ui/button';
@@ -30,7 +31,13 @@ interface JobOption {
     client: string | null;
     /** The days it's worked (a rig and a de-rig days later have a gap between them). Older servers don't send it. */
     days?: string[];
+    status?: string;
+    /** Its last day has finished and it's still booked: "Done?". */
+    done_due?: boolean;
 }
+
+/** A job's last day: its last working day, else its end date. */
+const lastDayOf = (j: JobOption) => (j.days && j.days.length ? j.days[j.days.length - 1] : j.ends_on);
 
 /**
  * Text cut to max characters at a sensible place: after a sentence or a line (an address, before the directions that
@@ -163,6 +170,13 @@ export default function JobCalendar({
     const before = pick.dates.filter((d) => monthOf(d) < months[0]).length;
     const after = pick.dates.filter((d) => monthOf(d) > months[months.length - 1]).length;
     const stripDate = strip && months.includes(monthOf(strip)) ? strip : null;
+    // "Done?": a "?" on the last day's bar of each job that has finished and is still booked, and a row for it there.
+    const askDone = useMemo(() => {
+        const out: Record<string, number[]> = {};
+        for (const j of jobs) if (j.done_due) (out[lastDayOf(j)] ??= []).push(j.id);
+        return out;
+    }, [jobs]);
+    const dueOn = stripDate ? jobs.filter((j) => j.done_due && lastDayOf(j) === stripDate) : [];
 
     return (
         <AppLayout
@@ -212,6 +226,7 @@ export default function JobCalendar({
                         entriesOn={entriesOn}
                         jobDays={allJobDays}
                         lockedYears={lockedYears}
+                        askDone={askDone}
                         onTap={(d) => {
                             pick.tap(d);
                             revealStrip(); // the day's entries, clear of the bar along the bottom
@@ -229,6 +244,20 @@ export default function JobCalendar({
                             </button>
                         </p>
                     )}
+                    {dueOn.map((j) => (
+                        <div
+                            key={j.id}
+                            className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-950/40"
+                        >
+                            <span className="min-w-0 flex-1 break-words">
+                                <strong>{j.title}</strong>: last day was {dayLabel(lastDayOf(j))}. All done?
+                            </span>
+                            <Button variant="outline" className="h-11" asChild>
+                                <Link href={`/jobs/${j.id}`}>Open</Link>
+                            </Button>
+                            <DoneButton job={j} />
+                        </div>
+                    ))}
                     {stripDate && (
                         <DayStrip
                             date={stripDate}

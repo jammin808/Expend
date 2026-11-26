@@ -175,7 +175,8 @@ final class TodoActions
             'inv_draft_later' => $this->draftLater((int) $id),
             'inv_to_gmail' => $this->toGmail(Invoice::query()->findOrFail((int) $id)),
             'inv_gmail_send' => app(InvoiceEmails::class)->sendOneTap(Invoice::query()->findOrFail((int) $id), 'invoice'),
-            'inv_sent_self' => app(InvoiceEmails::class)->markSentSelf(Invoice::query()->findOrFail((int) $id)),
+            // Today: a button can't ask when it went ("Pick a date" opens the invoice, which asks).
+            'inv_sent_self' => app(InvoiceEmails::class)->markSentSelf(Invoice::query()->findOrFail((int) $id), null, CarbonImmutable::now(InvoiceEmails::TZ)->format('Y-m-d')),
             'inv_chase_send' => app(InvoiceEmails::class)->sendOneTap(Invoice::query()->findOrFail((int) $id), 'reminder'),
             'inv_chase_later' => $this->chaseLater(Invoice::query()->findOrFail((int) $id)),
             'inv_paid_wait' => $this->paidWait(Invoice::query()->findOrFail((int) $id)),
@@ -252,6 +253,10 @@ final class TodoActions
      */
     private function chase(Invoice $invoice, ?CarbonInterface $offeredAt): string
     {
+        // A reminder follows the invoice: one never sent gets none, by Gmail or by Expend's own email.
+        if (in_array($invoice->status, InvoicePayments::PAYABLE, true) && $invoice->sent_at === null) {
+            throw new InvalidArgumentException(ChaseLadder::NOT_SENT);
+        }
         if (InvoiceEmails::canUse()) {
             return app(ChaseLadder::class)->make($invoice, once: true)['message'];
         }

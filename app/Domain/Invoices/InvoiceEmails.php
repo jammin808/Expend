@@ -74,6 +74,9 @@ final class InvoiceEmails
     /** The retry's first try, after the issuing request's (seconds). */
     private const RETRY_AFTER = 60;
 
+    /** UK time: the day an invoice went ("I sent it myself") is the day it was in the UK. */
+    public const TZ = 'Europe/London';
+
     private ?int $timeout = null;
 
     public function __construct(private BookingThread $threads) {}
@@ -502,13 +505,19 @@ final class InvoiceEmails
     }
 
     /**
-     * "I sent it myself" (or "I sent it another way"): marked as sent, by hand. A draft of it still in Gmail is checked
-     * first (it may just have been sent from there); one still unsent is taken out when it's Expend's own and unedited,
-     * so it can't be sent a second time.
+     * "I sent it myself" (or "I sent it another way"): marked as sent, by hand, on the day you say it went (its terms,
+     * and so when it's overdue, count from then). A draft of it still in Gmail is checked first (it may just have been
+     * sent from there); one still unsent is taken out when it's Expend's own and unedited, so it can't be sent a second
+     * time.
+     *
+     * @param  string|null  $on  the day it went (Y-m-d, UK time): from the day it was issued to today; null is now
      */
-    public function markSentSelf(Invoice $invoice, ?string $to = null): string
+    public function markSentSelf(Invoice $invoice, ?string $to = null, ?string $on = null): string
     {
         $to = $to === null || trim($to) === '' ? null : (self::address($to, false) ?? throw new InvalidArgumentException('That email address doesn’t look right.'));
+        if ($problem = self::sentOnProblem($invoice, $on)) {
+            throw new InvalidArgumentException($problem);
+        }
         $open = self::open($invoice, 'invoice');
         if ($open !== null && self::canUse()) {
             try {
@@ -520,7 +529,7 @@ final class InvoiceEmails
             }
         }
 
-        $done = DB::transaction(function () use ($invoice, $to) {
+        $done = DB::transaction(function () use ($invoice, $to, $on) {
             AuditLog::lockHead();
             $fresh = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
             if (! in_array($fresh->status, InvoicePayments::PAYABLE, true)) {
@@ -529,12 +538,13 @@ final class InvoiceEmails
             if ($fresh->sent_at !== null) {
                 return [$fresh, null, false];
             }
-            $fresh->forceFill(['sent_at' => now()->startOfSecond(), 'sent_to' => $to])->save();
+            $fresh->forceFill(['sent_at' => self::sentAt($fresh, $on), 'sent_to' => $to])->save();
             $draft = self::open($fresh, 'invoice');
             $draft?->forceFill(['status' => 'replaced', 'error' => 'Sent another way'])->save();
             $pending = self::retirePending($fresh);
             InvoiceEmail::query()->create(['invoice_id' => $fresh->id, 'kind' => 'invoice', 'route' => 'by_hand', 'status' => 'sent', 'to_address' => $to, 'sent_at' => $fresh->sent_at]);
-            AuditLog::record('invoice.marked_sent', $fresh, null, array_filter(['number' => $fresh->number, 'to' => $to], fn ($v) => $v !== null), 'You sent it yourself');
+            AuditLog::record('invoice.marked_sent', $fresh, null, array_filter(['number' => $fresh->number, 'to' => $to,
+                'sent_on' => CarbonImmutable::instance($fresh->sent_at)->setTimezone(self::TZ)->format('Y-m-d')], fn ($v) => $v !== null), 'You sent it yourself');
 
             return [$fresh, $draft, true, $pending];
         });
@@ -559,7 +569,65 @@ final class InvoiceEmails
             }
         }
 
-        return "Invoice {$fresh->number} is marked as sent.".$note;
+        $day = CarbonImmutable::instance($fresh->sent_at)->setTimezone(self::TZ);
+
+        return "Invoice {$fresh->number} is marked as sent".($day->format('Y-m-d') === self::today() ? '' : ' on '.$day->format('j M Y')).'.'.$note;
+    }
+
+    /**
+     * Why "I sent it myself" can't say it went on $on, or null when it can: a day (Y-m-d) from the day it was issued (it
+     * can't have gone before) to today (not one still to come). No day (null) is today.
+     */
+    public static function sentOnProblem(Invoice $invoice, ?string $on): ?string
+    {
+        if ($on === null || trim($on) === '') {
+            return null;
+        }
+        $parts = preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $on, $m) === 1 ? [(int) $m[2], (int) $m[3], (int) $m[1]] : null;
+        if ($parts === null || ! checkdate(...$parts)) {
+            return 'Pick the day it went.';
+        }
+        if ($on > self::today()) {
+            return 'That day hasn’t come yet: pick today or a day before.';
+        }
+        $issued = self::issuedOn($invoice);
+        if ($issued !== null && $on < $issued) {
+            $made = CarbonImmutable::parse($issued);
+            $dated = $invoice->issue_date?->format('Y-m-d');
+
+            // Dated earlier than the day Expend made it (an invoice back-dated in the issue sheet): both days, so the
+            // date printed on it doesn't read as the first day it could have gone.
+            return $dated !== null && $dated < $issued
+                ? 'It’s dated '.CarbonImmutable::parse($dated)->format('j M Y').', but Expend only made it on '.$made->format('j M Y').': pick '.$made->format('j M').' or later.'
+                : 'It can’t have gone before it was issued on '.$made->format('j M Y').': pick that day or later.';
+        }
+
+        return null;
+    }
+
+    /** The day an invoice was issued (UK time), the first day it can have gone: when Expend issued it, else its date. */
+    public static function issuedOn(Invoice $invoice): ?string
+    {
+        return $invoice->issued_at !== null ? CarbonImmutable::instance($invoice->issued_at)->setTimezone(self::TZ)->format('Y-m-d') : $invoice->issue_date?->format('Y-m-d');
+    }
+
+    /** Today in the UK. */
+    private static function today(): string
+    {
+        return CarbonImmutable::now(self::TZ)->format('Y-m-d');
+    }
+
+    /** When it went: now for today, else midday that day (UK time), never before it was issued. */
+    private static function sentAt(Invoice $invoice, ?string $on): CarbonImmutable
+    {
+        $now = CarbonImmutable::now()->startOfSecond();
+        if ($on === null || trim($on) === '' || $on === self::today()) {
+            return $now;
+        }
+        $at = CarbonImmutable::parse($on.' 12:00:00', self::TZ)->setTimezone(config('app.timezone'));
+        $issued = $invoice->issued_at !== null ? CarbonImmutable::instance($invoice->issued_at) : null;
+
+        return $issued !== null && $at->lt($issued) ? $issued->startOfSecond() : $at;
     }
 
     /**

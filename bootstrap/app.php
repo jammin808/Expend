@@ -4,6 +4,7 @@ use App\Domain\Quick\QuickWorker;
 use App\Http\Controllers\QuickController;
 use App\Http\Middleware\AuditChannel;
 use App\Http\Middleware\HandleInertiaRequests;
+use App\Http\Middleware\LeaveSessionOnReads;
 use App\Http\Middleware\SecurityHeaders;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -23,6 +24,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->validateCsrfTokens(except: ['hooks/telegram']);
         $middleware->web(append: [
             SecurityHeaders::class,
+            // Around the Inertia middleware, so it sees the answer as sent: a read that doesn't use the page's message
+            // leaves the session alone (a press posted meanwhile keeps its message, Undo and follow-ups).
+            LeaveSessionOnReads::class,
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
             // Last, so it's around the controller: what a request writes to the audit trail is from the web, as one action.

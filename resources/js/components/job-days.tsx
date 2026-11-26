@@ -36,7 +36,7 @@ function DayTime({ day: d, field, label: aria }: { day: JobDayRow; field: 'start
         <Input
             key={`${d.id}-${field}-${saved}`}
             type="time"
-            className="h-8 w-28"
+            className="h-11 w-28"
             aria-label={aria}
             defaultValue={saved}
             onBlur={(e) => {
@@ -87,7 +87,8 @@ export function JobDays({
     const gaps = days.filter((d, i) => i > 0 && (Date.parse(d.date) - Date.parse(days[i - 1].date)) / 86_400_000 > 1).length;
 
     return (
-        <section className="space-y-2">
+        // #days: "Add days" (after "Not yet" on the to-do list or Telegram) lands here.
+        <section id="days" className="scroll-mt-16 space-y-2">
             <div>
                 <h2 className="flex items-center gap-2 font-semibold">
                     <CalendarDays className="size-4" /> Days ({days.length})
@@ -106,7 +107,7 @@ export function JobDays({
                     <li key={d.id} className="flex flex-wrap items-center gap-2 p-2">
                         <span className="w-36 font-medium">{label(d.date)}</span>
                         <select
-                            className="border-input bg-background h-8 rounded-md border px-2 text-sm"
+                            className="border-input bg-background h-11 rounded-md border px-2 text-sm"
                             value={d.kind}
                             aria-label="Kind of day"
                             onChange={(e) =>
@@ -136,6 +137,7 @@ export function JobDays({
                         {days.length > 1 && (
                             <Button
                                 size="icon"
+                                className="size-11"
                                 variant="ghost"
                                 aria-label={`Remove ${label(d.date)}`}
                                 onClick={() => router.delete(`/job-days/${d.id}`, opts)}
@@ -158,13 +160,13 @@ export function JobDays({
                 >
                     <Input
                         type="date"
-                        className="w-40"
+                        className="h-11 w-40"
                         aria-label="Day to add"
                         value={form.data.date}
                         onChange={(e) => form.setData('date', e.target.value)}
                     />
                     <select
-                        className="border-input bg-background h-9 rounded-md border px-2 text-sm"
+                        className="border-input bg-background h-11 rounded-md border px-2 text-sm"
                         aria-label="Kind of day"
                         value={form.data.kind}
                         onChange={(e) => form.setData('kind', e.target.value)}
@@ -177,19 +179,19 @@ export function JobDays({
                     </select>
                     <Input
                         type="time"
-                        className="w-28"
+                        className="h-11 w-28"
                         aria-label="Start"
                         value={form.data.start_time}
                         onChange={(e) => form.setData('start_time', e.target.value)}
                     />
                     <Input
                         type="time"
-                        className="w-28"
+                        className="h-11 w-28"
                         aria-label="Finish"
                         value={form.data.end_time}
                         onChange={(e) => form.setData('end_time', e.target.value)}
                     />
-                    <Button size="sm" variant="outline" disabled={!form.data.date || form.processing}>
+                    <Button size="sm" variant="outline" className="h-11" disabled={!form.data.date || form.processing}>
                         Add a day
                     </Button>
                 </form>

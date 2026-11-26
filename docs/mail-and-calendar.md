@@ -43,7 +43,8 @@ Where section 2 or 5 says "every 2 minutes", read "hourly, or on Check now".
   points back to it (In-Reply-To, References), by either mail route.
 - **"Finished yesterday"** (the first step of idea 1). `ledger:job-finished`, daily at 08:37 London: "Acme Awards
   finished yesterday. Invoice it?" on Telegram with a link to the job, once per job (`settings.job_finished_told`), not
-  for a cancelled or invoiced job or one whose Invoice item you snoozed. No draft is prepared yet (batch 4).
+  for a cancelled or invoiced job or one whose Invoice item you snoozed. No draft is prepared yet (batch 4). *Since 25
+  November it asks "All done?" with [Done], which gets the draft ready: see "The money end of batch 4" below.*
 - **Tax pot, phase 1** (idea 2). The dashboard shows what to put aside at the average rate of income tax and Class 4
   on the expected profit (about £210 of a £1,380 payment at a £36,000 profit), and what's needed by the next payment:
   31 January (that year's balance plus the first payment on account), or from February the 31 July payment first.
@@ -54,15 +55,123 @@ Where section 2 or 5 says "every 2 minutes", read "hourly, or on Check now".
 Left from batch 1, for the owner or later:
 
 - The reconnect in "Personal" mode (section 4) is yours.
-- A reminder's subject is still "Reminder: invoice …". Gmail on the client's side groups messages only when subjects
-  match, so the new headers often won't thread a reminder with its invoice there; "Re: Invoice …" would, but it's a
-  change clients see, so it's your choice. Sending an invoice again reuses its Message-ID, and Gmail drops a second
-  copy with the same Message-ID in a mailbox that already has it, so a resend to the same address may not show again.
+- **Threading, corrected (25 November 2026).** Every reminder threads on the invoice's own Message-ID, by either route:
+  the mail route (`App\Mail\InvoiceEmail::headers()`) sets In-Reply-To and References to it, and a Gmail reminder is a
+  reply to the sent invoice in the same conversation (below). What differs is the subject. A reminder sent by Expend's
+  own mail route still says "Reminder: invoice …", and Gmail on the client's side groups messages only when subjects
+  match, so it may show there on its own. A Gmail draft (invoice or reminder) in the booking conversation says
+  "Re: <their subject>" (never "Re: Re:", `InvoiceEmails::re()`), so it stays in that conversation on both sides; a new
+  email says "Invoice INV-0042 · Arena load-in · PO 4471" (`InvoiceEmails::subjectFor()`). Sending an invoice again
+  reuses its Message-ID, and Gmail drops a second copy with the same Message-ID in a mailbox that already has it, so a
+  resend to the same address may not show again.
 - Tax pot: tax deducted at source isn't counted; payments towards the coming bill are counted only as the payments on
   account you record on the tax year; money in still to decide isn't counted (the figure says "at least"). Starling
   balance snapshots into `statement_balances` are M8.
 - A cancelled entry already linked to a job, and the days it made, are left as they are: flagging "cancelled, but the
   job still has a hotel or costs" is M8's `calendar.job_changed`, with the entry history (`calendar_event_versions`).
+
+**The money end of batch 4 is built (25 November 2026):** section D and ideas 1 and 4, with the owner's answers of 24
+November (reminders only when you ask; Telegram's one-tap Send only when safe; both "Issue and
+send" and "Issue and put in Gmail drafts"). docs/PLAN.md §6.13 has the screens. As built:
+
+- **Done, the morning after (idea 1).** `ledger:job-finished` (08:37 London, `app/Console/Commands/JobFinishedNudges.php`)
+  asks "Arena load-in: last day was yesterday. All done? Marking it done gets its invoice ready to check." with [Done]
+  [Not yet] / [Cancelled] [Open the job] (to-do actions `job_done`, `job_not_yet`, `job_cancel`, bound to the job as
+  shown). A job finishes at the end of its last day in London time (`Jobs\JobStage::finishAt`); only jobs that finished
+  in the last 60 days are asked about (`JobStage::DONE_WINDOW_DAYS`). It's asked once per job and finish
+  (`settings.job_finished_told`, keyed `{job}@{finish}`, so days added later ask again), and once more the morning a
+  "Not finished yet" snooze ends (`{job}@{finish}#{day}`). Three or more jobs on one morning go as one message. A job
+  already done reads "its invoice is ready to check", or with no draft and nothing billed "Draft its invoice?" [Draft it]
+  (`job_invoice`). Done makes or reuses the draft (`Jobs\JobStatus::markDone`, then `InvoiceService::draftForJob`) and
+  `Invoices\InvoiceDraftSync` fills it: the work, the job's travel and expenses (each one listed, ticked where the client
+  usually pays it), mileage, and the client's late costs from earlier jobs. Nothing is issued or sent by it. Issuing takes
+  your two presses on the check screen: **Issue…**, then one of the sheet's buttons.
+- **The booking conversation (section D, step 2).** `Invoices\BookingThread::candidates` picks, in order: the job's PO
+  email's conversation (`Gmail\GmailLabeller::poMessages`), the conversation its enquiry or offer came in
+  (`opportunities.thread_key`), then other conversations linked to the job from the client's own domains, newest first.
+  None: a new email. A client whose `invoice_route` is `new` always gets a new email; `none` ("they pay without an invoice
+  from me") gets no invoice at all. The issue sheet's "Use another conversation" lists them all (`GET invoices/{id}/threads`).
+- **The draft** (`Gmail\GmailDrafts`, written by `Invoices\InvoiceEmails::prepare`): from the connected Gmail, To one
+  address only (or none, for you to add in Gmail), never Cc, never reply-all; In-Reply-To and References point to the
+  conversation's last message, with its threadId and the "Re:" subject (Gmail needs all three to keep a draft in the
+  conversation); the issued PDF attached; and an `X-Expend-Ref` header (`{invoice id}/invoice/{first 8 of pdf_sha256}`,
+  `reminder{stage}` for a reminder). The email stands on its own: invoice and PO numbers, the job and dates, the amount
+  and due date, and travel and expenses at cost by kind; no card digits, references or postcodes. Each draft and send is
+  a row in `invoice_emails` (kind `invoice` or `reminder`; route `gmail`, `mailer` or `by_hand`; status `drafted`, `sent`,
+  `deleted`, `failed`, `replaced` or `removed`), audited as `invoice.gmail_drafted` or `invoice.reminder_drafted`.
+- **When Gmail is slow.** `prepare` runs in the issuing request and waits at most 10 seconds (`InvoiceEmails::TIMEOUT`);
+  meanwhile the page says "Putting it in Gmail…". If Gmail doesn't answer, `App\Jobs\PrepareInvoiceEmail` tries again a
+  minute later, then twice more ($tries 3, backoff 180 and 360 seconds: about ten minutes). A retry adopts the draft an
+  earlier try made (by its `X-Expend-Ref`, or by its PDF in the conversation when your edit dropped the header), so there
+  is never a second draft. A draft you changed in Gmail is never taken for Expend's own: no one-tap Send, never deleted.
+  When every try fails the row is `failed` (`invoice.gmail_failed`), with [Try again] and [Email it from Expend].
+- **Your press sends it.** In Gmail (Open in Gmail goes to the conversation); with **Send it now** in Expend, which reads
+  the draft as it is in Gmail (`GET invoices/{id}/gmail/preview`) and sends exactly that version (`POST
+  invoices/{id}/gmail/send`; edited since: "You've changed it in Gmail since"); or in one press from the issue sheet with
+  **Issue and send to <address>** (`POST invoices/{id}/issue-and-send`, To, subject and amount shown first) or **Issue and
+  put in Gmail drafts** (`POST invoices/{id}/gmail`). Telegram's **[Send it]** is offered only when the draft is exactly
+  as Expend made it and goes to an address an earlier invoice to this client went to (`InvoiceEmails::oneTapProblem`,
+  checked again live on the press by `sendOneTap`; to-do codes `inv_gmail_send` and `inv_chase_send`).
+- **How a send is seen.** `App\Jobs\CheckInvoiceEmails` looks at Expend's open drafts: when the invoice page opens, 2, 10
+  and 30 minutes after issuing or Open in Gmail (`CheckInvoiceEmails::LATER`, `POST invoices/{id}/gmail/check`), and
+  hourly at :23 (`invoice-emails-check` in `routes/console.php`). A draft gone from Drafts with a sent message carrying
+  the PDF in the conversation (or found by `in:sent filename:"INV-0042.pdf"`) is recorded as sent: `sent_at`, `sent_to`
+  and, when the invoice has none, its Message-ID from that message (`invoice.sent`, by the system). A draft gone with no
+  sent message is "deleted": "The Gmail draft for INV-0042 was deleted without being sent" [Put it back in Gmail] [I sent
+  it another way] (`invoice.gmail_draft_deleted`).
+- **Expend can't see Gmail.** While a check can't read Gmail (Google's 7-day cut-off in Testing mode, for example),
+  `settings.invoice_emails_blind` keeps since when and why; Telegram says so once, and no "not sent" message goes until
+  a check works again. The to-do item reads "did INV-0042 go?" with [Yes, I sent it].
+- **Fallbacks.** With Gmail not connected or without `gmail.modify`, the issued view offers [Email it from Expend]
+  (`InvoiceMailer`, the mail route as before), [Download the PDF] and [I sent it myself]. **I sent it myself** asks "When did
+  it go?" (today by default; from the day it was issued to today; `POST invoices/{id}/sent-self` with `on`), and its terms,
+  so when it's overdue, count from that day (`InvoiceEmails::markSentSelf`, audited `invoice.marked_sent` with `sent_on`).
+  The to-do button `inv_sent_self` says today, with a "Pick a date" link to `/invoices/{id}#sent`.
+- **One route at a time.** While a Gmail draft of the invoice or of its reminder is open, `InvoiceMailer` refuses to send
+  that kind ("Invoice INV-0042 is in your Gmail drafts, ready to send: send it from there, or delete it there first."),
+  the to-do list doesn't offer Email it, and old Email it and Send a reminder buttons are refused (their fingerprints
+  carry the open `invoice_emails` row).
+- **Reminders, only when you ask (idea 4, the owner's answer).** **Make a reminder** on the invoice page (`POST
+  invoices/{id}/reminder`), the to-do list's and Telegram's `inv_chase` write it as Expend's own Gmail draft
+  (`Invoices\ChaseLadder::make`): a reply to the invoice as it was sent, in the same conversation, to the address it went
+  to, with the PDF again. Nothing scheduled ever writes one (the comments in `routes/console.php` say so).
+  Its words go by days overdue, counted from the later of the due date and the day it was sent plus its terms
+  (`ChaseLadder::STAGES`: from 3 days "not received yet", from 14 asks when it will be paid, from 30 asks for payment this
+  week); part paid, it thanks them for what came in. No statutory interest is added. A reminder can only follow a sent
+  invoice: all three paths refuse an unsent one ("Send the invoice first: a reminder can only follow it.",
+  `ChaseLadder::NOT_SENT`). One reminder draft is open at a time: asked again at a later stage, Expend's earlier unedited
+  draft is replaced; one you edited stays. Expend takes its own unedited reminder out again once the invoice is paid,
+  closed or voided, or a payment that may be for it waits in the Inbox (`ChaseLadder::tidy`, run by `CheckInvoiceEmails`;
+  `invoice.gmail_draft_removed`), and leaves one you edited, saying so. With no usable Gmail, `inv_chase` emails the
+  reminder through `InvoiceMailer` instead (its label then reads "Send a reminder", on the invoice page too; with Gmail,
+  "Make a reminder"). That email starts as the Gmail reminder does (`ChaseLadder::opening`): part paid, it thanks them
+  for what came in and asks for what's still to come, never "I can't see a payment yet" for the whole amount; its sheet
+  says what it will claim, and warns when a payment that may be for it is waiting in the Inbox.
+  [They've paid] (`inv_paid_wait`, `POST invoices/{id}/paid-wait`) snoozes the overdue item for 7 days, takes Expend's
+  own reminder draft out and points to Link a payment (the invoice page's `#payments`, with a waiting payment that may be
+  for it picked); only your press links the payment.
+- **Telegram, persistent but not spammy** (`ledger:invoice-nudges`, daily at 09:13 London, now every day rather than
+  weekdays; `app/Console/Commands/InvoiceNudges.php`). It only tells you; every button is yours to press:
+  1. "The invoice for Arena load-in is still a draft." [Check the invoice] [Remind me Monday]: 2 days after Done, then
+     weekly while it stays a draft.
+  2. "INV-0042 (Arena load-in) is issued but not sent.": day 1 and day 3 after issuing, then weekly until it's sent or
+     voided, worded by where its email is, with [Send it] only when safe (above), [Open in Gmail] and [I sent it
+     myself]; or [Email it] with no Gmail.
+  3. "The Gmail draft for INV-0042 was deleted without being sent", once.
+  4. Overdue: at 3, 14 and 30 days overdue, then weekly (`invoices.overdue_nudged_at`), with its number, the bill-to name
+     and the amount; [Make a reminder] (or [Send it] when your reminder is in your drafts as Expend made it), [They've
+     paid] and [Not yet]. No reminder button while a payment that may be for it waits in the Inbox, or while the
+     invoice's own Gmail draft is open. Overdue counts only once an invoice was sent (`ChaseLadder::daysOverdue`).
+  5. "Expend can't see your Gmail", once.
+  6. A reminder Expend took out of your drafts, and one you edited that it left there, once each.
+
+  Quiet rules: nothing between 21:00 and 08:00 London; messages 1 to 3 wait while today is one of your job days, for at
+  most 2 days; at most one message per invoice a day. Late costs and draft changes go only in the Monday digest. What was
+  told is kept in `settings.invoice_nudges` (`{key: {at, n}}`), not the audit log: a message isn't a change.
+
+Not built from section D and ideas 1 and 4: the change check watching unpaid invoices' threads and remittance emails; the
+mailto PO request as a draft; statutory interest (the decision below is still open); receipts attached to invoice
+emails (the email says "Receipts are available if you need them.").
 
 *For the owner, 24 November 2026. Code facts come from the repository at commit 3384b60. Google and legal facts were checked against official pages (section 6). "Unverified" marks anything nobody could confirm.*
 
@@ -113,6 +222,7 @@ Effort: small = a day or less; medium = 2–4 days; large = a week or more. "M" 
 - **Access:** gmail.modify already allows drafts and sending, so "never without you" is Expend's rule, not Google's; the plan's security notes, which assume read-only, need updating.
 - **Your rules:** sending is always your press, even under M9–M10.
 - **Risks, effort:** the booking contact may not be accounts. Threading on the client's side isn't guaranteed (Gmail groups automated mail only within a week), so each email must stand alone. Drafts can be forgotten, so the "not sent" to-do keeps burning. Step 1 small, now; step 2 medium, with M8.
+- **As built (25 Nov 2026):** both steps, as described under "The money end of batch 4" at the top: drafts in the booking conversation from the connected Gmail, To the billing address only, per client `invoice_route` (`thread`, `new` or `none`); the mail route stays as the fallback, one route at a time. A draft's lines come from what's linked to the job (`InvoiceDraftSync`), each with its source. The change check on unpaid invoices' threads and remittance emails, and the mailto PO request as a draft, aren't built.
 
 ### E. The calendar as a source of possible jobs (C-1, B-1, B-5a, B-5b)
 
@@ -143,10 +253,10 @@ Effort: small = a day or less; medium = 2–4 days; large = a week or more. "M" 
 
 ## 3. My own ideas, best first
 
-1. **Close out the morning after a job.** *Today:* "Draft the invoice" exists, but a draft from a job copies only a whole-job fee, so a day-rate job gets an empty draft. Recharged hotels are only a reminder. *Idea:* the morning after, Expend prepares the draft (PO lines, or day rate × days, recharges as lines, each with its source), mileage and stays: "Arena wrapped. Invoice £1,380 ready [Check and issue] · 168 miles, about £92 [Add]". Issuing takes two presses. *Effort:* medium. *Value:* high. M4–M5.
+1. **Close out the morning after a job.** *Today:* "Draft the invoice" exists, but a draft from a job copies only a whole-job fee, so a day-rate job gets an empty draft. Recharged hotels are only a reminder. *Idea:* the morning after, Expend prepares the draft (PO lines, or day rate × days, recharges as lines, each with its source), mileage and stays: "Arena wrapped. Invoice £1,380 ready [Check and issue] · 168 miles, about £92 [Add]". Issuing takes two presses. *Effort:* medium. *Value:* high. M4–M5. *Built (25 Nov 2026), in this shape:* the morning after asks "All done?" with [Done] (see the top); Done makes or reuses the draft, which lists the work (fee, day rate × days, hours, travel days, a cancellation fee, or the PO's lines), every travel cost and expense linked to the job (ticked where the client usually pays it), bookings with no payment yet (at the booking's price) and the mileage trips you recorded, each with its source. Trips not recorded yet aren't added: the check screen says "Mileage not recorded yet" with [Add them], which opens the Mileage page.
 2. **Tax pot.** *Today:* no "set aside" figure; Starling sync reads no balances. *Idea:* "Arena paid £1,380: put about £210 aside (estimate)" (at a £36,000 profit, the average rate) and "Tax pot £3,100 of about £5,400 needed by 31 Jan", read from your chosen Starling Space; from February, the 31 July payment on account comes first. 31 January 2027 (68 days away) usually brings the 2025-26 balance plus the first 2026-27 payment on account: half of last year's income tax and Class 4, less tax taken at source. A "Move to Tax Space" button would move money, so it needs your press each time and M9; Starling's specification shows it needs no extra signing, but test with £1. *Effort:* small. *Value:* high.
 3. **Today's one thing.** *Today:* a weekly digest of 8 items and a total, and fixed-time nudges with sound. *Idea:* one silent message a day at your usual active hour, skipped on show days. It picks one item by money, urgency and minutes, with [Tomorrow] [Next], and never shows the backlog total. Other non-urgent prompts ride in it. *Effort:* medium. *Value:* high. M5.
-4. **A chase ladder in the PO thread.** *Today:* one reminder wording, repeated weekly; no late-payment interest. *Idea:* Gmail drafts at 3, 14 and 30 days late [Send it] [Not yet] [They've paid]. Statutory interest is shown, and added only if you tick it, for business clients without their own interest clause: 8% over the Bank Rate, fixed per debt (11.75% where interest starts in 2026; 12.00% for January–June 2027, provisional until 31 December), simple daily, plus a one-off £40, £70 or £100. Example: £1,350, 40 days late: £17.38 + £70. *Effort:* medium. *Value:* high.
+4. **A chase ladder in the PO thread.** *Today:* one reminder wording, repeated weekly; no late-payment interest. *Idea:* Gmail drafts at 3, 14 and 30 days late [Send it] [Not yet] [They've paid]. Statutory interest is shown, and added only if you tick it, for business clients without their own interest clause: 8% over the Bank Rate, fixed per debt (11.75% where interest starts in 2026; 12.00% for January–June 2027, provisional until 31 December), simple daily, plus a one-off £40, £70 or £100. Example: £1,350, 40 days late: £17.38 + £70. *Effort:* medium. *Value:* high. *Built (25 Nov 2026), on demand only (the owner's answer):* the reminder is a Gmail draft in the invoice's conversation, worded by days overdue from 3, 14 and 30 days, made only when you press **Make a reminder**; Telegram nudges at those stages with the button. [Not yet] and [They've paid] are there; statutory interest is not.
 5. **A deadline ladder with "Done" buttons.** *Today:* warnings 60 days before the return and 14 before MTD updates; nothing before 31 July. *Idea:* each HMRC date gets stages at 30, 7 and 2 days and the day after, each saying something new: "when will you do it? [Sat] [Sun]", the next step, the cost of missing it. [Filed today] and [Paid £X today] record your word; the bank line confirms it later. *Effort:* medium. *Value:* high.
 6. **Missing receipts found in Gmail.** *Today:* a bank line's page shows nearby same-amount receipts, but there is no list of costs without receipts. *Idea:* nightly narrow searches (merchant, dates, amount) for business costs over £20. Keep only amount matches and propose links. Monthly: "Linked 11; 7 not found: send photos". *Effort:* medium. *Value:* high. M4.
 7. **Records safe for six years.** *Today:* encrypted backups are kept 30 days on the same Hostinger account, copied off by hand, unchecked. Any document can be deleted. *Idea:* a keep-until date per year, with a reason needed to delete; backups copied to Drive (already encrypted; drive.file sees only Expend's own files); a warning when the copy is over 8 days old; a year pack on lock. *Effort:* medium. *Value:* high.
@@ -186,7 +296,7 @@ Smaller extras: a VAT watch on invoices rather than cash; weekly 10-minute year-
 
 **Decisions:**
 
-- [ ] Invoices and chasers as Gmail drafts in the booking thread? From your Gmail, or a business alias?
+- [x] Invoices and chasers as Gmail drafts in the booking thread, from the connected Gmail (chosen 24 Nov; built 25 Nov). A business "Send mail as" alias is still your choice in Gmail.
 - [x] Amend plan law 4 so Expend may write its own labels, calendar and drafts (done: section 5.1 of docs/intelligence-cycle.md).
 - [ ] Which labels to switch on; whether amounts show on your calendar.
 - [ ] Automatic AI reading of job mail, and the monthly AI cap.

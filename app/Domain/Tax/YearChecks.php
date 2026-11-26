@@ -21,6 +21,9 @@ use Illuminate\Support\Facades\File;
  */
 final class YearChecks
 {
+    /** Before 2024-25, the cash basis was allowed only with turnover of £150,000 or less. */
+    public const CASH_BASIS_LIMIT_PENCE = 15_000_000;
+
     /** The snapshot's own version: raised whenever what it holds changes. */
     public const SNAPSHOT_VERSION = 1;
 
@@ -168,6 +171,13 @@ final class YearChecks
             $checks[] = ['key' => 'year_on_year', 'label' => "Compared with {$previous}", 'status' => 'warn', 'detail' => "Add {$previous}'s filed figures in Tax years to compare."];
         }
 
+        // Before 2024-25 the cash basis wasn't the default and had a turnover limit, but Expend works every year out on
+        // it (counted when paid): above the limit, say so before filing.
+        if ((TaxParameters::for($label)['cash_basis_default'] ?? true) === false && $summary['turnover_pence'] > self::CASH_BASIS_LIMIT_PENCE) {
+            $checks[] = ['key' => 'cash_basis', 'label' => 'The cash basis was allowed', 'status' => 'warn',
+                'detail' => "For {$label} the cash basis was allowed only with turnover of £150,000 or less, and this year's is ".Money::format($summary['turnover_pence'])
+                    .'. Expend works these figures out on the cash basis (counted when paid): ask an accountant before you file.'];
+        }
         if (! TaxParameters::has($label)) {
             $checks[] = ['key' => 'rates', 'label' => 'Tax rates loaded', 'status' => 'warn', 'detail' => "No rates for {$label}, so there's no tax estimate. The return figures are still correct."];
         }

@@ -78,6 +78,8 @@ class InvoiceCheckScreenTest extends TestCase
         $this->assertSame($this->po['thread'], $props['draft']['threads'][0]['thread_id']);
         $this->assertTrue($props['draft']['gmail']);
         $this->assertArrayHasKey('blocks', $props['draft']['checks']);
+        // The issue sheet asks "Issue it as INV-0001?": the number it would get now.
+        $this->assertSame('INV-0001', $props['draft']['next_number']);
         $json = json_encode($props);
         // The Gmail tokens (FakeGmail's 'rt' and 'at') are never a value in the props.
         $this->assertStringNotContainsString(':"rt"', $json);
@@ -132,6 +134,8 @@ class InvoiceCheckScreenTest extends TestCase
         $props = $this->props($draft);
         $this->assertCount(1, $props['draft']['changes']);
         $this->assertSame('invoice.line_changed', $props['draft']['changes'][0]['action']);
+        // Only its price changed: the banner names the line by its words, not "a line".
+        $this->assertSame('Changed: Arena load-in, two days (£650.00 → £700.00)', $props['draft']['changes'][0]['words']);
         $this->assertSame(['Arena load-in, two days', 70000], [$props['invoice']['lines'][0]['description'], $props['invoice']['lines'][0]['amount_minor']]);
         $this->postJson("/invoices/{$draft->id}/seen", ['up_to' => $props['invoice']['seen_up_to']])->assertOk()->assertJsonPath('message', 'Got it.');
         $this->assertSame([], $this->props($draft)['draft']['changes']);
@@ -222,6 +226,10 @@ class InvoiceCheckScreenTest extends TestCase
         $this->assertStringStartsWith('OK: Expend won’t ask about INV-0001 for a week.', $json['message']);
         $this->assertTrue(TodoDismissal::query()->where('key', 'invoice_overdue:'.$invoice->id)->whereNotNull('until')->exists());
         $this->assertNull(InvoiceEmails::open($invoice, 'reminder'));
+
+        // Pressed on a page loaded before the invoice was voided in another tab: the reason, as the page's JSON reads it.
+        app(InvoiceService::class)->void($invoice->fresh(), 'Wrong client');
+        $this->postJson("/invoices/{$invoice->id}/paid-wait")->assertStatus(422)->assertJsonPath('message', 'Only an issued invoice can be paid.');
     }
 
     public function test_i_sent_it_myself_and_deleting_a_draft_takes_every_line_with_it(): void
@@ -291,6 +299,47 @@ class InvoiceCheckScreenTest extends TestCase
         $this->postJson("/invoices/{$draft->id}/share", ['line' => $line->id, 'job_id' => $other->id, 'amount' => '42.255'])
             ->assertStatus(422)->assertJsonPath('message', 'Give the other job’s share as an amount, like 42.25.');
         $this->assertSame($events, AuditEvent::query()->count());
+    }
+
+    /**
+     * "Shared with another job…" is tied to the payment as the line sheet showed it (its fingerprint, with its whole
+     * split in words): a page left open while the payment was decided again moves nothing, and says what it is now.
+     */
+    public function test_a_share_from_a_page_left_open_moves_nothing_and_shows_the_payment_as_it_is_now(): void
+    {
+        $job = $this->job('Arena load-in', [], false);
+        $other = WorkJob::query()->create(['title' => 'Other show', 'client_id' => $job->client_id, 'starts_on' => '2026-06-03', 'ends_on' => '2026-06-03', 'status' => 'done']);
+        $account = Account::query()->create(['name' => 'Starling', 'kind' => 'bank', 'provider' => 'starling']);
+        $batch = ImportBatch::query()->create(['account_id' => $account->id, 'original_filename' => 'june.csv', 'file_sha256' => str_repeat('d', 64), 'stored_path' => 'x', 'status' => 'committed']);
+        $tx = BankTransaction::query()->create(['account_id' => $account->id, 'import_batch_id' => $batch->id, 'posted_on' => '2026-06-03', 'tax_year' => '2026-27',
+            'description' => 'ADDISON LEE', 'counterparty' => 'Addison Lee', 'merchant_key' => 'ADDISON LEE', 'amount_pence' => -2350, 'raw' => [], 'fingerprint' => 'share-stale']);
+        $taxi = (int) Category::query()->where('code', 'travel_rail')->value('id');
+        app(AllocationWriter::class)->decide($tx, [['kind' => 'business_expense', 'category_id' => $taxi, 'amount_pence' => -2350, 'work_job_id' => $job->id]]);
+        $draft = $this->draftInvoice($job);
+
+        // The line sheet has the payment as it is: its fingerprint and its whole split.
+        $line = collect($this->props($draft)['invoice']['lines'])->firstWhere('source_ref', 'tx:'.$tx->id.'#j'.$job->id);
+        $this->assertSame([['amount_minor' => 2350, 'words' => 'Arena load-in']], $line['payment']['split']);
+        $fp = $line['payment']['fp'];
+
+        // In another tab: £13.50 of it on the job, £10 personal.
+        app(AllocationWriter::class)->decide($tx, [
+            ['kind' => 'business_expense', 'category_id' => $taxi, 'amount_pence' => -1350, 'work_job_id' => $job->id],
+            ['kind' => 'personal', 'category_id' => null, 'amount_pence' => -1000],
+        ]);
+        $before = $tx->allocations()->orderBy('id')->get(['work_job_id', 'kind', 'amount_pence'])->toArray();
+
+        // The old page's "Share it": nothing moves, and the sheet gets the payment as it is now.
+        $this->postJson("/invoices/{$draft->id}/share", ['line' => $line['id'], 'job_id' => $other->id, 'amount' => '11.75', 'fp' => $fp])
+            ->assertStatus(409)->assertJsonPath('changed', true)
+            ->assertJsonPath('sheet.payment.split', [['amount_minor' => 1350, 'words' => 'Arena load-in'], ['amount_minor' => 1000, 'words' => 'Personal']]);
+        $this->assertSame($before, $tx->fresh()->allocations()->orderBy('id')->get(['work_job_id', 'kind', 'amount_pence'])->toArray());
+
+        // Pressed again, tied to the payment as it now shows: shared, answered in words.
+        $fresh = collect($this->props($draft)['invoice']['lines'])->firstWhere('source_ref', 'tx:'.$tx->id.'#j'.$job->id);
+        $this->postJson("/invoices/{$draft->id}/share", ['line' => $fresh['id'], 'job_id' => $other->id, 'amount' => '6.75', 'fp' => $fresh['payment']['fp']])
+            ->assertOk()->assertJsonPath('message', 'Shared with Other show. The draft follows the new split.');
+        $this->assertSame([-675, -675], $tx->fresh()->allocations()->where('kind', 'business_expense')->orderBy('id')->pluck('amount_pence')->all());
     }
 
     public function test_a_void_invoice_is_never_put_in_gmail_and_a_failed_try_reads_as_an_error(): void

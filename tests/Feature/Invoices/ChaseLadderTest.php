@@ -343,6 +343,27 @@ class ChaseLadderTest extends TestCase
         $this->assertArrayNotHasKey('threadId', $this->gmail->created[0]['message']);
     }
 
+    /**
+     * "Send a reminder" (no Gmail: Expend emails it) on a part-paid invoice starts as the Gmail reminder does: it thanks
+     * them for what came in and asks for what's still to come, never "I can't see a payment yet" for the whole amount.
+     * Unpaid, it reads as it always has.
+     */
+    public function test_an_emailed_reminder_on_a_part_paid_invoice_thanks_them_for_what_came_in(): void
+    {
+        Mail::fake();
+        Setting::put('mail_method', 'server');
+        $invoice = $this->sentInvoice();
+        $this->travelTo('2026-07-10 09:00:00');
+        $body = fn () => (new InvoiceMail($invoice->fresh(), true))->render();
+        $this->assertStringContainsString('was due on 5 July 2026 and I can’t see a payment yet. The invoice is attached again.', $body());
+
+        $this->income(45000, $invoice->job, on: '2026-07-03');
+        $html = $body();
+        $this->assertStringContainsString('Thank you for the £450 received on 3 July. £200 of invoice INV-0001', $html);
+        $this->assertStringContainsString('is still to come: it was due on 5 July 2026. The invoice is attached again.', $html);
+        $this->assertStringNotContainsString('I can’t see a payment yet', $html);
+    }
+
     private function money(int $pence): BankTransaction
     {
         $account = Account::query()->firstOrCreate(['name' => 'Starling'], ['kind' => 'bank', 'provider' => 'starling']);

@@ -20,6 +20,7 @@ use App\Domain\Jobs\JobStatus;
 use App\Domain\Jobs\PoStatus;
 use App\Domain\Matching\OwnAccounts;
 use App\Domain\Tax\MileageCalculator;
+use App\Domain\Todo\Fingerprints;
 use App\Http\Presenters\Present;
 use App\Jobs\GatherForJob;
 use App\Models\Allocation;
@@ -54,9 +55,14 @@ class JobController extends Controller
         $year = $request->string('year')->toString() ?: null;
         $period = $year ? UkTaxYear::fromLabel($year) : null;
         $show = in_array($request->query('show'), ['no_po', 'not_invoiced', 'done_due'], true) ? $request->query('show') : null;
+        // One client's jobs ("All 12" on a client's page): the ones they pay for and the ones they're the end client of,
+        // a client merged into them included.
+        $client = ctype_digit((string) $request->query('client')) ? Client::query()->find(ClientIds::resolve((int) $request->query('client')), ['id', 'name']) : null;
+        $clientIds = $client ? ClientIds::withMerged((int) $client->id) : null;
 
         $jobs = WorkJob::query()->with(['client', 'endClient', 'days'])
             ->when($period, fn ($q) => $q->whereBetween('starts_on', [$period->startsOn(), $period->endsOn()]))
+            ->when($clientIds, fn ($q) => $q->where(fn ($w) => $w->whereIn('client_id', $clientIds)->orWhereIn('end_client_id', $clientIds)))
             ->orderByDesc('starts_on')->limit(300)->get();
 
         $costs = Allocation::query()->whereIn('work_job_id', $jobs->pluck('id'))->whereNotNull('confirmed_at')
@@ -83,7 +89,8 @@ class JobController extends Controller
             'counts' => ['no_po' => $rows->where('missing', true)->count(), 'not_invoiced' => $rows->filter(fn ($r) => ! $r['invoice'] && $r['status'] !== 'cancelled')->count(),
                 'possible' => JobCandidate::query()->where('status', 'open')->count(), 'done_due' => $rows->where('done_due', true)->count()],
             'clients' => Client::query()->unmerged()->orderBy('name')->get(['id', 'name']),
-            'filters' => ['year' => $year, 'show' => $show],
+            'filters' => ['year' => $year, 'show' => $show, 'client' => $client?->id],
+            'client' => $client ? ['id' => $client->id, 'name' => $client->name] : null,
         ]);
     }
 
@@ -148,6 +155,8 @@ class JobController extends Controller
             'stage' => JobStage::of([$job], null, $draft ? InvoiceDraftSync::changeCounts([(int) $draft->id]) : [])[$job->id] ?? null,
             'offers_draft' => JobStatus::offersDraft($job),
             'days_to_come' => $job->status === 'booked' ? JobStage::daysToCome($job) : [],
+            // "Not yet" on "All done?" (the to-do list's job_not_yet), tied to the job as shown.
+            'not_yet_fp' => $job->status === 'booked' ? Fingerprints::of('job_not_yet', (string) $job->id) : null,
             'cancel_charges' => WorkJob::CANCEL_CHARGES,
             // Its costs and where each stands (owed, on a draft, charged, not charged), and its arrangement for travel
             // and expenses (its own rows, else its client's).
@@ -202,7 +211,7 @@ class JobController extends Controller
 
             return ['ref' => $u['ref'], 'id' => CostRef::toId($u['ref']), 'subject' => $u['subject'], 'kind' => $u['kind'], 'class' => $u['class'],
                 'description' => $u['description'], 'date' => $u['date'], 'currency' => $u['currency'], 'amount_minor' => $u['amount_minor'],
-                'quantity' => $u['quantity'], 'status' => $s['status'], 'reason' => $s['reason'], 'chip' => ChargeStatus::chip($s['status']),
+                'quantity' => $u['quantity'], 'status' => $s['status'], 'reason' => $s['reason'], 'note' => $s['note'], 'chip' => ChargeStatus::chip($s['status']),
                 'tick' => $s['tick'], 'actions' => $u['kind'] === 'work' ? [] : ChargeStatus::actions($s)];
         })->values()->all();
     }

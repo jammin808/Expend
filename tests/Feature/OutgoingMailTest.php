@@ -10,6 +10,7 @@ use App\Notifications\QueuedResetPassword;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
@@ -54,7 +55,12 @@ class OutgoingMailTest extends TestCase
             ->assertSessionHas('error');
         $this->put('/settings/integrations/mail', ['method' => 'smtp', 'smtp_host' => 'smtp.hostinger.com', 'smtp_port' => 465, 'smtp_username' => 'jo@example.com', 'smtp_password' => 'pw'])
             ->assertSessionHas('success');
-        $this->assertStringNotContainsString('pw', (string) Setting::query()->find('smtp_password')->value, 'Stored encrypted');
+        // Stored encrypted: the row holds ciphertext, not the password (random ciphertext can contain any two letters, so
+        // the check is that it isn't the plain value and that it decrypts back to it).
+        $stored = (string) Setting::query()->find('smtp_password')->value;
+        $this->assertNotSame(json_encode('pw'), $stored, 'Stored encrypted');
+        $this->assertSame(json_encode('pw'), Crypt::decryptString($stored));
+        $this->assertSame('pw', Setting::get('smtp_password'));
 
         $this->post('/settings/integrations/mail/test')->assertSessionHas('success');
         Mail::assertQueued(TestEmail::class, fn ($m) => $m->hasTo('owner@example.com'));

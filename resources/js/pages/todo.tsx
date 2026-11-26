@@ -1,22 +1,17 @@
+import { ResponsiveSheet, SheetBody, SheetFooter } from '@/components/calendar-pick/responsive-sheet';
 import { Money } from '@/components/money';
-import { toast } from '@/components/toaster';
+import { pressTodo, toast, useFlashClaim } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
+import { isButton, isLink, localPath, postQuietly, withoutLinks } from '@/lib/todo';
 import { cn } from '@/lib/utils';
+import { type FollowUpButton, type FollowUpLink, type TodoAction } from '@/types';
 import { Deferred, Head, Link, router } from '@inertiajs/react';
 import { CheckCircle2, ChevronRight } from 'lucide-react';
-import { useState, type FormEvent } from 'react';
+import { useId, useState, type FormEvent } from 'react';
 
-interface Action {
-    code: string;
-    id: string;
-    label: string;
-    style: 'default' | 'ghost';
-    /** A fingerprint of what it acts on, as shown: a press on something changed since is refused. */
-    fp?: string | null;
-    /** A link (code 'link'): it opens a page and decides nothing. */
-    href?: string;
-}
 interface Item {
     key: string;
     group: string;
@@ -24,7 +19,7 @@ interface Item {
     title: string;
     detail: string | null;
     href: string | null;
-    actions: Action[];
+    actions: TodoAction[];
     amount?: number | null;
     currency?: string;
     /** Comes back under the same key whenever it applies again, so it can be snoozed but not marked not relevant. */
@@ -39,6 +34,8 @@ interface Item {
     why_refs?: WhyRef[];
     /** The reasons offered for marking it not relevant. */
     reasons?: Record<string, string>;
+    /** The reasons offered for snoozing it ("Not finished yet" only for "Is it done?"). */
+    snooze_reasons?: Record<string, string>;
     /** Shown below the fold: a new check's finding, or one demoted by its false positives. */
     below_fold?: boolean;
 }
@@ -66,6 +63,13 @@ interface WhyRef {
 interface Asking {
     item: Item;
     days?: number;
+}
+
+/** A press that asks something before it does anything (Cancelled…: do they owe you anything?), with its answers. */
+interface Question {
+    text: string;
+    choices: FollowUpButton[];
+    links: FollowUpLink[];
 }
 
 const CHECK_WORDS: Record<string, string> = {
@@ -104,6 +108,23 @@ const PRIORITY = {
     3: { label: 'When you can', dot: 'bg-slate-400' },
 };
 
+/** A small text button that's still big enough to hit with a thumb. */
+const quiet = 'text-muted-foreground hover:text-foreground inline-flex min-h-10 items-center rounded-md px-2 text-xs';
+
+/** A link to a page of this app as an Inertia link; anything else as a plain one. */
+function PageLink({ href, className, onClick, children }: { href: string; className?: string; onClick?: () => void; children: React.ReactNode }) {
+    const path = localPath(href);
+    return path !== null ? (
+        <Link href={path} className={className} onClick={onClick}>
+            {children}
+        </Link>
+    ) : (
+        <a href={href} className={className} onClick={onClick}>
+            {children}
+        </a>
+    );
+}
+
 /** Everything that needs you, in one list, most urgent first, with one-tap actions. */
 export default function Todo({
     items,
@@ -127,7 +148,7 @@ export default function Todo({
     checked?: Checked;
     /** How each direction of money reads beside an amount: "you may be owed". */
     directions?: Record<string, string>;
-    /** The reasons offered for a snooze. */
+    /** The reasons offered for a snooze (each item also carries its own). */
     snooze_reasons?: Record<string, string>;
     /** Found below the fold by what the list works out itself (a close-out of its own, a kind demoted). */
     below?: Item[];
@@ -136,13 +157,30 @@ export default function Todo({
     /** The kinds of finding that can be raised or lowered, with how each is shown now. */
     detector_levels?: DetectorLevel[];
 }) {
+    const formId = useId();
     const [busy, setBusy] = useState<string | null>(null);
     const [why, setWhy] = useState<Record<string, boolean>>({});
+    // What a sheet is about stays while it slides away; whether it's open is kept apart.
     const [asking, setAsking] = useState<Asking | null>(null);
+    const [askOpen, setAskOpen] = useState(false);
+    const [question, setQuestion] = useState<Question | null>(null);
+    const [questionOpen, setQuestionOpen] = useState(false);
     const [other, setOther] = useState('');
     const [filter, setFilter] = useState<string | null>(null);
     const [open, setOpen] = useState<Record<string, boolean>>({});
     const [loading, setLoading] = useState<string | null>(null);
+
+    // Cancelled… only asks (do they owe you anything?): its answers come back with the page, and are asked here in a
+    // sheet rather than in a toast that could go before you've answered.
+    useFlashClaim((flash) => {
+        const next = flash.follow_up ?? [];
+        const choices = next.filter(isButton).filter((b) => b.code === 'job_cancel');
+        if (choices.length === 0) return false;
+        setQuestion({ text: withoutLinks(flash.success ?? '').text, choices, links: next.filter(isLink) });
+        setQuestionOpen(true);
+        return true;
+    });
+
     // Five of each kind unless you ask for more, so one busy kind doesn't bury the rest.
     const seen: Record<string, number> = {};
     const shown = (filter ? items.filter((i) => i.group === filter) : items).filter((i) => {
@@ -171,38 +209,46 @@ export default function Todo({
             },
         );
     };
-    const act = (a: Action, key: string) =>
-        a.href
-            ? router.visit(a.href)
-            : router.post(`/todo/${a.code}/${encodeURIComponent(a.id)}`, a.fp ? { fp: a.fp } : {}, {
-                  preserveScroll: true,
-                  onStart: () => setBusy(key + a.code),
-                  onFinish: () => setBusy(null),
-              });
+    // A press: what it did comes back as the page's message, with Undo and what to do next (the toaster shows them),
+    // or why it wasn't done, in the server's words.
+    const act = (b: { code: string; id: string; fp?: string | null }, key: string, after?: () => void) =>
+        pressTodo(b, {
+            start: () => setBusy(key),
+            finish: () => {
+                setBusy(null);
+                after?.();
+            },
+        });
     // Snooze (days) or not relevant (no days), with your reason (kept with it). The server confirms it; this gives
     // that confirmation an Undo (the toaster shows the same message once, keeping the one with the Undo), so its words
     // must match the server's.
     const dismiss = (i: Item, days: number | undefined, reason: string, note?: string) =>
-        router.post(
+        postQuietly(
             '/todo/dismiss',
             { key: i.key, reason, ...(days ? { days } : {}), ...(note ? { note } : {}) },
             {
-                preserveScroll: true,
-                onSuccess: () => {
-                    setAsking(null);
+                start: () => setBusy(i.key + ':dismiss'),
+                finish: () => setBusy(null),
+                problem: (words) => toast(words, 'error'),
+                success: () => {
+                    setAskOpen(false);
                     setOther('');
                     toast(days ? `Snoozed for ${days} days.` : 'Marked not relevant.', 'success', {
                         label: 'Undo',
-                        run: () => router.post('/todo/dismiss', { key: i.key, undo: true }, { preserveScroll: true }),
+                        run: () => postQuietly('/todo/dismiss', { key: i.key, undo: true }, { problem: (words) => toast(words, 'error') }),
                     });
                 },
-                onError: (errors) => toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error'),
             },
         );
-    const reasonsFor = (a: Asking) => (a.days ? snooze_reasons : (a.item.reasons ?? { other: 'Other' }));
+    const reasonsFor = (a: Asking) => (a.days ? (a.item.snooze_reasons ?? snooze_reasons) : (a.item.reasons ?? { other: 'Other' }));
     const submitOther = (e: FormEvent) => {
         e.preventDefault();
         if (asking) dismiss(asking.item, asking.days, 'other', other.trim() || undefined);
+    };
+    const ask = (item: Item, days?: number) => {
+        setOther('');
+        setAsking({ item, days });
+        setAskOpen(true);
     };
     // Below the fold: what the list worked out, then what the new checks found once it's loaded, ranked as found.
     const belowAll = [...below, ...(more_below?.items ?? [])];
@@ -211,47 +257,69 @@ export default function Todo({
     // A detector's code as a button's id holds it: no full stop in a to-do button's id.
     const level = (code: string, up: boolean) => {
         const d = detector_levels.find((x) => x.code === code);
-        const fp = up ? d?.fp_raise : d?.fp_lower;
-        router.post(`/todo/${up ? 'det_raise' : 'det_lower'}/${code.replace(/\./g, ':')}`, fp ? { fp } : {}, { preserveScroll: true });
+        act({ code: up ? 'det_raise' : 'det_lower', id: code.replace(/\./g, ':'), fp: up ? d?.fp_raise : d?.fp_lower }, `level:${code}`);
     };
 
-    const row = (i: Item) => (
-        <li key={i.key} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0 flex-1">
-                <p className="text-muted-foreground text-[11px] tracking-wide uppercase">{groups[i.group]}</p>
-                {i.href ? (
-                    <Link href={i.href} className="flex items-center gap-1 font-medium hover:underline">
-                        <span className="truncate">{i.title}</span>
-                        <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-                    </Link>
-                ) : (
-                    <p className="font-medium">{i.title}</p>
-                )}
-                {i.detail && <p className="text-muted-foreground text-sm">{i.detail}</p>}
-                {(i.grade || (i.direction && directions[i.direction]) || (i.why_refs?.length ?? 0) > 0) && (
-                    <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+    // The item's main press is the first that isn't a quieter one: filled, where the thumb goes first.
+    const button = (i: Item, a: TodoAction, main: boolean) => {
+        const key = `${i.key}|${a.code}|${a.id}`;
+        // Every other button has an outline: on a phone a bare word doesn't look like something to tap.
+        const variant = main ? 'default' : 'outline';
+        if (a.code === 'link' && a.href)
+            return (
+                <Button key={key} asChild variant={variant} className="h-10">
+                    <PageLink href={a.href}>{a.label}</PageLink>
+                </Button>
+            );
+        return (
+            <Button key={key} variant={variant} className="h-10" disabled={busy !== null} onClick={() => act(a, key)}>
+                {busy === key ? '…' : a.label}
+            </Button>
+        );
+    };
+
+    const row = (i: Item) => {
+        const main = i.actions.find((a) => a.style !== 'ghost' && a.code !== 'link');
+        const amount = i.amount !== undefined && i.amount !== null;
+        return (
+            <li key={i.key} className="space-y-2 p-3">
+                <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                        <p className="text-muted-foreground text-[11px] tracking-wide uppercase">{groups[i.group]}</p>
+                        {i.href ? (
+                            <PageLink href={i.href} className="flex min-h-10 items-center gap-1 font-medium break-words hover:underline">
+                                <span className="min-w-0">{i.title}</span>
+                                <ChevronRight className="text-muted-foreground size-4 shrink-0" aria-hidden />
+                            </PageLink>
+                        ) : (
+                            <p className="font-medium break-words">{i.title}</p>
+                        )}
+                        {i.detail && <p className="text-muted-foreground text-sm break-words">{i.detail}</p>}
+                    </div>
+                    {amount && <Money pence={i.amount!} currency={i.currency ?? 'GBP'} className="shrink-0 pt-5 text-sm" />}
+                </div>
+                {(i.grade || (amount && i.direction && directions[i.direction]) || (i.why_refs?.length ?? 0) > 0) && (
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                         {i.grade && (
                             <span className={cn('rounded-full border px-1.5 py-px', GRADE_STYLE[i.grade])} title={i.grade_basis ?? undefined}>
                                 {i.grade[0].toUpperCase() + i.grade.slice(1)}
                             </span>
                         )}
-                        {i.amount !== undefined && i.amount !== null && i.direction && directions[i.direction] && (
-                            <span className="text-muted-foreground">{directions[i.direction]}</span>
-                        )}
+                        {amount && i.direction && directions[i.direction] && <span className="text-muted-foreground">{directions[i.direction]}</span>}
                         {(i.why_refs?.length ?? 0) > 0 && (
                             <button
                                 type="button"
-                                className="text-muted-foreground hover:text-foreground underline underline-offset-2"
+                                className={cn(quiet, 'underline underline-offset-2')}
                                 aria-expanded={!!why[i.key]}
                                 onClick={() => setWhy({ ...why, [i.key]: !why[i.key] })}
                             >
                                 {why[i.key] ? 'Hide why' : 'Why'}
                             </button>
                         )}
-                    </p>
+                    </div>
                 )}
                 {why[i.key] && (
-                    <div className="bg-muted/40 mt-1.5 space-y-1 rounded-md p-2 text-xs">
+                    <div className="bg-muted/40 space-y-1 rounded-md p-2 text-xs">
                         {i.grade && i.grade_basis && (
                             <p>
                                 {i.grade[0].toUpperCase() + i.grade.slice(1)}: {i.grade_basis}.
@@ -259,12 +327,12 @@ export default function Todo({
                         )}
                         <ul className="space-y-0.5">
                             {i.why_refs?.map((r) => (
-                                <li key={r.ref}>
+                                <li key={r.ref} className="break-words">
                                     {r.state === 'source_missing' ? (
                                         // Its label says so: "An invoice that’s no longer there".
                                         <span className="text-rose-700 dark:text-rose-400">{r.label}</span>
                                     ) : r.href ? (
-                                        <Link href={r.href} className="underline underline-offset-2">
+                                        <Link href={r.href} className="inline-flex min-h-10 items-center underline underline-offset-2">
                                             {r.label}
                                         </Link>
                                     ) : (
@@ -277,82 +345,26 @@ export default function Todo({
                         </ul>
                     </div>
                 )}
-                {asking?.item.key === i.key && (
-                    <div className="mt-2 space-y-1.5 rounded-md border p-2 text-xs">
-                        <p className="font-medium">{asking.days ? 'Why snooze it?' : 'Why isn’t it relevant?'}</p>
-                        <div className="flex flex-wrap gap-1.5">
-                            {Object.entries(reasonsFor(asking))
-                                .filter(([code]) => code !== 'other')
-                                .map(([code, label]) => (
-                                    <button
-                                        key={code}
-                                        type="button"
-                                        className="hover:bg-muted rounded-full border px-2.5 py-1"
-                                        onClick={() => dismiss(i, asking.days, code)}
-                                    >
-                                        {label}
-                                    </button>
-                                ))}
-                        </div>
-                        <form onSubmit={submitOther} className="flex flex-wrap items-center gap-1.5">
-                            <input
-                                value={other}
-                                onChange={(e) => setOther(e.target.value)}
-                                maxLength={200}
-                                placeholder="Or say why"
-                                aria-label="Your reason"
-                                className="bg-background min-w-0 flex-1 rounded-md border px-2 py-1"
-                            />
-                            <Button type="submit" size="sm" variant="outline">
-                                {asking.days ? 'Snooze' : 'Not relevant'}
-                            </Button>
-                            <Button type="button" size="sm" variant="ghost" onClick={() => setAsking(null)}>
-                                Cancel
-                            </Button>
-                        </form>
-                    </div>
-                )}
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-                {i.amount !== undefined && i.amount !== null && <Money pence={i.amount} currency={i.currency ?? 'GBP'} className="text-sm" />}
-                <span className="flex flex-col items-end text-[11px]">
-                    <button
-                        type="button"
-                        className="text-muted-foreground hover:text-foreground"
-                        onClick={() => {
-                            setOther('');
-                            setAsking({ item: i, days: 7 });
-                        }}
-                    >
-                        Snooze a week
-                    </button>
-                    {!i.snooze_only && (
-                        <button
-                            type="button"
-                            className="text-muted-foreground hover:text-foreground"
-                            onClick={() => {
-                                setOther('');
-                                setAsking({ item: i });
-                            }}
-                        >
-                            Not relevant
+                <div className="flex flex-wrap items-center gap-2">
+                    {i.actions.map((a) => button(i, a, a === main))}
+                    <span className="ml-auto flex flex-wrap justify-end">
+                        <button type="button" className={quiet} disabled={busy !== null} onClick={() => ask(i, 7)}>
+                            Snooze a week
                         </button>
-                    )}
-                </span>
-                {i.actions.map((a) => (
-                    <Button
-                        key={a.code + ':' + a.id}
-                        size="sm"
-                        variant={a.style === 'ghost' ? 'ghost' : 'outline'}
-                        disabled={busy !== null}
-                        onClick={() => act(a, i.key)}
-                    >
-                        {busy === i.key + a.code ? '…' : a.label}
-                    </Button>
-                ))}
-            </div>
-        </li>
-    );
+                        {!i.snooze_only && (
+                            <button type="button" className={quiet} disabled={busy !== null} onClick={() => ask(i)}>
+                                Not relevant
+                            </button>
+                        )}
+                    </span>
+                </div>
+            </li>
+        );
+    };
+
+    const reasons = asking ? Object.entries(reasonsFor(asking)).filter(([code]) => code !== 'other') : [];
+    // The server's question: "Do they owe you anything for Arena load-out?", then what else it said.
+    const [questionTitle, ...questionRest] = (question?.text ?? '').split(/(?<=\?)\s+/);
 
     return (
         <AppLayout breadcrumbs={[{ title: 'To do', href: '/todo' }]}>
@@ -364,19 +376,23 @@ export default function Todo({
                         {total === 0
                             ? 'Nothing needs you right now.'
                             : `${total} ${total === 1 ? 'thing needs' : 'things need'} you, most urgent first.`}{' '}
-                        The same list comes to Telegram each Monday, with buttons.{' '}
-                        <Link href="/todo/history" className="underline underline-offset-2">
-                            What’s been found and dealt with
-                        </Link>
+                        The same list comes to Telegram each Monday, with buttons.
                     </p>
+                    <Link
+                        href="/todo/history"
+                        className="text-muted-foreground inline-flex min-h-10 items-center text-sm underline underline-offset-2"
+                    >
+                        What’s been found and dealt with
+                    </Link>
                 </div>
 
                 {Object.keys(counts).length > 1 && (
-                    <div className="flex flex-wrap gap-1.5 text-xs">
+                    // One row that scrolls sideways on a phone, so the list starts near the top.
+                    <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 text-xs md:mx-0 md:flex-wrap md:overflow-visible md:px-0">
                         <button
                             type="button"
                             onClick={() => setFilter(null)}
-                            className={cn('rounded-full border px-2.5 py-1', !filter ? 'bg-foreground text-background' : 'hover:bg-muted')}
+                            className={cn('min-h-10 shrink-0 rounded-full border px-3', !filter ? 'bg-foreground text-background' : 'hover:bg-muted')}
                         >
                             All ({total})
                         </button>
@@ -385,7 +401,10 @@ export default function Todo({
                                 key={g}
                                 type="button"
                                 onClick={() => setFilter(filter === g ? null : g)}
-                                className={cn('rounded-full border px-2.5 py-1', filter === g ? 'bg-foreground text-background' : 'hover:bg-muted')}
+                                className={cn(
+                                    'min-h-10 shrink-0 rounded-full border px-3 whitespace-nowrap',
+                                    filter === g ? 'bg-foreground text-background' : 'hover:bg-muted',
+                                )}
                             >
                                 {groups[g]} ({n})
                             </button>
@@ -422,7 +441,7 @@ export default function Todo({
                                             key={g}
                                             type="button"
                                             disabled={loading !== null}
-                                            className="text-muted-foreground mr-3 text-xs underline underline-offset-2"
+                                            className={cn(quiet, 'mr-3 px-0 underline underline-offset-2')}
                                             onClick={() => showMore(g)}
                                         >
                                             {loading === g ? 'Loading…' : `Show ${hidden(g)} more: ${groups[g].toLowerCase()}`}
@@ -434,10 +453,9 @@ export default function Todo({
                                 (!filter || filter === 'payments') && (
                                     <p className="text-muted-foreground text-xs">
                                         Showing the first payments; there are {counts.payments} to decide.{' '}
-                                        <Link href="/inbox" className="underline underline-offset-2">
+                                        <Link href="/inbox" className="inline-flex min-h-10 items-center underline underline-offset-2">
                                             Go through them in the Inbox
                                         </Link>
-                                        .
                                     </p>
                                 )}
                         </section>
@@ -456,13 +474,18 @@ export default function Todo({
                             {belowKinds.length > 0 && (
                                 <ul className="space-y-1 text-xs">
                                     {belowKinds.map((d) => (
-                                        <li key={d.code} className="flex flex-wrap items-center gap-2">
+                                        <li key={d.code} className="flex flex-wrap items-center gap-x-2">
                                             <span className="font-medium">{d.name}</span>
                                             <span className="text-muted-foreground">
                                                 {belowAll.filter((i) => i.code === d.code).length} found
                                                 {d.reason ? ` · ${d.reason}` : ''}
                                             </span>
-                                            <button type="button" className="underline underline-offset-2" onClick={() => level(d.code, true)}>
+                                            <button
+                                                type="button"
+                                                className={cn(quiet, 'px-0 underline underline-offset-2')}
+                                                disabled={busy !== null}
+                                                onClick={() => level(d.code, true)}
+                                            >
                                                 Show with the rest
                                             </button>
                                         </li>
@@ -479,7 +502,12 @@ export default function Todo({
                                 <span key={d.code}>
                                     {n > 0 && '; '}
                                     {d.name}{' '}
-                                    <button type="button" className="underline underline-offset-2" onClick={() => level(d.code, false)}>
+                                    <button
+                                        type="button"
+                                        className={cn(quiet, 'px-0 underline underline-offset-2')}
+                                        disabled={busy !== null}
+                                        onClick={() => level(d.code, false)}
+                                    >
                                         move back here
                                     </button>
                                 </span>
@@ -504,6 +532,80 @@ export default function Todo({
                     </p>
                 )}
             </div>
+
+            {/* Snooze a week, or Not relevant: why (kept with it, and with the finding). */}
+            <ResponsiveSheet
+                open={askOpen}
+                onOpenChange={setAskOpen}
+                title={asking?.days ? 'Snooze it for a week' : 'Not relevant'}
+                description={asking?.item.title}
+                dirty={other.trim() !== ''}
+                onDiscard={() => setOther('')}
+                discardNote="Nothing was snoozed. What you typed is lost."
+            >
+                <SheetBody className="space-y-3">
+                    <p className="text-sm font-medium">{asking?.days ? 'Why snooze it?' : 'Why isn’t it relevant?'}</p>
+                    {reasons.length > 0 && (
+                        <div className="grid gap-2">
+                            {reasons.map(([code, label]) => (
+                                <Button
+                                    key={code}
+                                    variant="outline"
+                                    className="h-12 justify-start text-left"
+                                    disabled={busy !== null}
+                                    onClick={() => asking && dismiss(asking.item, asking.days, code)}
+                                >
+                                    {label}
+                                </Button>
+                            ))}
+                        </div>
+                    )}
+                    <form id={formId} onSubmit={submitOther} className="space-y-1.5">
+                        <Label htmlFor={`${formId}-why`}>Or say why</Label>
+                        <Input id={`${formId}-why`} className="h-11" value={other} onChange={(e) => setOther(e.target.value)} maxLength={200} />
+                    </form>
+                </SheetBody>
+                <SheetFooter className="flex flex-col gap-2 sm:flex-row-reverse">
+                    <Button type="submit" form={formId} className="h-11" disabled={busy !== null}>
+                        {asking?.days ? 'Snooze' : 'Not relevant'}
+                    </Button>
+                    <Button type="button" variant="outline" className="h-11" onClick={() => setAskOpen(false)}>
+                        Cancel
+                    </Button>
+                </SheetFooter>
+            </ResponsiveSheet>
+
+            {/* Cancelled…: do they owe you anything? (the server's question and answers, each tied to the job as it is). */}
+            <ResponsiveSheet
+                open={questionOpen}
+                onOpenChange={setQuestionOpen}
+                title={questionTitle || 'Cancelled'}
+                description={questionRest.join(' ') || undefined}
+            >
+                <SheetBody className="space-y-3">
+                    <div className="grid gap-2">
+                        {question?.choices.map((c) => (
+                            <Button
+                                key={c.id}
+                                variant="outline"
+                                className="h-12 justify-start text-left"
+                                disabled={busy !== null}
+                                onClick={() => act(c, `ask|${c.id}`, () => setQuestionOpen(false))}
+                            >
+                                {busy === `ask|${c.id}` ? '…' : c.label}
+                            </Button>
+                        ))}
+                        {question?.links.map((l) => (
+                            <Button key={l.href} asChild variant="outline" className="h-12 justify-start text-left">
+                                <PageLink href={l.href} onClick={() => setQuestionOpen(false)}>
+                                    {l.label}
+                                </PageLink>
+                            </Button>
+                        ))}
+                    </div>
+                    <p className="text-muted-foreground text-sm">With a fee or your costs, its invoice gets ready to check.</p>
+                </SheetBody>
+            </ResponsiveSheet>
         </AppLayout>
     );
 }

@@ -215,11 +215,14 @@ class IntegrationSettingsErrorsTest extends TestCase
     {
         $year = (string) file_get_contents(resource_path('js/pages/years/show.tsx'));
         $lock = $this->calls($year, 'router.post(`/years/${year.label}/lock`');
-        // Unlock, lock with failing checks (a reason is asked for), and lock: each says why when it's refused.
-        $this->assertCount(3, $lock);
-        foreach ($lock as $call) {
-            $this->assertStringContainsString('onError', $call, $call);
-        }
+        // Unlock, lock with failing checks (a reason is asked for), and lock all go through the one lock sheet (it
+        // replaced the browser's prompt and confirm boxes): it asks the reason when one is needed, and says why when
+        // it's refused.
+        $this->assertCount(1, $lock);
+        $this->assertStringContainsString('onError', $lock[0], $lock[0]);
+        $this->assertStringContainsString('needsReason = year.locked || failing.length > 0', $year);
+        $this->assertStringNotContainsString('window.prompt', $year);
+        $this->assertStringNotContainsString('window.confirm', $year);
 
         $imports = (string) file_get_contents(resource_path('js/pages/imports/index.tsx'));
         $asks = $this->calls($imports, 'router.post(`/imports/${b.id}/${action}`');

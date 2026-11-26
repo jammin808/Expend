@@ -1,3 +1,4 @@
+import { ResponsiveSheet, SheetBody, SheetFooter } from '@/components/calendar-pick/responsive-sheet';
 import { DecisionForm, decisionProblem } from '@/components/decision-form';
 import { Money } from '@/components/money';
 import { PenaltyPanel, type PenaltyYear } from '@/components/penalty-panel';
@@ -5,16 +6,17 @@ import { SavingsPanel, type SavingsReview } from '@/components/savings-panel';
 import { StatusPill } from '@/components/status-pill';
 import { toast } from '@/components/toaster';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+import { Textarea } from '@/components/ui/textarea';
 import { YearLockPanel, type LockCheck, type LockSnapshot } from '@/components/year-lock-panel';
 import AppLayout from '@/layouts/app-layout';
 import { day, money } from '@/lib/format';
+import { turnoverId } from '@/lib/income';
 import { cn } from '@/lib/utils';
 import { type Decision, type Lookups } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
-import { AlertTriangle, CheckCircle2, Download, Lock, Unlock, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, Info, Lock, Unlock, XCircle } from 'lucide-react';
 import { useState } from 'react';
 
 interface ExpenseLine {
@@ -51,7 +53,11 @@ interface Props {
         money_in: number;
         sample: string;
         suggested: number;
+        /** What every suggestion in the group is, in words ("Business income · Acme Events · 4 invoice matches"). */
         suggestion: string | null;
+        /** Money in: the client the payer usually pays for, to start "Decide all" from. */
+        client_id: number | null;
+        client: string | null;
     }[];
     summary: {
         turnover_pence: number;
@@ -89,6 +95,10 @@ interface Props {
     lock?: LockSnapshot | null;
     /** Whether it still holds, once you ask ("Check it"). */
     lock_check?: LockCheck | null;
+    /** Years before the cash basis was the default: how these figures are worked out, and the limit that applied. */
+    cash_basis_note: string | null;
+    /** Said when you unlock: what changing who income is from doesn't change. */
+    unlock_note: string;
 }
 
 function Step({ n, title, children, aside }: { n: number; title: string; children: React.ReactNode; aside?: React.ReactNode }) {
@@ -120,9 +130,12 @@ export default function YearShow({
     savings,
     lock,
     lock_check,
+    cash_basis_note,
+    unlock_note,
 }: Props) {
     const [group, setGroup] = useState<Props['groups'][number] | null>(null);
     const [decision, setDecision] = useState<Decision>({ kind: 'business_expense', business_pct: 100 });
+    const [locking, setLocking] = useState(false);
     // Locking the year keeps this page's state, so an amount typed but not saved would still show: a locked year's
     // box shows what's saved.
     const savedPoa = (year.payments_on_account_paid_pence / 100).toFixed(2);
@@ -131,11 +144,14 @@ export default function YearShow({
 
     const openGroup = (g: Props['groups'][number]) => {
         setGroup(g);
+        const moneyIn = g.money_in === g.count;
         setDecision({
-            kind: g.money_in === g.count ? 'business_income' : g.money_in === 0 ? 'business_expense' : 'personal',
+            kind: moneyIn ? 'business_income' : g.money_in === 0 ? 'business_expense' : 'personal',
             business_pct: 100,
-            category_id: null,
+            // Money in starts as turnover from the client the payer usually pays for (picked, not saved: Save saves it).
+            category_id: moneyIn ? turnoverId(lookups) : null,
             work_job_id: null,
+            ...(moneyIn ? { client_id: g.client_id } : {}),
         });
     };
 
@@ -194,39 +210,24 @@ export default function YearShow({
                                 <Download /> Spreadsheet
                             </a>
                         </Button>
-                        <Button
-                            variant="outline"
-                            onClick={() => {
-                                // A reason that's too short is refused: say so, or the button seems to do nothing.
-                                const failed = (errors: Record<string, string>) =>
-                                    toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error');
-                                if (year.locked) {
-                                    const reason = window.prompt('Why are you unlocking this year? (kept in the audit log)');
-                                    if (reason) router.post(`/years/${year.label}/lock`, { reason }, { preserveScroll: true, onError: failed });
-                                } else if (checks.some((c) => c.status === 'fail')) {
-                                    // A failing check needs a reason to lock anyway: it's kept with the lock.
-                                    const reason = window.prompt(
-                                        `Some checks before filing are failing (${checks
-                                            .filter((c) => c.status === 'fail')
-                                            .map((c) => c.label.toLowerCase())
-                                            .join('; ')}). Why are you locking ${year.label} anyway? (kept with the lock)`,
-                                    );
-                                    if (reason) router.post(`/years/${year.label}/lock`, { reason }, { preserveScroll: true, onError: failed });
-                                } else if (
-                                    window.confirm(
-                                        `Lock ${year.label}? Nothing in it can change until you unlock it with a reason. Its figures and a copy of the spreadsheet are kept with the lock.`,
-                                    )
-                                ) {
-                                    router.post(`/years/${year.label}/lock`, {}, { preserveScroll: true, onError: failed });
-                                }
-                            }}
-                        >
+                        <Button variant="outline" onClick={() => setLocking(true)}>
                             {year.locked ? <Unlock /> : <Lock />} {year.locked ? 'Unlock' : 'Lock year'}
                         </Button>
                     </div>
                 </div>
 
-                {lock && <YearLockPanel label={year.label} lock={lock} check={lock_check} />}
+                {lock && (
+                    <div className="[&_button]:min-h-10">
+                        <YearLockPanel label={year.label} lock={lock} check={lock_check} />
+                    </div>
+                )}
+
+                {cash_basis_note && (
+                    <p className="flex gap-2 rounded-lg border p-3 text-sm">
+                        <Info className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+                        <span>{cash_basis_note}</span>
+                    </p>
+                )}
 
                 {penalties &&
                     (penalties.penalties.length > 0 ||
@@ -237,7 +238,12 @@ export default function YearShow({
                         penalties.amendment !== null ||
                         penalties.submissions.length > 0 ||
                         penalties.return_needed ||
-                        penalties.chargeable) && <PenaltyPanel p={penalties} locked={year.locked} />}
+                        penalties.chargeable) && (
+                        // Big enough to tap on a phone: its "more" toggles and buttons.
+                        <div className="[&_button]:min-h-10 [&_summary]:py-3">
+                            <PenaltyPanel p={penalties} locked={year.locked} />
+                        </div>
+                    )}
 
                 <div className="rounded-xl border p-5">
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -254,7 +260,7 @@ export default function YearShow({
                     n={1}
                     title="Import every statement"
                     aside={
-                        <Button size="sm" variant="outline" asChild>
+                        <Button className="h-10" variant="outline" asChild>
                             <Link href="/imports">Import</Link>
                         </Button>
                     }
@@ -326,19 +332,20 @@ export default function YearShow({
                                 <li key={g.merchant_key} className="flex flex-wrap items-center justify-between gap-3 py-2.5">
                                     <div className="min-w-0">
                                         <p className="truncate font-medium">{g.merchant_key}</p>
-                                        <p className="text-muted-foreground truncate text-xs">
+                                        <p className="text-muted-foreground text-xs break-words">
                                             {g.count} items · e.g. {g.sample}
-                                            {g.suggestion && <span className="text-amber-700"> · suggested: {g.suggestion.toLowerCase()}</span>}
+                                            {g.suggestion && <span className="text-amber-700 dark:text-amber-400"> · suggested: {g.suggestion}</span>}
+                                            {!g.suggestion && g.client && g.money_in === g.count && <span> · usually {g.client}</span>}
                                         </p>
                                     </div>
-                                    <div className="flex items-center gap-3">
+                                    <div className="flex flex-wrap items-center gap-2">
                                         <span className="text-sm tabular-nums">{money(g.value_pence)}</span>
-                                        <Button size="sm" variant="outline" asChild>
+                                        <Button className="h-10" variant="outline" asChild>
                                             <Link href={`/transactions?year=${year.label}&q=${encodeURIComponent(g.merchant_key)}`}>One by one</Link>
                                         </Button>
                                         {g.suggestion && g.suggestion !== 'Mixed suggestions' && (
                                             <Button
-                                                size="sm"
+                                                className="h-10"
                                                 variant="secondary"
                                                 disabled={year.locked}
                                                 onClick={() =>
@@ -352,7 +359,7 @@ export default function YearShow({
                                                 Accept all
                                             </Button>
                                         )}
-                                        <Button size="sm" onClick={() => openGroup(g)} disabled={year.locked}>
+                                        <Button className="h-10" onClick={() => openGroup(g)} disabled={year.locked}>
                                             Decide all
                                         </Button>
                                     </div>
@@ -366,7 +373,7 @@ export default function YearShow({
                     n={3}
                     title="The rest, one by one"
                     aside={
-                        <Button size="sm" asChild>
+                        <Button className="h-10" asChild>
                             <Link href={`/inbox?year=${year.label}`}>Open Inbox for {year.label}</Link>
                         </Button>
                     }
@@ -379,9 +386,8 @@ export default function YearShow({
                     </p>
                     {progress.unreviewed_count > 0 && (
                         <Button
-                            size="sm"
                             variant="outline"
-                            className="mt-3"
+                            className="mt-3 h-10"
                             onClick={() => router.post('/ai/suggest', { tax_year: year.label }, { preserveScroll: true })}
                         >
                             Ask AI to suggest the next 40
@@ -521,7 +527,7 @@ export default function YearShow({
                                         <Input
                                             id="poa"
                                             inputMode="decimal"
-                                            className={cn('h-8 w-28', year.locked && 'bg-muted text-muted-foreground cursor-not-allowed')}
+                                            className={cn('h-10 w-28', year.locked && 'bg-muted text-muted-foreground cursor-not-allowed')}
                                             value={year.locked ? savedPoa : poa}
                                             onChange={(e) => setPoa(e.target.value)}
                                             readOnly={year.locked}
@@ -529,8 +535,8 @@ export default function YearShow({
                                         />
                                         {!year.locked && (
                                             <Button
-                                                size="sm"
                                                 variant="outline"
+                                                className="h-10"
                                                 onClick={() =>
                                                     router.patch(`/years/${year.label}`, { payments_on_account_paid: poa }, { preserveScroll: true })
                                                 }
@@ -567,39 +573,135 @@ export default function YearShow({
                     </div>
                 </Step>
 
-                {savings && <SavingsPanel s={savings} />}
+                {savings && (
+                    <div className="[&_button]:min-h-10 [&_summary]:py-3">
+                        <SavingsPanel s={savings} />
+                    </div>
+                )}
             </div>
 
-            <Dialog open={!!group} onOpenChange={(open) => !open && setGroup(null)}>
-                <DialogContent className="sm:max-w-xl">
-                    {group && (
-                        <>
-                            <DialogHeader>
-                                <DialogTitle>
-                                    Decide all {group.count} from {group.merchant_key}
-                                </DialogTitle>
-                                <DialogDescription>
-                                    {money(group.value_pence)} in {year.label}. Anything you've already decided stays as it is. You can still change
-                                    any single item afterwards.
-                                </DialogDescription>
-                            </DialogHeader>
+            <ResponsiveSheet
+                open={!!group}
+                onOpenChange={(open) => !open && setGroup(null)}
+                title={group ? `Decide all ${group.count} from ${group.merchant_key}` : ''}
+                description={
+                    group
+                        ? `${money(group.value_pence)} in ${year.label}. Anything you've already decided stays as it is. You can still change any single item afterwards.`
+                        : undefined
+                }
+            >
+                {group && (
+                    <>
+                        <SheetBody>
                             <DecisionForm
                                 amount={group.money_in === group.count ? 1 : -1}
                                 lookups={lookups}
                                 value={decision}
                                 onChange={setDecision}
                                 merchant={group.merchant_key}
+                                clientName={group.client}
                             />
-                            <div className="flex gap-2">
-                                <Button onClick={saveGroup}>Save all {group.count}</Button>
-                                <Button variant="ghost" onClick={() => setGroup(null)}>
-                                    Cancel
-                                </Button>
-                            </div>
-                        </>
-                    )}
-                </DialogContent>
-            </Dialog>
+                        </SheetBody>
+                        <SheetFooter className="flex gap-2">
+                            <Button className="h-11 flex-1 sm:flex-none" onClick={saveGroup}>
+                                Save all {group.count}
+                            </Button>
+                            <Button variant="ghost" className="h-11" onClick={() => setGroup(null)}>
+                                Cancel
+                            </Button>
+                        </SheetFooter>
+                    </>
+                )}
+            </ResponsiveSheet>
+
+            <LockSheet open={locking} onClose={() => setLocking(false)} year={year} checks={checks} unlockNote={unlock_note} />
         </AppLayout>
+    );
+}
+
+/**
+ * Lock or unlock the year, in a sheet: unlocking asks why (kept in the audit log) and says what it doesn't change;
+ * locking with a failing check asks why too (kept with the lock); otherwise it says what locking does.
+ */
+function LockSheet({
+    open,
+    onClose,
+    year,
+    checks,
+    unlockNote,
+}: {
+    open: boolean;
+    onClose: () => void;
+    year: Props['year'];
+    checks: Props['checks'];
+    unlockNote: string;
+}) {
+    const [reason, setReason] = useState('');
+    const [busy, setBusy] = useState(false);
+    const failing = checks.filter((c) => c.status === 'fail');
+    const needsReason = year.locked || failing.length > 0;
+
+    const go = () => {
+        if (needsReason && reason.trim() === '')
+            return toast(year.locked ? 'Say why you are unlocking it.' : 'Say why you are locking it anyway.', 'error');
+        setBusy(true);
+        router.post(`/years/${year.label}/lock`, needsReason ? { reason: reason.trim() } : {}, {
+            preserveScroll: true,
+            onSuccess: () => {
+                setReason('');
+                onClose();
+            },
+            // A reason that's too short is refused: say so, or the button seems to do nothing.
+            onError: (errors) => toast(Object.values(errors)[0] ?? 'That didn’t work. Try again.', 'error'),
+            onFinish: () => setBusy(false),
+        });
+    };
+
+    return (
+        <ResponsiveSheet
+            open={open}
+            onOpenChange={(o) => !o && onClose()}
+            title={year.locked ? `Unlock ${year.label}?` : `Lock ${year.label}?`}
+            description={
+                year.locked
+                    ? `${unlockNote} Unlocking lets anything in ${year.label} change again until you lock it.`
+                    : 'Nothing in it can change until you unlock it with a reason. Its figures and a copy of the spreadsheet are kept with the lock.'
+            }
+        >
+            <SheetBody className="space-y-3">
+                {!year.locked && failing.length > 0 && (
+                    // Each failed check by its name and what it found, never its name alone ("Nothing left undecided"
+                    // reads as good news on its own).
+                    <div role="alert" className="text-sm text-rose-700 dark:text-rose-400">
+                        <p>{failing.length === 1 ? 'This check before filing failed:' : 'These checks before filing failed:'}</p>
+                        <ul className="mt-1 list-disc space-y-1 pl-5">
+                            {failing.map((c) => (
+                                <li key={c.key}>
+                                    “{c.label}”{c.detail ? `: ${c.detail}` : ''}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+                {needsReason && (
+                    <div className="space-y-1.5">
+                        <label htmlFor="lock-reason" className="text-sm font-medium">
+                            {year.locked
+                                ? 'Why are you unlocking it? (kept in the audit log)'
+                                : `Why are you locking ${year.label} anyway? (kept with the lock)`}
+                        </label>
+                        <Textarea id="lock-reason" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
+                    </div>
+                )}
+            </SheetBody>
+            <SheetFooter className="flex gap-2">
+                <Button className="h-11 flex-1 sm:flex-none" disabled={busy} onClick={go}>
+                    {year.locked ? <Unlock /> : <Lock />} {year.locked ? 'Unlock' : 'Lock year'}
+                </Button>
+                <Button variant="ghost" className="h-11" onClick={onClose}>
+                    Cancel
+                </Button>
+            </SheetFooter>
+        </ResponsiveSheet>
     );
 }

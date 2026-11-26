@@ -26,7 +26,23 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   Undoing an import never deletes anything: its rows and your decisions are kept, marked reversed, and the
   import can be restored (card-bill transfers are paired again). Invoice lines use exact decimal arithmetic (no floating point), and every history
   entry is chained through a locked head so simultaneous writes can't fork it and a removed entry is caught.
-- **Jobs** with income, costs, mileage and profit; purchases such as equipment need no job.
+- **Jobs** with income, costs, mileage and profit; purchases such as equipment need no job. A job has the client who
+  pays (an agency, say) and, optionally, the end client it was for, and a fee, day or hourly rate.
+- **Done, then the invoice** (`docs/PLAN.md` §6.13): the morning after a job's last day Expend asks "All done?" (on the
+  job page, the jobs list, the calendar, the to-do list and Telegram). Only you mark it done; Done gets its draft invoice
+  ready, with the work and every travel cost and expense linked to the job, each ticked where the client usually pays it
+  (at cost, no markup). The draft keeps following the job until you issue it, and shows what changed since you last
+  looked. A sent invoice never changes: a cost linked later goes on the client's next invoice. Not yet asks again in 3
+  days; Cancelled asks whether they owe you a fee or your costs.
+- **Clients** (`/clients`): who owes you, jobs to invoice, each client's jobs (as the one who pays and as the end
+  client), money in and costs by tax year, costs to charge or claim, their usual arrangement for travel and expenses
+  (everything at cost, mileage plus fares, it's in my rate, or a fixed travel fee), how their invoices go, and
+  duplicates to compare and merge (undoable).
+- **Income assigned to clients, jobs and invoices**: money in is for a client, a job, an invoice, or several jobs and
+  invoices, with a fee or commission they took off recorded as a deduction. Expend suggests which open invoice a
+  payment is for (by what's still to come, two to four invoices that add up, or net of a fee) and who the payer pays
+  for, but never confirms an income link itself: you accept it. "Set client" does many payments at once. Invoices can
+  be closed short with a reason, and a void one can name its replacement.
 - **Mileage** at each year's HMRC rate (45p a mile before 6 April 2026, 55p from 2026-27, 25p after
   10,000 miles), counted as a travel expense for the job.
 - **Other currencies**: cash or receipts in USD, EUR and others convert using the document's sterling
@@ -37,8 +53,8 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   keeps the exact words it came from and is checked against the document's text; anything that can't be
   checked is marked for you.
 - **Invoices from POs**: PO lines prefill a draft; the total is checked against the PO; issuing gives the next
-  number and a PDF, after which it can't be edited (void and re-issue instead). Incoming payments of the
-  invoice amount are suggested against it.
+  number and a PDF, after which it can't be edited (void and re-issue instead). Incoming payments are suggested
+  against what's still to come on it.
 - **Tax help everywhere**: a "?" next to every payment (Inbox, Transactions, job pages, the map) and next to the HMRC
   category explains what it is, whether it's normally allowable and on what conditions, the evidence to keep, and notes
   from its own context (a job that day or not, your vehicle's mileage method, a non-allowable category, a split). The
@@ -70,22 +86,31 @@ in [`docs/PLAN.md`](docs/PLAN.md).
   fetched, by a forwarded email's Message-ID, or by the PO number when every match is in one conversation; it
   never guesses between conversations.
 - **To do** (top of the menu): one list of everything that needs you, most urgent first, with one-tap actions:
-  unpaid invoices (send a reminder), statements held, failed checks, a filing deadline, invoices to draft or send,
+  unpaid invoices (make a reminder), statements held, failed checks, a filing deadline, invoices to draft or send,
   possible jobs (add, or not a job), payments to decide (accept the suggestion, or personal), merchants ready for a
   rule, stays to decide, jobs with no PO, paid bookings missing from your statements and documents held for approval.
   It also finds money you may be owed: an invoice for less than its PO, part-paid invoices past due, stays you
   decided to recharge to the client, and the same amount charged twice in a day. Any item can be snoozed for a week or
   marked not relevant (with undo). The top items show on the Overview. The same list comes to **Telegram every Monday** with buttons that act in the
-  chat (only from your paired chat); send `/todo` any time. Overdue invoices get a Telegram nudge with a "Send a
-  reminder" button. The morning after a job with no invoice finishes, Telegram asks once: "Acme Awards finished
-  yesterday. Invoice it?", with a button that opens the job (not when you've snoozed or set aside its to-do item).
+  chat (only from your paired chat); send `/todo` any time. Invoices get a daily Telegram nudge at their own pace
+  (a draft waiting, issued but not sent, overdue at 3, 14 and 30 days, then weekly), with buttons; nothing between
+  21:00 and 08:00. The morning after a job finishes, Telegram asks "Arena load-in: last day was yesterday. All done?"
+  with [Done] [Not yet] [Cancelled] [Open the job], once per job (not when you've snoozed or set aside its to-do item).
+  Done, Not yet, Cancelled and the snoozes can be undone, from the toast on the web or the same Telegram message.
 - **Learns from your decisions**: once you've decided a merchant the same way twice, it offers "Always do this". The
   rule then applies automatically to what's waiting and to new statements, as a decision by your rule, and can be
   undone in one go (Settings › Rules). The job is never part of a rule.
-- **Invoices by email**: email an issued invoice (PDF attached) to the client, and send reminders when it's overdue,
-  from your own mailbox if set up (replies go to your business email). The invoice records when it was sent. Each
-  invoice's email has one fixed Message-ID (the same if it's sent again), and each reminder points back to it
-  (In-Reply-To and References), so mail programs can keep them together.
+- **Invoices in your Gmail** (`docs/mail-and-calendar.md`, "The money end of batch 4"): issuing can put the invoice
+  in your Gmail drafts as a reply in the booking's conversation (the PO email's, else the enquiry's), or issue and send
+  it in one press to the address shown. Nothing is sent until you press Send (in Gmail, in Expend, or Telegram's
+  one-tap Send when the draft is exactly as Expend made it and goes to an address an earlier invoice to that client
+  went to). Expend sees when it was sent from Gmail, or deleted unsent. Reminders are made only when you press **Make a
+  reminder** (a Gmail draft in the same conversation, worded by how overdue it is), and only after the invoice was
+  sent; Expend takes its own reminder draft out again once a payment may be for it.
+- **Invoices by email**: without Gmail, email an issued invoice (PDF attached) to the client, and send reminders when
+  it's overdue, from your own mailbox if set up (replies go to your business email), or say "I sent it myself" and
+  when. The invoice records when it was sent. Each invoice's email has one fixed Message-ID (the same if it's sent
+  again), and each reminder points back to it (In-Reply-To and References), so mail programs can keep them together.
 - **Mileage from jobs**: one click per year adds a return trip from home to each venue you drove to (estimated from
   the postcodes, straight line × 1.25, clearly marked so you can correct it); a trip each day for multi-day jobs without
   a stay; jobs reached by train, plane or coach are left out.
@@ -149,14 +174,15 @@ in [`docs/PLAN.md`](docs/PLAN.md).
 - **Sending email** (password reset and test emails only): from the web server with no setup, or from your own
   mailbox (recommended, more reliable), set in Settings › Integrations with a test button. Locked out with no email?
   `php artisan ledger:reset-link` on the server prints a one-time reset link.
-- **Spreadsheet export** of any year (return figures, every transaction, mileage), for filing or records.
+- **Spreadsheet export** of any year (return figures, every transaction with its client and invoice, mileage), for
+  filing or records.
 - **Security**: one account only (registration closes after you sign up), two-factor sign-in with
   recovery codes, strict security headers and content security policy, locked tax years, encrypted
   calendar feed address, encrypted backups the server itself can't read.
 
 Gmail is searched for a job's emails and POs when the job is added, and again when its PO number, dates, client or
 venue change (your Sent mail is left out). Not built yet (see the plan): the Calendar API (the iCal feed is used),
-recharge invoicing, Making Tax Digital quarterly export, passkeys.
+credit notes, Making Tax Digital quarterly export, passkeys.
 
 ## Structures and planning
 
@@ -212,11 +238,15 @@ The demo seeder refuses to run in production.
 ## Tests
 
 ```bash
-php artisan test        # 161 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
-                        # documents and grounding, invoices, assistant, Telegram, 2FA, every page
+php artisan test        # about 2,100 tests: money, tax years, imports, dedupe, ledger rules, tax, mileage, FX,
+                        # documents and grounding, clients, jobs, invoices, income, assistant, Telegram, 2FA, every page
+                        # (run `npm run build` first: the page tests need the built front end)
 npx tsc --noEmit        # type-check the front end
 npm run lint
 ```
+
+The suite also runs on MariaDB 10.11, as CI does (`.github/workflows/tests.yml`): set `DB_CONNECTION=mysql` and an
+empty database's `DB_HOST`, `DB_DATABASE`, `DB_USERNAME` and `DB_PASSWORD`, then `php artisan test`.
 
 ## Deploy to Hostinger
 
@@ -269,7 +299,16 @@ One-time setup:
    * * * * *  /opt/alt/php84/usr/bin/php ~/domains/expenses.rohleder.tech/app/current/artisan schedule:run
    17 2 * * * bash ~/domains/expenses.rohleder.tech/app/current/deploy/backup.sh
    ```
-   Copy the encrypted backups in `~/ledger-backups` off the server regularly.
+   Copy the encrypted backups in `~/ledger-backups` off the server regularly. The one `schedule:run` entry runs
+   everything in `routes/console.php`, London times, among it: the nightly cycle's tick (every minute, unless it's off),
+   `ledger:sync-drafts` (03:37, every draft invoice brought up to date with its job), the Gmail draft check
+   (`invoice-emails-check`, hourly at :23), `ledger:job-finished` (08:37, "All done?"), `ledger:invoice-nudges`
+   (09:13 daily) and the Monday digest (08:47). None of them sends anything to a client or writes a reminder.
+
+   **Going back to an older release.** Before rolling back to a release from before 25 Nov 2026 (draft lines that
+   follow the job), run `php artisan ledger:sync-drafts --before-rollback` on the server: that release bills every line
+   of a draft, so this deletes every unticked line of every draft (typed ones too) and leaves the rest as plain typed
+   lines. Issued invoices aren't touched.
 9. **AI, email and Telegram** (Settings › Integrations): paste a Claude API key (or set `ANTHROPIC_API_KEY` in
    `.env`), choose the model (Claude Opus 5.5 by default) and a monthly spending cap. For email, create a
    mailbox in hPanel (for example `ledger@rohleder.tech`), enter its IMAP details and your own sending
@@ -281,7 +320,8 @@ One-time setup:
    paid security review). In Testing, Google ends the access after 7 days: the app says so on Telegram and you press
    Connect Gmail again. Then Connect Gmail. The gmail.modify scope is requested so the app can read your email and add
    its own labels (the ✓ Invoiced label); it adds or removes only its own labels, and never sends, moves or deletes
-   anything. Then use
+   anything. *Since 25 Nov 2026 it also writes Expend's own invoice and reminder drafts, sends one only when you press
+   Send, and deletes only its own drafts you haven't edited.* Then use
    **Stays & travel › Search Gmail** for each tax year. Add your home postcode (Settings › Ledger) and postcodes on
    your jobs so distances can be used.
 10. **First visit.** Open `https://expenses.rohleder.tech/register?code=<SETUP_CODE>`, create your account
@@ -336,7 +376,11 @@ runs `backup.sh` and this check end to end on MariaDB (`DB_CONNECTION=mysql php 
 | Audit log | `app/Domain/Audit/AuditLog.php` |
 | Documents, text extraction, grounding checks | `app/Domain/Documents/` |
 | Claude: document reading, assistant and tools, suggestions | `app/Domain/Ai/` |
-| Invoices and PDF | `app/Domain/Invoices/`, `resources/views/pdf/invoice.blade.php` |
+| Invoices and PDF; drafts that follow the job, Gmail drafts, reminders | `app/Domain/Invoices/`, `resources/views/pdf/invoice.blade.php` |
+| Clients: figures, duplicates, merges | `app/Domain/Clients/` |
+| Charging costs to clients: arrangements, decisions, where each cost stands | `app/Domain/Charges/` |
+| Income on bank lines: who paid for whom, invoice matching, chips | `app/Domain/Income/` |
+| A job's stage, Done and Cancelled | `app/Domain/Jobs/JobStage.php`, `app/Domain/Jobs/JobStatus.php` |
 | Email and Telegram intake | `app/Domain/Mail/`, `app/Domain/Telegram/` |
 | Gmail: searches, read log, ✓ Invoiced label | `app/Domain/Gmail/` |
 | PO and invoiced status | `app/Domain/Jobs/PoStatus.php` |

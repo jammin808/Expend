@@ -91,7 +91,7 @@ export default function Intel({ mode, report, reportRun, runs, checking }: Props
                         <h1 className="text-2xl font-semibold tracking-tight">What Expend found and did overnight</h1>
                         <p className="text-muted-foreground text-sm">{MODE_WORDS[mode]}</p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                         <Button variant="outline" asChild>
                             <Link href="/intel/proposals">Links to check</Link>
                         </Button>

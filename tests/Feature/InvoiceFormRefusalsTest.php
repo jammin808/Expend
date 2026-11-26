@@ -13,9 +13,10 @@ use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
- * The invoice page (resources/js/pages/invoices/show.tsx): the draft form, and the Issue, Email, Void and Delete
- * buttons. When the server refuses one, the page shows why: under the email and PO number boxes, or as a message,
- * in plain words rather than Laravel's "The lines.1.description field is required."
+ * The invoice page (resources/js/pages/invoices/show.tsx and its sheets): the draft's saves, and Issue, Email, Void and
+ * Delete. When the server refuses one, the page shows why: under the email and PO number boxes, or as a message, in
+ * plain words rather than Laravel's "The lines.1.description field is required." The draft saves below are sent as
+ * the old whole-form page sent them, which the server still takes (pages loaded before a deploy).
  */
 class InvoiceFormRefusalsTest extends TestCase
 {
@@ -187,26 +188,67 @@ class InvoiceFormRefusalsTest extends TestCase
         $this->assertSame(15000, $invoice->fresh()->total_minor);
     }
 
+    /**
+     * Rewritten on purpose for build slice F2 (the invoice page became the check screen and the issued view, with every
+     * window.prompt and confirm replaced by a sheet): the old version pinned the legacy form's 4 router calls and the
+     * void prompt. Now: no prompt, confirm or alert anywhere on the page or its sheets; every page visit says why when
+     * the server refuses; every JSON press shows the sheet again when it changed since (409); every save and issue
+     * carries the lines version and the last change shown; the PO number's error sits under its box; voiding asks why
+     * on a sheet and shows the server's reason; the payments have their #payments anchor.
+     */
     public function test_the_invoice_page_shows_every_refusal(): void
     {
-        $source = (string) file_get_contents(resource_path('js/pages/invoices/show.tsx'));
+        $files = [resource_path('js/pages/invoices/show.tsx'), resource_path('js/pages/invoices/index.tsx'), resource_path('js/lib/invoice.ts'),
+            ...glob(resource_path('js/components/invoice/*.tsx'))];
+        $this->assertGreaterThanOrEqual(12, count($files));
+        $all = '';
+        foreach ($files as $file) {
+            $source = (string) file_get_contents($file);
+            $all .= $source;
+            $this->assertDoesNotMatchRegularExpression('/window\.(prompt|confirm|alert)\(|\b(prompt|confirm|alert)\(/', $source, basename($file));
+            // Every page visit that writes says why when the server refuses.
+            $calls = [...$this->calls($source, 'router.post('), ...$this->calls($source, 'router.delete('), ...$this->calls($source, 'router.patch('),
+                ...$this->calls($source, 'router.put(')];
+            foreach ($calls as $call) {
+                $this->assertStringContainsString('onError', $call, basename($file).': '.$call);
+            }
+        }
+        $page = (string) file_get_contents(resource_path('js/pages/invoices/show.tsx'));
+        $sheets = fn (string $name) => (string) file_get_contents(resource_path("js/components/invoice/{$name}.tsx"));
+
+        // Each JSON press that can be refused as changed since shows what it is now.
+        foreach (['issue-sheet', 'line-sheet', 'add-cost-sheet', 'send-sheet'] as $name) {
+            $this->assertStringContainsString("e.problem === 'changed'", $sheets($name), $name);
+        }
+        $this->assertStringContainsString("e.problem === 'changed'", $page);
+
+        // Every save and issue carries the lines and the last change the page showed.
+        $lib = (string) file_get_contents(resource_path('js/lib/invoice.ts'));
+        $this->assertStringContainsString('lines_version: invoice.lines_version', $lib);
+        $this->assertStringContainsString('seen_up_to: invoice.seen_up_to', $lib);
+        $this->assertStringContainsString('lines_version: binding.lines_version', $sheets('issue-sheet'));
+        $this->assertStringContainsString('seen_up_to: binding.seen_up_to', $sheets('issue-sheet'));
+        $this->assertStringNotContainsString('useForm', $page, 'No whole-form save without the lines version');
+
+        // The owner's three ways to issue, on the "Confirm and issue" sheet.
+        $this->assertStringContainsString('title="Confirm and issue"', $sheets('issue-sheet'));
+        foreach (['Issue and send to ${address}', 'Issue and put in Gmail drafts', 'Issue only'] as $button) {
+            $this->assertStringContainsString($button, $sheets('issue-sheet'));
+        }
 
         // The PO number's own error sits under its box, like the email's.
-        $this->assertStringContainsString('aria-invalid={!!form.errors.po_number}', $source);
-        $this->assertStringContainsString('{form.errors.po_number && <p className="text-sm text-rose-600">{form.errors.po_number}</p>}', $source);
+        $this->assertStringContainsString('aria-invalid={!!errors.po_number}', $page);
+        $this->assertStringContainsString('{errors[k] && <p className="text-sm text-rose-700 dark:text-rose-400">{errors[k]}</p>}', $page);
 
-        // Issue, Email, Void and Delete each say why when the server refuses.
-        $calls = [...$this->calls($source, 'router.post('), ...$this->calls($source, 'router.delete('), ...$this->calls($source, 'router.patch('),
-            ...$this->calls($source, 'router.put(')];
-        $this->assertCount(4, $calls);
-        foreach ($calls as $call) {
-            $this->assertStringContainsString('onError', $call, $call);
-        }
-        $void = collect($calls)->first(fn ($c) => str_contains($c, '/void`'));
+        // Voiding asks why on a sheet and shows the server's reason ("Say why…", too short, too long).
+        $void = collect($this->calls($sheets('close-sheet'), 'post('))->first(fn ($c) => str_contains($c, '/void`'));
         $this->assertNotNull($void);
-        $this->assertStringContainsString('errors.reason', $void);
-        // Only Cancel (null) skips the request: OK with an empty box goes to the server and gets its "Say why" message.
-        $this->assertMatchesRegularExpression('/window\.prompt\(\'Why are you voiding this invoice\?\'\);\s*(\/\/[^\n]*\s*)?if \(reason !== null\)\s*router\.post\(\s*`\/invoices\/\$\{invoice\.id\}\/void`/', $source);
+        $this->assertStringContainsString('{ reason }', $void);
+        $this->assertStringContainsString("setProblem(Object.values(errors)[0] ?? 'That wasn’t saved. Try again.')", $sheets('close-sheet'));
+
+        // "Make a reminder" only when the server says it can be made, and only on that press; the payments' anchor.
+        $this->assertMatchesRegularExpression('/issued\.can_remind &&[\s\S]{0,400}\/reminder`/', $page);
+        $this->assertStringContainsString('id="payments"', $page);
     }
 
     /** Every call to $start in $source, from its name to its closing bracket (strings skipped). */

@@ -3,18 +3,30 @@
 namespace Database\Seeders;
 
 use App\Domain\Ai\DocumentReader;
+use App\Domain\Charges\ChargeTermsWriter;
+use App\Domain\Charges\CostCharges;
 use App\Domain\Documents\DocumentIntake;
 use App\Domain\Import\CsvReader;
 use App\Domain\Import\Importer;
 use App\Domain\Import\ProfileDetector;
+use App\Domain\Income\Lines;
+use App\Domain\Invoices\InvoiceDraftSync;
 use App\Domain\Invoices\InvoiceService;
 use App\Domain\Jobs\JobFinder;
+use App\Domain\Jobs\JobStatus;
+use App\Domain\Ledger\AllocationWriter;
+use App\Domain\Matching\Suggester;
 use App\Domain\Travel\TravelReader;
 use App\Domain\Verification\Verifier;
 use App\Models\Account;
+use App\Models\BankTransaction;
 use App\Models\CalendarEvent;
+use App\Models\Category;
 use App\Models\Client;
 use App\Models\GmailMessage;
+use App\Models\ImportBatch;
+use App\Models\Invoice;
+use App\Models\InvoiceEmail;
 use App\Models\MileageTrip;
 use App\Models\Setting;
 use App\Models\TaxYear;
@@ -142,6 +154,107 @@ class DemoSeeder extends Seeder
                 'from_place' => 'Home', 'to_place' => $job->location, 'miles' => '86.0', 'purpose' => 'Drive to venue (return trip)',
             ]);
         }
+
+        $this->demoClientsAndIncome($starling);
+    }
+
+    /**
+     * Clients, jobs at each stage, invoices and money in for the client and income screens: an agency that pays for a
+     * festival (a payer and an end client), a likely duplicate of Acme Events Ltd, a paid invoice, an issued and sent
+     * one with its payment waiting as a suggestion, a part-paid one, a payment from a known payer with nothing to
+     * match, a draft whose lines changed after it was made, an issued one whose Gmail draft was deleted unsent, and
+     * jobs booked, just finished, done and cancelled. Through the app's own services, so every rule holds; fictional
+     * throughout.
+     */
+    private function demoClientsAndIncome(Account $bank): void
+    {
+        // An invoice carries your name and address.
+        if (trim((string) Setting::get('business_name')) === '') {
+            Setting::put('business_name', 'Demo Sound and Light');
+            Setting::put('business_address', "1 Example Street\nBristol BS1 1AA");
+        }
+        $acme = Client::query()->where('name', 'Acme Events Ltd')->firstOrFail();
+        Client::query()->firstOrCreate(['name' => 'Acme Events']); // the same client typed again: offered for merging
+        $agency = Client::query()->firstOrCreate(['name' => 'Stagecraft Crew Agency'], ['billing_email' => 'crew@stagecraft.example', 'payment_terms_days' => 30]);
+        $festival = Client::query()->firstOrCreate(['name' => 'Harbour Arts Festival']);
+
+        $job = fn (string $title, Client $client, string $from, string $to, int $fee, string $status, ?Client $end = null) => WorkJob::query()->create([
+            'client_id' => $client->id, 'end_client_id' => $end?->id, 'title' => $title, 'starts_on' => $from, 'ends_on' => $to,
+            'location' => 'Harbourside, Bristol', 'postcode' => 'BS1 5DB', 'fee_pence' => $fee, 'status' => $status,
+        ]);
+        $summer = $job('Summer conference crew', $agency, '2025-06-10', '2025-06-11', 60_000, 'done', $festival);
+        $harbour = $job('Harbour Festival main stage', $agency, '2025-08-15', '2025-08-17', 176_000, 'done', $festival);
+        $gala = $job('Winter gala', $acme, '2025-12-05', '2025-12-05', 95_000, 'done');
+        $job('Spring showcase rehearsal', $agency, '2026-02-20', '2026-02-20', 42_000, 'done', $festival); // nothing billed yet
+        $awards = $job('Autumn awards night', $acme, '2026-03-14', '2026-03-14', 85_000, 'booked');
+        $job('Arena load-out', $agency, now()->subDays(5)->format('Y-m-d'), now()->subDays(4)->format('Y-m-d'), 52_000, 'booked', $festival); // "Is it done?"
+        $job('New Year party', $acme, now()->addDays(36)->format('Y-m-d'), now()->addDays(36)->format('Y-m-d'), 70_000, 'booked');
+        $job('Corporate away day', $acme, '2026-10-02', '2026-10-02', 40_000, 'cancelled');
+
+        $invoices = app(InvoiceService::class);
+        $issue = function (WorkJob $job, string $on, string $to) use ($invoices): Invoice {
+            $invoice = $invoices->issue($invoices->draftForJob($job), $on);
+            $invoice->forceFill(['sent_at' => CarbonImmutable::parse($on)->addDay()->setTime(9, 30), 'sent_to' => $to])->save();
+
+            return $invoice;
+        };
+
+        $batch = ImportBatch::query()->create(['account_id' => $bank->id, 'original_filename' => 'starling-demo-income.csv', 'file_sha256' => hash('sha256', 'demo-income'),
+            'stored_path' => 'demo', 'status' => 'committed']);
+        $n = 0;
+        $pay = function (string $on, string $payer, int $pence, string $ref) use ($bank, $batch, &$n): BankTransaction {
+            $n++;
+
+            return BankTransaction::query()->create(['account_id' => $bank->id, 'import_batch_id' => $batch->id, 'posted_on' => $on,
+                'tax_year' => UkTaxYear::fromDate($on)->label(), 'description' => $payer.' '.$ref, 'counterparty' => $payer, 'reference' => $ref,
+                'merchant_key' => strtoupper($payer), 'amount_pence' => $pence, 'bank_category' => $pence > 0 ? 'INCOME' : 'TRANSPORT', 'raw' => [],
+                'fingerprint' => 'demo-income-'.$n]);
+        };
+        $writer = app(AllocationWriter::class);
+
+        // Paid: the agency's first payment, decided by you, so Expend knows who STAGECRAFT CREW pays for.
+        $paid = $issue($summer, '2025-06-12', 'crew@stagecraft.example');
+        $writer->decide($pay('2025-07-01', 'Stagecraft Crew', 60_000, 'SUMMER CONF'), [Lines::income(60_000, $paid->id)], 'you', true);
+        // Issued and sent; its payment is waiting in the Inbox as a suggestion.
+        $issue($harbour, '2025-08-20', 'crew@stagecraft.example');
+        // The agency pays travel at cost, and a taxi was linked to the festival after its invoice went: a late cost, on
+        // their next invoice (the sent one never changes).
+        app(ChargeTermsWriter::class)->applyPreset($agency, 'at_cost', null, 'per_job', 'Demo: the agency pays travel at cost');
+        $writer->decide($pay('2025-08-25', 'Addison Lee', -1_820, 'TAXI'), AllocationWriter::lines(-1_820, 'business_expense',
+            (int) Category::query()->where('code', 'travel_taxi')->value('id'), $harbour->id), 'you', true);
+        // Part paid: £500 of £950 came in.
+        $part = $issue($gala, '2025-12-08', 'accounts@acme.example');
+        $writer->decide($pay('2026-01-10', 'Acme Events Ltd', 50_000, 'GALA PART'), [Lines::income(50_000, $part->id)], 'you', true);
+
+        // Waiting: the festival's payment (matches what's still to come on its invoice) and one with nothing to match.
+        $waiting = collect([$pay('2025-09-18', 'Stagecraft Crew', 176_000, 'HARBOUR FEST'), $pay('2026-03-10', 'Stagecraft Crew', 42_000, 'REHEARSAL')]);
+        app(Suggester::class)->suggestFor(BankTransaction::query()->whereKey($waiting->pluck('id'))->get());
+
+        // Done, with a draft; a taxi on the job arrives afterwards, so the draft shows what changed since you looked.
+        // The job has its own arrangement (mileage at HMRC's rate, fares at cost; Acme has no usual one yet).
+        app(ChargeTermsWriter::class)->applyPreset($awards, 'mileage', null, 'per_job', 'Demo: Acme pays mileage and fares on this job');
+        $draft = app(JobStatus::class)->markDone($awards)['invoice'];
+        $taxi = (int) Category::query()->where('code', 'travel_taxi')->value('id');
+        $writer->decide($pay('2026-03-14', 'Uber', -2_350, 'TRIP'), AllocationWriter::lines(-2_350, 'business_expense', $taxi, $awards->id), 'you', true);
+        if ($draft) {
+            app(InvoiceDraftSync::class)->sync($draft);
+        }
+
+        // The client area (Acme): a rate and the days agreed on the party ahead, a job cancelled late with a fee to
+        // invoice, and parts bought for them with no job, charged back on their next invoice.
+        WorkJob::query()->where('title', 'New Year party')->update(['rate_pence' => 35_000, 'rate_unit' => 'day', 'days_agreed' => 1]);
+        $launch = $job('Product launch rehearsal', $acme, now()->subDays(12)->format('Y-m-d'), now()->subDays(12)->format('Y-m-d'), 60_000, 'booked');
+        app(JobStatus::class)->cancel($launch, 'fee', 15_000);
+        $parts = $pay(now()->subDays(20)->format('Y-m-d'), 'Stage Electrics', -2_499, 'CABLES');
+        $writer->decide($parts, AllocationWriter::lines(-2_499, 'business_expense', (int) Category::query()->where('code', 'materials')->value('id'), null), 'you', true);
+        app(CostCharges::class)->rechargeToClient($parts->fresh(), $acme->id, 'Demo: spare cables for their stage');
+
+        // The to-do list's "Send invoice": issued, put in Gmail as a draft, and the draft deleted there without being
+        // sent, so it asks whether it went another way (with "Pick a date" for the day it went).
+        $openDay = $job('Harbour Arts open day', $festival, now()->subDays(8)->format('Y-m-d'), now()->subDays(8)->format('Y-m-d'), 30_000, 'done');
+        $unsent = $invoices->issue($invoices->draftForJob($openDay), now()->subDays(6)->format('Y-m-d'));
+        InvoiceEmail::query()->create(['invoice_id' => $unsent->id, 'kind' => 'invoice', 'route' => 'gmail', 'status' => 'deleted',
+            'to_address' => 'office@harbourarts.example', 'subject' => 'Invoice '.$unsent->number, 'drafted_at' => now()->subDays(6), 'checked_at' => now()->subDays(5)]);
     }
 
     /**

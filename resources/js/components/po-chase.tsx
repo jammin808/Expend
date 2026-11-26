@@ -80,7 +80,7 @@ export function PoChasePanel({ jobId, className, limit, allHref }: { jobId?: num
                     <li key={i.job_id} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">
                         <span className="min-w-0 space-y-0.5">
                             {!jobId && (
-                                <Link href={`/jobs/${i.job_id}`} className="block truncate font-medium hover:underline">
+                                <Link href={`/jobs/${i.job_id}`} className="block truncate py-2.5 font-medium hover:underline">
                                     {i.title}
                                 </Link>
                             )}
@@ -131,7 +131,7 @@ export function PoChasePanel({ jobId, className, limit, allHref }: { jobId?: num
                         {i.request && (
                             <a
                                 href={i.request.mailto}
-                                className="border-input hover:bg-muted inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm"
+                                className="border-input hover:bg-muted inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm"
                                 title={i.request.body}
                             >
                                 <Mail className="size-4" aria-hidden /> Ask for the PO
@@ -141,7 +141,7 @@ export function PoChasePanel({ jobId, className, limit, allHref }: { jobId?: num
                 ))}
             </ul>
             {limit && allHref && items.length > limit && (
-                <Link href={allHref} className="text-sm underline underline-offset-2">
+                <Link href={allHref} className="inline-flex min-h-11 items-center text-sm underline underline-offset-2">
                     Show all {items.length}
                 </Link>
             )}

@@ -414,10 +414,7 @@ final class InvoiceService
                 app(AllocationWriter::class)->confirm($source, 'Confirmed when you issued the invoice');
             }
             $issued = CarbonImmutable::parse($issueDate ?? 'today');
-            $terms = (int) Setting::get('invoice_terms_days') ?: 30;
-            if (preg_match('/within (\d+) days/', (string) $invoice->notes, $m)) {
-                $terms = (int) $m[1];
-            }
+            $terms = self::termsDays($invoice);
             $invoice->refresh();
             $last = InvoiceDraftSync::lastChange($invoice);
 
@@ -954,6 +951,20 @@ final class InvoiceService
         return $n === 1 ? '1 thing' : $n.' things';
     }
 
+    /**
+     * The days an invoice is due in once issued (its due date is the issue date plus these): your usual terms (Settings,
+     * 30 when none), or what its notes say ("within 14 days").
+     */
+    public static function termsDays(Invoice $invoice): int
+    {
+        $terms = (int) Setting::get('invoice_terms_days') ?: 30;
+        if (preg_match('/within (\d+) days/', (string) $invoice->notes, $m)) {
+            $terms = (int) $m[1];
+        }
+
+        return $terms;
+    }
+
     /** A client's payment terms in days, else the usual ones (Settings). */
     private static function terms(?Client $client): int
     {
@@ -962,8 +973,19 @@ final class InvoiceService
 
     private function nextNumber(): string
     {
+        return self::numberAfter(true);
+    }
+
+    /** The number the next invoice issued gets, as the issue sheet shows it ("Issue it as INV-0005?"). */
+    public static function upcomingNumber(): string
+    {
+        return self::numberAfter(false);
+    }
+
+    private static function numberAfter(bool $lock): string
+    {
         $prefix = (string) (Setting::get('invoice_prefix') ?? 'INV-');
-        $last = Invoice::query()->whereNotNull('number')->where('number', 'like', $prefix.'%')->lockForUpdate()->pluck('number')
+        $last = Invoice::query()->whereNotNull('number')->where('number', 'like', $prefix.'%')->when($lock, fn ($q) => $q->lockForUpdate())->pluck('number')
             ->map(fn ($n) => (int) substr($n, strlen($prefix)))->max() ?? 0;
 
         return $prefix.str_pad((string) ($last + 1), 4, '0', STR_PAD_LEFT);

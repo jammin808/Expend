@@ -54,7 +54,7 @@ export function WhyPanel({ refId, label = 'Why?', className }: { refId: string; 
         <div className={cn('text-sm', className)}>
             <button
                 type="button"
-                className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs font-medium"
+                className="text-muted-foreground hover:text-foreground inline-flex min-h-10 items-center gap-1 text-xs font-medium"
                 aria-expanded={open}
                 onClick={() => setOpen((o) => !o)}
             >
@@ -193,7 +193,7 @@ function RefLine({ r, extra }: { r: ResolvedRef; extra?: string | null }) {
     return (
         <li className="flex flex-wrap items-baseline gap-x-2 text-xs">
             {r.href && r.exists ? (
-                <a href={r.href} className="underline-offset-2 hover:underline">
+                <a href={r.href} className="inline-flex min-h-10 items-center underline-offset-2 hover:underline">
                     {r.label}
                 </a>
             ) : (

@@ -439,7 +439,8 @@ final class Opportunities
                 'job_id' => $job->id, 'title' => $job->title, 'client' => $job->client?->name,
                 'starts_on' => $job->starts_on->format('Y-m-d'), 'ends_on' => $job->ends_on->format('Y-m-d'), 'status' => $job->status,
                 'why' => match (true) {
-                    $done => 'Done and not invoiced, with no PO',
+                    // "Done" only once you've marked it done: a booked job whose last day has passed is still asked "Is it done?".
+                    $done => ($job->status === 'done' ? 'Done' : 'Finished').' and not invoiced, with no PO',
                     $until > 0 => 'Starts in '.$until.' '.($until === 1 ? 'day' : 'days').' with no PO',
                     default => 'Under way with no PO',
                 },

@@ -41,10 +41,28 @@ const jobField: Record<string, keyof JobData> = {
 };
 
 /**
+ * A day or hourly rate in pounds read from a "rate" fact ("Day rate: £450", "£35 an hour"), or null when it isn't one
+ * plain rate: another currency, more than one amount, or no day or hour said. (Kept free of imports: the job page's
+ * node test runs this file with stand-ins for them.)
+ */
+export function rateOf(f: { field: string; label: string; value: string }): { rate: string; rate_unit: 'day' | 'hour' } | null {
+    if (f.field !== 'rate') return null;
+    const words = `${f.label} ${f.value}`.toLowerCase();
+    if (/[€$¥]|\b(eur|usd|aud|cad|chf|jpy)\b/.test(words)) return null;
+    const amounts = f.value.match(/\d[\d,]*(?:\.\d{1,2})?/g) ?? [];
+    if (amounts.length !== 1 || !/^\d{1,3}(,\d{3})*(\.\d{1,2})?$|^\d+(\.\d{1,2})?$/.test(amounts[0])) return null;
+    const unit = /\b(hour|hourly|hr|hrs|ph)\b|\/h\b/.test(words) ? 'hour' : /\b(day|daily|days)\b|\/d\b/.test(words) ? 'day' : null;
+    const pounds = Number(amounts[0].replace(/,/g, ''));
+    if (!unit || !(pounds > 0)) return null;
+    return { rate: pounds.toFixed(2), rate_unit: unit };
+}
+
+/**
  * What a fact puts in the job, or null when the job can't take it: a time or date the AI couldn't read as one
- * ("7am call", "the weekend") would never save, so it gets no "Use in job".
+ * ("7am call", "the weekend") would never save, so it gets no "Use in job". A rate fills the job's rate and its unit.
  */
 function jobValue(f: SheetFact): string | null {
+    if (f.field === 'rate') return rateOf(f)?.rate ?? null;
     const field = jobField[f.field];
     if (field === 'start_time' || field === 'end_time') return f.at_time;
     if (field === 'starts_on' || field === 'ends_on') return f.on_date;
@@ -53,11 +71,15 @@ function jobValue(f: SheetFact): string | null {
 
 export function JobSheet({ job, facts, documents }: { job: JobData & { id: number }; facts: SheetFact[]; documents: DocRow[] }) {
     const applyFact = (f: SheetFact) => {
+        const rate = rateOf(f);
         const field = jobField[f.field];
         const value = jobValue(f);
-        if (!field || value === null) return;
-        // Only what the job needs to save and the one detail: the job keeps its PO number, fee and everything else.
-        const body: Record<string, string> = { title: job.title, starts_on: job.starts_on, ends_on: job.ends_on, [field]: value };
+        if ((!field && !rate) || value === null) return;
+        // Only what the job needs to save and the one detail: the job keeps its PO number, fee and everything else. A
+        // rate sends its unit too (and the job's days agreed are filled in, if empty).
+        const body: Record<string, string> = rate
+            ? { title: job.title, starts_on: job.starts_on, ends_on: job.ends_on, rate: rate.rate, rate_unit: rate.rate_unit }
+            : { title: job.title, starts_on: job.starts_on, ends_on: job.ends_on, [field]: value };
         // A one-day job given a start date moves to that date, and its day moves with its kind, times and note
         // (JobDays::rangeChanged). A longer job keeps its end date, so a start after it is refused with the reason.
         if (field === 'starts_on' && job.starts_on === job.ends_on) body.ends_on = value;

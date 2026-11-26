@@ -29,6 +29,7 @@ import {
     Scale,
     Settings,
     Sparkles,
+    Users,
 } from 'lucide-react';
 import AppLogo from './app-logo';
 
@@ -51,6 +52,7 @@ export function AppSidebar() {
     ];
     const work = [
         { title: 'Jobs', url: '/jobs', icon: Briefcase, also: ['/documents', '/travel', '/opportunities'] },
+        { title: 'Clients', url: '/clients', icon: Users, also: [] },
         { title: 'Connections', url: '/connections', icon: Network, also: [] },
         { title: 'Invoices', url: '/invoices', icon: ReceiptText, also: [] },
         { title: 'Mileage', url: '/mileage', icon: Car, also: [] },

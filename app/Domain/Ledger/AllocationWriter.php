@@ -97,6 +97,11 @@ final class AllocationWriter
     /** Your own decisions: above every method (your receipt from the phone, receipt.quick, is 7). */
     public const OWNER = 8;
 
+    /** confirm() refused because the lines aren't the ones shown any more. */
+    public const CHANGED_SINCE_SHOWN = 'This changed since the page was shown, so nothing was done. Look at it again.';
+
+    public const CHANGED_SINCE_SHOWN_CODE = 409;
+
     /** The rank of a line whose method isn't known, by who made it. */
     private const MAKERS = ['you' => self::OWNER, 'rule' => 6, 'policy' => 2, 'matcher' => 1, 'ai' => 0];
 
@@ -406,17 +411,27 @@ final class AllocationWriter
      * Refused when a line waiting to be accepted names an invoice that can't be paid any more (voided, or a draft), with
      * decide()'s message; and refused for anyone but you when it's income on money in linked to an invoice, a job or a
      * client, or a deduction naming a client (automation never confirms an income link).
+     *
+     * $shown: the ids of the lines a card or drawer showed. When the payment's lines are others by now (a suggestion
+     * replaced since), nothing is confirmed (CHANGED_SINCE_SHOWN_CODE).
+     *
+     * @param  list<int>|null  $shown
      */
-    public function confirm(BankTransaction|ManualExpense $source, ?string $reason = null): void
+    public function confirm(BankTransaction|ManualExpense $source, ?string $reason = null, ?array $shown = null): void
     {
         $this->assertUnlocked($this->taxYearOf($source));
         $actor = AuditContext::actor();
 
-        DB::transaction(function () use ($source, $reason, $actor) {
+        DB::transaction(function () use ($source, $reason, $actor, $shown) {
             AuditLog::lockHead();
             $allocations = $this->lockedAllocations($source);
             if ($allocations->isEmpty()) {
                 throw new InvalidArgumentException('There is nothing to confirm yet. Choose what this is first.');
+            }
+            // Accept on a card or a drawer accepts only the lines it showed: another suggestion that has replaced them
+            // since (an automatic one, say) is never confirmed by a press made on the old one.
+            if ($shown !== null && ! Vetoes::isShown($allocations, $shown)) {
+                throw new InvalidArgumentException(self::CHANGED_SINCE_SHOWN, self::CHANGED_SINCE_SHOWN_CODE);
             }
             $open = $allocations->whereNull('confirmed_at');
             $invoiceIds = $open->pluck('invoice_id')->filter()->unique()->values();

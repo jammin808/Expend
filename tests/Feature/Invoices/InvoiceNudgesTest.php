@@ -327,7 +327,8 @@ class InvoiceNudgesTest extends TestCase
         $this->assertSame('Invoice INV-0002 is in your Gmail drafts, ready to send.',
             app(TodoActions::class)->run('inv_to_gmail', (string) $invoice->id, null, Fingerprints::of('inv_to_gmail', (string) $invoice->id)));
         $this->assertSame('£650.00 to Acme Events: it’s in your Gmail drafts', $item()['detail']);
-        $this->assertSame([['inv_gmail_send', 'Send it'], ['inv_sent_self', 'I sent it myself']], array_map(fn ($a) => [$a['code'], $a['label']], $item()['actions']));
+        // "Pick a date" (stage 4 lead decision): I sent it myself means today; another day is picked on the invoice.
+        $this->assertSame([['inv_gmail_send', 'Send it'], ['inv_sent_self', 'I sent it myself'], ['link', 'Pick a date']], array_map(fn ($a) => [$a['code'], $a['label']], $item()['actions']));
         $this->expectException(ChangedSince::class);
         app(TodoActions::class)->run('inv_send', (string) $invoice->id, null, $old);
     }
@@ -382,7 +383,9 @@ class InvoiceNudgesTest extends TestCase
         $this->nudge();
         $this->assertSame('Invoice INV-0001 to Acme Events is 3 days overdue (£650.00).', $this->about('overdue')[0]['text'] ?? null);
         $item = collect(TodoList::build(100)['items'])->firstWhere('key', 'invoice_overdue:'.$invoice->id);
-        $this->assertStringContainsString('due 31 Jul 2026 (3 days ago)', $item['detail']);
+        // The due date printed on the invoice (as its page says), then when it became overdue: one date each, not
+        // "due 31 Jul" for an invoice dated due 5 July.
+        $this->assertStringContainsString('due 5 Jul 2026, sent late so overdue since 31 Jul 2026 (3 days)', $item['detail']);
         $this->assertSame('2026-07-31', $item['due_on']);
     }
 

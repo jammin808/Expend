@@ -499,7 +499,8 @@ class OpportunitiesTest extends TestCase
         $this->assertSame(['Acme Gala', 'Smith launch', 'Acme Awards'], $list->keys()->all(), 'Soonest first, and only those still needing a PO');
         $this->assertSame(['alex@acme-events.example', 'opportunity', 'Starts in 19 days with no PO'], [$list['Acme Awards']['contact']['email'], $list['Acme Awards']['contact']['from'], $list['Acme Awards']['why']]);
         $this->assertSame('From: Alex Smith <alex@acme-events.example>', $list['Acme Awards']['evidence'][0]['quote']);
-        $this->assertSame(['alex@acme-events.example', 'Alex Smith', 'client', 'Done and not invoiced, with no PO'],
+        // Its last day has passed but it isn't marked done (the to-do list asks "Is Acme Gala done?"): "Finished", not "Done".
+        $this->assertSame(['alex@acme-events.example', 'Alex Smith', 'client', 'Finished and not invoiced, with no PO'],
             [$list['Acme Gala']['contact']['email'], $list['Acme Gala']['contact']['name'], $list['Acme Gala']['contact']['from'], $list['Acme Gala']['why']],
             'Neither your own forward nor an email from the venue (not the client’s company) is who to ask: the client’s contact is');
         $this->assertTrue($list['Acme Gala']['evidence'][0]['verified']);

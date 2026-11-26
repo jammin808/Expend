@@ -156,7 +156,7 @@ class JobFinishedNudges extends Command
             'offer' => [$name.' is done. Draft its invoice?', [[['Draft it', 'job_invoice', (string) $job->id], $open]], url('/jobs/'.$job->id)],
             default => [$name.': last day was '.self::when($job, $today).'. All done? Marking it done gets its invoice ready to check.', [
                 [['Done', 'job_done', (string) $job->id], ['Not yet', 'job_not_yet', (string) $job->id]],
-                [['Cancelled', 'job_cancel', (string) $job->id], $open],
+                [['Cancelled…', 'job_cancel', (string) $job->id], $open],
             ], url('/jobs/'.$job->id)],
         };
 
